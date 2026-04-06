@@ -609,71 +609,48 @@ queue/reports/ashigaru{YOUR_NUMBER}_report.yaml  ← Write only this
 
 # OpenCode CLI Tools
 
-This section describes OpenCode-specific tools, rules loading, and session-control behavior.
+This section describes OpenCode-specific tools and features.
 
 ## Overview
 
-OpenCode starts the TUI by default with `opencode`, can run headless work with `opencode run`, and each agent loads a pre-built definition from `.opencode/agents/<name>.md`, which contains the full system prompt (role instructions, protocol, task flow, forbidden actions) and role-specific permissions baked into the YAML frontmatter at build time.
+OpenCode starts the TUI by default with `opencode`, and can run headless work with `opencode run`.
+Each agent loads a pre-built definition from `.opencode/agents/<name>.md` via `--agent`.
 
-- **Launch**: `OPENCODE_TUI_CONFIG=<tui-config> opencode --model provider/model --agent <agent_id>`
-- **Headless mode**: `opencode run [message...]` for non-interactive automation
-- **Model format**: `provider/model` such as `openai/gpt-5.4` or `moonshot/kimi-k2.5`
-- **Stats**: `opencode stats` shows token usage and cost statistics
+- `AGENTS.md` is the shared repo contract and is read automatically.
+- Treat `.opencode/agents/<name>.md` as the OpenCode-specific layer on top of that shared contract.
+- Use `skill` for reusable workflows instead of duplicating them in the prompt.
 
-## Built-in tools
+## Tool Usage
 
 OpenCode provides built-in tools including `bash`, `read`, `edit`, `write`, `grep`, `glob`, `list`, `apply_patch`, `skill`, `todowrite`, `webfetch`, `websearch`, and `question`.
+Tool availability still follows the generated agent permissions.
 
 Guidelines:
 
-1. **Read before edit**: inspect relevant files before changing them
-2. **Use focused tools**: prefer `read`/`grep`/`glob` over shelling out for routine inspection
-3. **Use `skill` for reusable workflows**: OpenCode loads `SKILL.md` definitions on demand
-4. **Permissions in this repo**: each agent's `.opencode/agents/<name>.md` embeds role-specific file boundaries in its YAML frontmatter (generated from `config/opencode-permissions.yaml` at build time). Shogun is blocked from `queue/reports/*`, Karo is limited to coordination files plus report aggregation, Ashigaru only touch their own task/report pair, and Gunshi reads ashigaru reports while only writing `gunshi_report.yaml`. The `question` tool is allowed only for the Shogun role; other roles have it denied so they do not stall on interactive prompts
-5. **tmux key handling**: use the repository-provided `config/opencode-tui.json` via `OPENCODE_TUI_CONFIG` so tmux automation sees stable keybinds
-6. **Keybind policy**: `app_exit` is disabled in that file, `session_interrupt` is `escape`, and `input_clear` is `ctrl+c`; do not rely on global user keybinds for these actions
+1. **Read before edit**: inspect relevant files before changing them.
+2. **Use focused tools**: prefer `read`/`grep`/`glob` over shelling out for routine inspection.
+3. **Use `skill` for reusable workflows**: load the matching `SKILL.md` when a task maps to an existing skill.
+4. **Prefer dedicated agents**: if a task fits a specialized OpenCode agent definition, select that agent instead of stretching the current prompt.
 
-## Instructions and rules
+## Custom Instructions
 
-OpenCode reads project instructions from `AGENTS.md` and supports Claude-compatible fallbacks such as `CLAUDE.md` when `AGENTS.md` is absent. Additional instruction files can be layered via the `instructions` field in `opencode.json`.
+OpenCode reads project instructions from `AGENTS.md` automatically. Additional instruction files can be layered via the `instructions` field in `opencode.json`, but that field is shared across all agents and is not a per-agent override.
 
-For this repository:
+## tmux Interaction
 
-1. `AGENTS.md` remains the auto-load root rule file
-2. Each agent's full instruction set (role, protocol, task flow, forbidden actions) is pre-built in `.opencode/agents/<name>.md` at build time
-3. The agent definition file is the source of truth for CLI-specific operating details
+### TUI Mode
 
-## Session control
+- Use `OPENCODE_TUI_CONFIG=<tui-config> opencode --model provider/model --agent <agent_id>`.
+- Keep the repository-pinned `config/opencode-tui.json` so tmux automation sees stable keybinds.
+- `app_exit` is disabled; `session_interrupt` is `escape`; `input_clear` is `ctrl+c,ctrl+u`.
 
-OpenCode TUI supports `/new` (alias `/clear`) to start a new session, `/compact` to summarize context, `/sessions` to switch/resume sessions, and `/models` to inspect available models.
+### Session Control
 
-Operational rules for this repository:
+- Use `/new` to start a fresh session.
+- Treat model changes as relaunch-only in tmux automation.
+- Use `/sessions` and `/models` only when interactive inspection is needed.
 
-1. **Agent auto-load**: at session start, the agent definition from `.opencode/agents/<name>.md` is loaded automatically, providing role, permissions, and full instructions
-2. **Session identification**: the agent should still run `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'` to confirm its pane assignment
-3. **Context reset**: automation should send `/new`
-4. **Model changes**: treat model changes as relaunch-only in tmux automation even though OpenCode can inspect models interactively
+## Notes
 
-## Config, providers, and permissions
-
-OpenCode merges config from remote defaults, `~/.config/opencode/opencode.json`, project `opencode.json`, `.opencode/` directories, and environment overrides. Providers and models are configured with `provider/model` IDs, and permissions are controlled through the `permission` config.
-
-Key points:
-
-- `permission` controls whether tools are `allow`, `ask`, or `deny`
-- Role-specific permissions are baked into `.opencode/agents/<name>.md` at build time via `scripts/build_instructions.sh` — no runtime `OPENCODE_CONFIG_CONTENT` needed
-- `websearch` is available when using the OpenCode provider or when `OPENCODE_ENABLE_EXA` is enabled
-- MCP servers are configured in `opencode.json` and become normal tools once enabled
-- Skills are discovered from `.opencode/skills/`, `.claude/skills/`, and compatible global paths
-
-## Session control notes
-
- (see below)
-
-| Action | OpenCode behavior |
-|--------|-------------------|
-| New task | `--agent <name>` loads system prompt from `.opencode/agents/<name>.md` |
-| Context reset | Use `/new` |
-| Model change | Restart with a new `opencode --model ... --agent <name>` launch |
-| Instruction loading | `AGENTS.md` (auto) + `.opencode/agents/<name>.md` (auto via `--agent`) |
-| Usage review | `opencode stats` for token and cost statistics |
+- `opencode stats` shows token usage and cost statistics.
+- Keep your response text concise and reduce verbosity.
