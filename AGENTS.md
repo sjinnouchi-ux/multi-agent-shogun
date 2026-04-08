@@ -169,7 +169,7 @@ When you receive `inboxN` (e.g. `inbox3`):
 3. Only then go idle
 
 This is NOT optional. If you skip this and a redo message is waiting,
-you will be stuck idle until the next nudge escalation or task reassignment.
+you will be stuck idle until the next escalation or task reassignment.
 
 ## Redo Protocol
 

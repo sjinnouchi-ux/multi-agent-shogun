@@ -17,7 +17,7 @@ common:
 
 roles:
   shogun:
-    question: allow
+    question: deny
     read_deny:
       - queue/inbox/*
       - queue/tasks/ashigaru*.yaml
