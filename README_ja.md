@@ -1808,7 +1808,7 @@ tmux respawn-pane -t shogun:0.0 -k 'claude --model opus --dangerously-skip-permi
 - **Stop hook inbox配信** — Claude Codeエージェントが `.claude/settings.json` のStop hookでターン終了時に自動的にinboxを確認。`send-keys` 割り込み問題を根絶
 - **モデルデフォルト更新** — 家老: Opus→Sonnet。軍師: Opus（深い推論）。全足軽: Sonnet（統一）
 - **Codex CLIスタートアッププロンプト** — `cli_adapter.sh` の `get_startup_prompt()` が初期 `[PROMPT]` 引数をCodex CLIに渡す
-- **YAMLスリム化ユーティリティ** — `scripts/slim_yaml.sh` が既読メッセージ・完了コマンドをアーカイブ
+- **YAMLスリム化ユーティリティ** — `scripts/slim_yaml.sh` が既読メッセージ・終端コマンドをアーカイブ。現行 top-level/旧 `task.status` の両形式に対応し、`--dry-run` は queue 清掃監査でファイルを書き換えない
 
 </details>
 

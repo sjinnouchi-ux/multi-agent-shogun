@@ -18,6 +18,11 @@ import yaml
 CANONICAL_TASKS = {f'ashigaru{i}' for i in range(1, 9)} | {'gunshi'}
 CANONICAL_REPORTS = {f'ashigaru{i}_report' for i in range(1, 9)} | {'gunshi_report'}
 IDLE_STUB = {'task': {'status': 'idle'}}
+TOP_LEVEL_IDLE_STUB = {'status': 'idle'}
+TERMINAL_STATUSES = {'done', 'cancelled', 'paused'}
+ACTIVE_STATUSES = {'pending', 'in_progress', 'blocked'}
+TASK_ACTIVE_STATUSES = {'idle', 'assigned', 'pending_blocked'}
+INVENTORY_AGE_SECONDS = 30 * 86400
 
 
 def load_yaml(filepath):
@@ -49,11 +54,57 @@ def get_timestamp():
 
 
 def get_queue_dir():
+    override = os.environ.get('SHOGUN_QUEUE_DIR')
+    if override:
+        return Path(override).resolve()
     return Path(__file__).resolve().parent.parent / 'queue'
 
 
+def get_item_status(item):
+    """Return status from current top-level YAML or legacy task.status YAML."""
+    if not isinstance(item, dict):
+        return ''
+    if item.get('status') is not None:
+        return str(item.get('status'))
+    task = item.get('task')
+    if isinstance(task, dict) and task.get('status') is not None:
+        return str(task.get('status'))
+    return ''
+
+
+def uses_legacy_task_status(data):
+    return isinstance(data, dict) and isinstance(data.get('task'), dict) and 'status' in data['task'] and 'status' not in data
+
+
+def idle_stub_for(stem, data):
+    if uses_legacy_task_status(data):
+        return IDLE_STUB
+    stub = dict(TOP_LEVEL_IDLE_STUB)
+    if stem in CANONICAL_TASKS:
+        stub['worker_id'] = stem
+    return stub
+
+
+def is_old_timestamp(value, now=None, age_seconds=INVENTORY_AGE_SECONDS):
+    if not value:
+        return False
+    now = now or datetime.now().astimezone()
+    text = str(value)
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return (now - parsed).total_seconds() >= age_seconds
+
+
+def print_inventory(message):
+    print(f"[INVENTORY] {message}", file=sys.stderr)
+
+
 def get_active_cmd_ids():
-    """Return command IDs in shogun_to_karo that are not done."""
+    """Return command IDs in shogun_to_karo that are not terminal."""
     queue_dir = get_queue_dir()
     shogun_file = queue_dir / 'shogun_to_karo.yaml'
     data = load_yaml(shogun_file)
@@ -69,10 +120,63 @@ def get_active_cmd_ids():
             continue
         if cmd.get('id') is None:
             continue
-        if cmd.get('status') == 'done':
+        if get_item_status(cmd) in TERMINAL_STATUSES:
             continue
         active.add(cmd.get('id'))
     return active
+
+
+def inventory_commands(commands):
+    unknown = []
+    old_active = []
+    for cmd in commands:
+        if not isinstance(cmd, dict):
+            continue
+        status = get_item_status(cmd) or 'unknown'
+        cmd_id = cmd.get('id', '<missing-id>')
+        if status not in TERMINAL_STATUSES and status not in ACTIVE_STATUSES:
+            unknown.append(f"{cmd_id}:{status}")
+        if status in ACTIVE_STATUSES and is_old_timestamp(cmd.get('timestamp')):
+            old_active.append(f"{cmd_id}:{status}:{cmd.get('timestamp')}")
+
+    if unknown:
+        print_inventory("non-canonical command status: " + ", ".join(unknown))
+    if old_active:
+        print_inventory("old non-terminal commands kept for human review: " + ", ".join(old_active))
+
+
+def inventory_ntfy_inbox(dry_run=False):
+    """Report old ntfy entries without deleting or changing them."""
+    queue_dir = get_queue_dir()
+    ntfy_file = queue_dir / 'ntfy_inbox.yaml'
+    if not ntfy_file.exists():
+        return True
+
+    data = load_yaml(ntfy_file)
+    entries = data.get('inbox', []) if isinstance(data, dict) else []
+    if not isinstance(entries, list):
+        print("Error: ntfy inbox is not a list", file=sys.stderr)
+        return False
+
+    old_pending = []
+    old_terminal = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        status = get_item_status(item) or 'unknown'
+        item_id = item.get('id', '<missing-id>')
+        if is_old_timestamp(item.get('timestamp')):
+            if status in TERMINAL_STATUSES:
+                old_terminal.append(f"{item_id}:{status}")
+            else:
+                old_pending.append(f"{item_id}:{status}")
+
+    prefix = "[DRY-RUN] " if dry_run else ""
+    if old_pending:
+        print_inventory(prefix + "old ntfy pending/non-terminal entries kept: " + ", ".join(old_pending))
+    if old_terminal:
+        print_inventory(prefix + "old ntfy terminal entries available for explicit cleanup: " + ", ".join(old_terminal))
+    return True
 
 
 def ensure_parent_dir(path):
@@ -103,21 +207,20 @@ def slim_tasks(dry_run=False):
         return True
 
     timestamp = get_timestamp()
-    done_statuses = {'done', 'completed', 'cancelled'}
-
     for filepath in sorted(tasks_dir.glob('*.yaml')):
         data = load_yaml(filepath)
         if not isinstance(data, dict):
             continue
 
-        task = data.get('task', {}) if isinstance(data.get('task', {}), dict) else {}
-        status = task.get('status', '') if isinstance(task, dict) else ''
+        status = get_item_status(data)
         if not status:
             continue
 
         stem = filepath.stem
         if stem in CANONICAL_TASKS:
-            if status not in done_statuses:
+            if status not in TERMINAL_STATUSES:
+                if status not in TASK_ACTIVE_STATUSES:
+                    print_inventory(f"canonical task {filepath.name} has non-canonical status '{status}'")
                 continue
 
             archive_path = archive_dir / f'{stem}_{timestamp}.yaml'
@@ -125,14 +228,16 @@ def slim_tasks(dry_run=False):
                 return False
 
             if dry_run:
-                print(f"[DRY-RUN] would overwrite: {filepath} with {IDLE_STUB}")
+                print(f"[DRY-RUN] would overwrite: {filepath} with {idle_stub_for(stem, data)}")
                 continue
 
-            if not save_yaml(filepath, IDLE_STUB):
+            if not save_yaml(filepath, idle_stub_for(stem, data)):
                 return False
             continue
 
-        if status not in {'done', 'cancelled'}:
+        if status not in TERMINAL_STATUSES:
+            if status not in TASK_ACTIVE_STATUSES and status not in ACTIVE_STATUSES:
+                print_inventory(f"task file {filepath.name} has non-canonical status '{status}'")
             continue
 
         archive_path = archive_dir / filepath.name
@@ -248,7 +353,7 @@ def slim_inbox(agent_id, dry_run=False):
     return True
 
 
-def slim_shugun_to_karo():
+def slim_shugun_to_karo(dry_run=False):
     """Archive done/cancelled commands from shogun_to_karo.yaml."""
     queue_dir = get_queue_dir()
     archive_dir = queue_dir / 'archive'
@@ -269,13 +374,15 @@ def slim_shugun_to_karo():
         print("Error: queue is not a list", file=sys.stderr)
         return False
 
+    inventory_commands(queue)
+
     # Separate active and archived commands
     active = []
     archived = []
 
     for cmd in queue:
-        status = cmd.get('status', 'unknown')
-        if status in ['done', 'cancelled']:
+        status = get_item_status(cmd) or 'unknown'
+        if status in TERMINAL_STATUSES:
             archived.append(cmd)
         else:
             active.append(cmd)
@@ -287,6 +394,11 @@ def slim_shugun_to_karo():
     # Write archived commands to timestamped file
     archive_timestamp = get_timestamp()
     archive_file = archive_dir / f'shogun_to_karo_{archive_timestamp}.yaml'
+
+    if dry_run:
+        print(f"[DRY-RUN] would archive {len(archived)} commands from {shogun_file}")
+        print(f"[DRY-RUN] would write: {archive_file}")
+        return True
 
     archive_data = {key: archived}
     if not save_yaml(archive_file, archive_data):
@@ -362,20 +474,23 @@ def main():
     """Main entry point."""
     agent_id, dry_run = parse_arguments()
 
-    # Ensure archive directory exists
     archive_dir = get_queue_dir() / 'archive'
-    archive_dir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        archive_dir.mkdir(parents=True, exist_ok=True)
 
     # Process shogun_to_karo if this is Karo
     if agent_id == 'karo':
-        if not slim_shugun_to_karo():
+        if not slim_shugun_to_karo(dry_run=dry_run):
             sys.exit(1)
-        migration(dry_run)
+        if not migration(dry_run):
+            sys.exit(1)
         if not slim_tasks(dry_run):
             sys.exit(1)
         if not slim_reports(dry_run):
             sys.exit(1)
         if not slim_all_inboxes(dry_run):
+            sys.exit(1)
+        if not inventory_ntfy_inbox(dry_run=dry_run):
             sys.exit(1)
 
     # Process inbox for all agents

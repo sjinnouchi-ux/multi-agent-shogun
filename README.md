@@ -1855,7 +1855,7 @@ Even if you're not comfortable with keyboard shortcuts, you can switch, scroll, 
 - **Model defaults updated** — Karo: Opus → Sonnet. Gunshi: Opus (deep reasoning). Ashigaru: Sonnet (uniform tier)
 - **Escape escalation disabled for Claude Code** — Phase 2 escalation was interrupting active Claude Code turns; Stop hook handles delivery instead
 - **Codex CLI startup prompt** — `get_startup_prompt()` in `cli_adapter.sh` passes initial `[PROMPT]` argument to Codex CLI launch
-- **YAML slimming utility** — `scripts/slim_yaml.sh` archives read messages and completed commands
+- **YAML slimming utility** — `scripts/slim_yaml.sh` archives read messages and terminal commands, supports current top-level and legacy task YAML, and keeps `--dry-run` filesystem-safe for queue cleanup audits
 
 </details>
 
