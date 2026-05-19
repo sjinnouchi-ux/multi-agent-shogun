@@ -305,6 +305,14 @@ assert perm["read"]["queue/tasks/*"] == "deny"
 assert perm["read"]["queue/tasks/ashigaru1.yaml"] == "allow"
 assert perm["read"]["queue/reports/*"] == "deny"
 assert perm["read"]["queue/reports/ashigaru1_report.yaml"] == "allow"
+
+for tool_name in ("grep", "glob", "list"):
+    assert perm[tool_name]["queue/inbox/*"] == "deny"
+    assert perm[tool_name]["queue/inbox/ashigaru1.yaml"] == "allow"
+    assert perm[tool_name]["queue/tasks/*"] == "deny"
+    assert perm[tool_name]["queue/tasks/ashigaru1.yaml"] == "allow"
+    assert perm[tool_name]["queue/reports/*"] == "deny"
+    assert perm[tool_name]["queue/reports/ashigaru1_report.yaml"] == "allow"
 PYEOF
 }
 

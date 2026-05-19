@@ -450,6 +450,7 @@ permission = {
     'patch': edit_rule,
     'list': read_rule,
     'glob': read_rule,
+    'grep': read_rule,
 }
 
 # Output as YAML (indented) for embedding in frontmatter

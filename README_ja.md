@@ -597,7 +597,7 @@ notes: |
 agents:
   cli_assignments:
     ashigaru1:
-      type: codex # codex / claude / copilot / kimi
+      type: codex # codex / claude / copilot / kimi / opencode
       model: gpt-5.5
     ashigaru2:
       type: claude

@@ -37,6 +37,7 @@ permission:
     queue/tasks/*: deny
     queue/tasks/ashigaru3.yaml: allow
     saytask/*: deny
+  grep: *id001
   list: *id001
   patch: *id002
   question: deny

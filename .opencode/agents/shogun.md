@@ -40,6 +40,7 @@ permission:
     queue/tasks/pending.yaml: deny
     saytask/streaks.yaml: allow
     saytask/tasks.yaml: allow
+  grep: *id001
   list: *id001
   patch: *id002
   question: deny

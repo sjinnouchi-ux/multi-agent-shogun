@@ -39,6 +39,7 @@ permission:
     queue/tasks/gunshi.yaml: allow
     queue/tasks/pending.yaml: deny
     saytask/*: deny
+  grep: *id001
   list: *id001
   patch: *id002
   question: deny

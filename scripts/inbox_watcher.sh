@@ -569,6 +569,8 @@ send_cli_command() {
                     return 0
                 fi
                 echo "[$(date)] [SEND-KEYS] OpenCode /new for clear_command: starting new conversation for $AGENT_ID" >&2
+                timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+                sleep 0.3
                 timeout 5 tmux send-keys -t "$PANE_TARGET" "/new" 2>/dev/null || true
                 sleep 0.3
                 timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true

@@ -507,7 +507,8 @@ MOCK
     '
     [ "$status" -eq 0 ]
 
-    # /clear is converted to /new — no Escape or C-c sent (function removed)
+    # /clear is converted to /new after clearing stale input — no Escape or C-c sent.
+    grep -q "send-keys.*C-u" "$MOCK_LOG"
     grep -q "send-keys.*/new" "$MOCK_LOG"
     ! grep -q "send-keys.*/clear" "$MOCK_LOG"
     ! grep -q "send-keys.*Escape" "$MOCK_LOG"
