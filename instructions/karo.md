@@ -323,7 +323,7 @@ task:
   parent_cmd: cmd_001
   bloom_level: L3        # L1-L3=Ashigaru, L4-L6=Gunshi
   description: "Create hello1.md with content 'おはよう1'"
-  target_path: "/mnt/c/tools/multi-agent-shogun/hello1.md"
+  target_path: "hello1.md"  # relative to project root
   echo_message: "🔥 足軽1号、先陣を切って参る！八刃一志！"
   status: assigned
   timestamp: "2026-01-25T12:00:00"
@@ -335,7 +335,7 @@ task:
   bloom_level: L6
   blocked_by: [subtask_001, subtask_002]
   description: "Integrate research results from ashigaru 1 and 2"
-  target_path: "/mnt/c/tools/multi-agent-shogun/reports/integrated_report.md"
+  target_path: "reports/integrated_report.md"  # relative to project root
   echo_message: "⚔️ 足軽3号、統合の刃で斬り込む！"
   status: blocked         # Initial status when blocked_by exists
   timestamp: "2026-01-25T12:00:00"
@@ -626,7 +626,7 @@ Note: This replaces the need for inbox_write to shogun. ntfy goes directly to Lo
 3. **cmd_390 等の自律改修サイクルで殿判断が必要なポイント** — `bash scripts/ntfy.sh "🚨 要確認 — {内容}"`
 4. **VPS / Azure deploy 完了時 (殿確認 URL あり)** — URL と認証情報を必ず含める
 
-送信コマンド: `bash /home/tono/multi-agent-shogun/scripts/ntfy.sh "<メッセージ>"`
+送信コマンド: `bash scripts/ntfy.sh "<メッセージ>"`
 
 ## Skill Candidates
 
