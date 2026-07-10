@@ -50,6 +50,23 @@ run_dry() {
         --dry-run
 }
 
+replace_in_file() {
+    local path="$1"
+    local old="$2"
+    local new="$3"
+    "$PYTHON" -c \
+        'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); old=sys.argv[2]; assert old in s; p.write_text(s.replace(old, sys.argv[3], 1))' \
+        "$path" "$old" "$new"
+}
+
+delete_line_from_file() {
+    local path="$1"
+    local exact_line="$2"
+    "$PYTHON" -c \
+        'import pathlib,sys; p=pathlib.Path(sys.argv[1]); lines=p.read_text().splitlines(True); p.write_text("".join(line for line in lines if line.rstrip("\r\n") != sys.argv[2]))' \
+        "$path" "$exact_line"
+}
+
 @test "drive publisher dry-run validates nested artifacts without authentication" {
     run_dry
     [ "$status" -eq 0 ]
@@ -60,7 +77,7 @@ run_dry() {
 
 @test "drive publisher rejects path traversal" {
     printf 'private\n' > "$TEST_TMPDIR/private.txt"
-    sed -i 's|  - index.html|  - ../private.txt|' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "  - index.html" "  - ../private.txt"
     run_dry
     [ "$status" -eq 2 ]
     echo "$output" | grep -q 'unsafe artifact path'
@@ -68,7 +85,7 @@ run_dry() {
 
 @test "drive publisher rejects secret-like filenames" {
     printf 'secret\n' > "$TEST_TMPDIR/artifacts/oauth_token.json"
-    sed -i 's|  - index.html|  - oauth_token.json|' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "  - index.html" "  - oauth_token.json"
     run_dry
     [ "$status" -eq 2 ]
     echo "$output" | grep -q 'blocked secret-like artifact name'
@@ -86,7 +103,7 @@ run_dry() {
 }
 
 @test "drive publisher rejects approved stage without an approved review" {
-    sed -i 's/status: review/status: approved/' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "status: review" "status: approved"
     run "$PYTHON" "$PROJECT_ROOT/scripts/drive_publisher.py" \
         --config "$TEST_TMPDIR/config.yaml" \
         --manifest "$TEST_TMPDIR/manifest.yaml" \
@@ -98,8 +115,8 @@ run_dry() {
 }
 
 @test "drive publisher accepts approved stage only with complete approval evidence" {
-    sed -i 's/status: review/status: approved/' "$TEST_TMPDIR/manifest.yaml"
-    sed -i 's/result: pending/result: approved/' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "status: review" "status: approved"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "result: pending" "result: approved"
     printf '  approved_at: "2026-07-10T01:00:00+09:00"\n' >> "$TEST_TMPDIR/manifest.yaml"
     run "$PYTHON" "$PROJECT_ROOT/scripts/drive_publisher.py" \
         --config "$TEST_TMPDIR/config.yaml" \
@@ -112,9 +129,9 @@ run_dry() {
 }
 
 @test "drive publisher rejects approved stage without reviewer" {
-    sed -i 's/status: review/status: approved/' "$TEST_TMPDIR/manifest.yaml"
-    sed -i 's/result: pending/result: approved/' "$TEST_TMPDIR/manifest.yaml"
-    sed -i '/reviewer:/d' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "status: review" "status: approved"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "result: pending" "result: approved"
+    delete_line_from_file "$TEST_TMPDIR/manifest.yaml" "  reviewer: gunshi"
     run "$PYTHON" "$PROJECT_ROOT/scripts/drive_publisher.py" \
         --config "$TEST_TMPDIR/config.yaml" \
         --manifest "$TEST_TMPDIR/manifest.yaml" \
@@ -126,8 +143,8 @@ run_dry() {
 }
 
 @test "drive publisher rejects approved stage without approved_at" {
-    sed -i 's/status: review/status: approved/' "$TEST_TMPDIR/manifest.yaml"
-    sed -i 's/result: pending/result: approved/' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "status: review" "status: approved"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "result: pending" "result: approved"
     run "$PYTHON" "$PROJECT_ROOT/scripts/drive_publisher.py" \
         --config "$TEST_TMPDIR/config.yaml" \
         --manifest "$TEST_TMPDIR/manifest.yaml" \
@@ -153,7 +170,7 @@ run_dry() {
 @test "drive publisher rejects symlink escape" {
     printf 'outside\n' > "$TEST_TMPDIR/outside.txt"
     ln -s "$TEST_TMPDIR/outside.txt" "$TEST_TMPDIR/artifacts/linked.txt"
-    sed -i 's|  - index.html|  - linked.txt|' "$TEST_TMPDIR/manifest.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" "  - index.html" "  - linked.txt"
     run_dry
     [ "$status" -eq 2 ]
     echo "$output" | grep -q 'artifact escapes artifact directory'
