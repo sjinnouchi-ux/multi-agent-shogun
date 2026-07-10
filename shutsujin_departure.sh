@@ -1003,20 +1003,43 @@ print(f'{len(old)}件退避 {len(recent)}件保持')
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 6.8: ntfy入力リスナー起動
+# STEP 6.8: ntfy入力リスナー起動（standby既定）
 # ═══════════════════════════════════════════════════════════════════════════════
 # shellcheck source=lib/ntfy_auth.sh
 source "$SCRIPT_DIR/lib/ntfy_auth.sh"
-RESOLVED_NTFY_TOPIC=$(ntfy_resolve_topic "$SCRIPT_DIR/config/settings.yaml")
-if [ -n "$RESOLVED_NTFY_TOPIC" ] && ntfy_validate_topic "$RESOLVED_NTFY_TOPIC"; then
-    pkill -f "ntfy_listener.sh" 2>/dev/null || true
-    [ ! -f ./queue/ntfy_inbox.yaml ] && echo "inbox:" > ./queue/ntfy_inbox.yaml
-    nohup bash "$SCRIPT_DIR/scripts/ntfy_listener.sh" &>/dev/null &
-    disown
-    log_info "📱 ntfy入力リスナー起動 (topic configured)"
-else
-    log_info "📱 ntfy未設定または安全でないtopicのためリスナーはスキップ"
-fi
+# shellcheck source=lib/ntfy_lifecycle.sh
+source "$SCRIPT_DIR/lib/ntfy_lifecycle.sh"
+NTFY_LISTENER_MODE_RESOLVED=$(ntfy_resolve_listener_mode "$SCRIPT_DIR/config/settings.yaml")
+
+# fork-divergence: systemd mode never falls back to the old background process.
+# Only explicit mode=legacy may launch it, and never while the unit is active.
+case "$NTFY_LISTENER_MODE_RESOLVED" in
+    disabled)
+        log_info "📱 ntfy listener standby (mode=disabled)"
+        ;;
+    systemd)
+        if ntfy_systemd_listener_active; then
+            log_info "📱 ntfy listener is managed by systemd"
+        else
+            log_info "📱 ntfy listener systemd unit is inactive; no legacy fallback"
+        fi
+        ;;
+    legacy)
+        RESOLVED_NTFY_TOPIC=$(ntfy_resolve_topic "$SCRIPT_DIR/config/settings.yaml")
+        if ! ntfy_legacy_start_allowed legacy; then
+            log_info "📱 ntfy legacy listener skipped (systemd unit is active)"
+        elif [ -z "$RESOLVED_NTFY_TOPIC" ] || ! ntfy_validate_topic "$RESOLVED_NTFY_TOPIC"; then
+            log_info "📱 ntfy legacy listener skipped (topic unavailable/unsafe)"
+        elif pgrep -f "[n]tfy_listener.sh" >/dev/null 2>&1; then
+            log_info "📱 ntfy legacy listener already running"
+        else
+            [ ! -f ./queue/ntfy_inbox.yaml ] && echo "inbox:" > ./queue/ntfy_inbox.yaml
+            nohup bash "$SCRIPT_DIR/scripts/ntfy_listener.sh" &>/dev/null &
+            disown
+            log_info "📱 ntfy legacy listener started"
+        fi
+        ;;
+esac
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════

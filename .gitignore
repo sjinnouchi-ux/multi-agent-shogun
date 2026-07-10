@@ -55,6 +55,8 @@
 !lib/
 !lib/cli_adapter.sh
 !lib/ntfy_auth.sh
+!lib/ntfy_state.sh
+!lib/ntfy_lifecycle.sh
 !lib/agent_status.sh
 !lib/agent_registry.sh
 
@@ -138,6 +140,12 @@ logs/
 !docs/
 !docs/philosophy.md
 !docs/vps_pr118_verification_plan.md
+!docs/listener_standby.md
+
+# Deployment templates (installed copies remain local)
+!deploy/
+!deploy/systemd/
+!deploy/systemd/shogun-ntfy-listener.service
 
 # Screenshots (masked — no secrets)
 !images/
@@ -219,5 +227,8 @@ tests/specs/osato_lms_*
 # reports/ (empty placeholder only — content is intentionally local-only)
 !reports/
 !reports/.gitkeep
+
+# Runtime listener cursor/state is always local and may reveal activity timing.
+status/
 
 .claude/settings.local.json

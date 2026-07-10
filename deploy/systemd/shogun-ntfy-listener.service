@@ -1,0 +1,19 @@
+[Unit]
+Description=Shogun ntfy listener
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=200
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/home/jinnouchi/multi-agent-shogun
+ExecStart=/usr/bin/bash scripts/ntfy_listener.sh
+Restart=on-failure
+RestartSec=10
+SyslogIdentifier=shogun-ntfy-listener
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
