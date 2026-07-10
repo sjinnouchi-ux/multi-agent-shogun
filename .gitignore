@@ -141,6 +141,7 @@ logs/
 !docs/philosophy.md
 !docs/vps_pr118_verification_plan.md
 !docs/listener_standby.md
+!docs/known_issues.md
 
 # Deployment templates (installed copies remain local)
 !deploy/
