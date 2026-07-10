@@ -14,6 +14,9 @@
 - 受信クライアントが準備済みであること
 - inboxのpendingを処理する主体（UIまたはエージェント）が存在すること
 - topicローテーション時は旧topicの未回収分を破棄するか、切替前に旧topicをdrainするかを決めること
+- 再開初回はjournalを実機確認し、topic、token、password、メッセージ本文が出力されていないこと
+- 再開初回はunitのrestart挙動を実機確認し、一時的な失敗で恒久的なfailed
+  （start limit hit）にならないこと
 
 再開手順:
 
@@ -21,6 +24,28 @@
 loginctl enable-linger jinnouchi
 systemctl --user enable --now shogun-ntfy-listener.service
 ```
+
+再開初回の確認コマンド:
+
+```bash
+systemctl --user status shogun-ntfy-listener.service --no-pager
+journalctl --user -u shogun-ntfy-listener.service --since "10 minutes ago" --no-pager
+```
+
+journalではtopic、token、password、メッセージ本文の実値が出力されていないことを確認する。
+秘密値そのものを検索コマンドや報告書へ記載しない。unitに一時的な失敗が発生した場合は、
+`systemctl --user status` で自動restartしていること、および `start-limit-hit` のまま
+恒久的なfailedになっていないことを確認する。原因を解消してもfailed状態が残る場合は、
+次のように失敗状態とstart-limitカウンタを解除してから再起動する。
+
+```bash
+systemctl --user reset-failed shogun-ntfy-listener.service
+systemctl --user start shogun-ntfy-listener.service
+systemctl --user status shogun-ntfy-listener.service --no-pager
+```
+
+`reset-failed` は設定不備や障害原因を修復するコマンドではない。先に原因を解消し、
+状態・カウンタの解除用途に限って使用する。
 
 停止手順:
 
