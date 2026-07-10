@@ -161,6 +161,12 @@ source_supervisor_functions() {
             return 1
         }
 
+        # macOS runners do not provide flock. This test validates launch logic,
+        # so make lock acquisition deterministic without an OS package dependency.
+        flock() {
+            return 0
+        }
+
         tmux() {
             # Stub tmux show-options for @agent_cli
             echo "codex"

@@ -26,7 +26,7 @@ setup() {
     export MOCK_CURL_OUTPUT="$TEST_TMPDIR/curl_output.json"
 
     # モックプロジェクト構築
-    mkdir -p "$MOCK_PROJECT"/{config,lib,scripts,queue,logs/ntfy_inbox_corrupt}
+    mkdir -p "$MOCK_PROJECT"/{config,lib,scripts,queue,status,logs/ntfy_inbox_corrupt}
     mkdir -p "$MOCK_PROJECT/.venv/bin"
     mkdir -p "$MOCK_BIN"
 
@@ -40,6 +40,7 @@ YAML
 
     # 本物のntfy_auth.shをコピー
     cp "$PROJECT_ROOT/lib/ntfy_auth.sh" "$MOCK_PROJECT/lib/"
+    cp "$PROJECT_ROOT/lib/ntfy_state.sh" "$MOCK_PROJECT/lib/"
 
     # python3 wrapper (exec to project venv so pyvenv.cfg is found → PyYAML available)
     # Note: a symlink chain breaks venv detection on macOS — argv[0] would point to
@@ -90,6 +91,8 @@ INBOX_MOCK
 
     # PATHにモックcurlを先頭配置
     export PATH="$MOCK_BIN:$PATH"
+    export NTFY_SKIP_PREFLIGHT=1
+    export NTFY_RECONNECT_DELAY=0.05
 
     # デフォルト: ntfy.sh正常終了
     unset MOCK_NTFY_EXIT_CODE

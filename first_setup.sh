@@ -645,6 +645,10 @@ skill:
 logging:
   level: info  # debug | info | warn | error
   path: "$SCRIPT_DIR/logs/"
+
+# ntfy listener is opt-in. Values: disabled | systemd | legacy
+ntfy_listener:
+  mode: disabled
 EOF
     log_success "settings.yaml を作成しました"
 else
