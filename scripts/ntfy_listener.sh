@@ -8,7 +8,6 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SETTINGS="$SCRIPT_DIR/config/settings.yaml"
-TOPIC=$(grep 'ntfy_topic:' "$SETTINGS" | awk '{print $2}' | tr -d '"')
 INBOX="$SCRIPT_DIR/queue/ntfy_inbox.yaml"
 LOCKFILE="${INBOX}.lock"
 CORRUPT_DIR="$SCRIPT_DIR/logs/ntfy_inbox_corrupt"
@@ -17,13 +16,15 @@ CORRUPT_DIR="$SCRIPT_DIR/logs/ntfy_inbox_corrupt"
 # shellcheck source=../lib/ntfy_auth.sh
 source "$SCRIPT_DIR/lib/ntfy_auth.sh"
 
+TOPIC=$(ntfy_resolve_topic "$SETTINGS")
+
 if [ -z "$TOPIC" ]; then
-    echo "[ntfy_listener] ntfy_topic not configured in settings.yaml" >&2
+    echo "[ntfy_listener] NTFY_TOPIC is not configured" >&2
     exit 1
 fi
 
 # トピック名セキュリティ検証
-ntfy_validate_topic "$TOPIC" || true
+ntfy_validate_topic "$TOPIC" || exit 1
 
 # Initialize inbox if not exists
 if [ ! -f "$INBOX" ]; then
@@ -137,7 +138,7 @@ PY
     ) 200>"$LOCKFILE"
 }
 
-echo "[$(date)] ntfy listener started — topic: $TOPIC (auth: ${NTFY_TOKEN:+token}${NTFY_USER:+basic}${NTFY_TOKEN:-${NTFY_USER:-none}})" >&2
+echo "[$(date)] ntfy listener started (topic configured; auth: ${NTFY_TOKEN:+token}${NTFY_USER:+basic}${NTFY_TOKEN:-${NTFY_USER:-none}})" >&2
 
 while true; do
     # Stream new messages (long-lived connection, blocks until message arrives)

@@ -1005,15 +1005,17 @@ fi
 # ═══════════════════════════════════════════════════════════════════════════════
 # STEP 6.8: ntfy入力リスナー起動
 # ═══════════════════════════════════════════════════════════════════════════════
-NTFY_TOPIC=$(grep 'ntfy_topic:' ./config/settings.yaml 2>/dev/null | awk '{print $2}' | tr -d '"')
-if [ -n "$NTFY_TOPIC" ]; then
+# shellcheck source=lib/ntfy_auth.sh
+source "$SCRIPT_DIR/lib/ntfy_auth.sh"
+RESOLVED_NTFY_TOPIC=$(ntfy_resolve_topic "$SCRIPT_DIR/config/settings.yaml")
+if [ -n "$RESOLVED_NTFY_TOPIC" ] && ntfy_validate_topic "$RESOLVED_NTFY_TOPIC"; then
     pkill -f "ntfy_listener.sh" 2>/dev/null || true
     [ ! -f ./queue/ntfy_inbox.yaml ] && echo "inbox:" > ./queue/ntfy_inbox.yaml
     nohup bash "$SCRIPT_DIR/scripts/ntfy_listener.sh" &>/dev/null &
     disown
-    log_info "📱 ntfy入力リスナー起動 (topic: $NTFY_TOPIC)"
+    log_info "📱 ntfy入力リスナー起動 (topic configured)"
 else
-    log_info "📱 ntfy未設定のためリスナーはスキップ"
+    log_info "📱 ntfy未設定または安全でないtopicのためリスナーはスキップ"
 fi
 echo ""
 

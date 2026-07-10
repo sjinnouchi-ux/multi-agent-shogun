@@ -9,11 +9,12 @@ SETTINGS="$SCRIPT_DIR/config/settings.yaml"
 # shellcheck source=../lib/ntfy_auth.sh
 source "$SCRIPT_DIR/lib/ntfy_auth.sh"
 
-TOPIC=$(grep 'ntfy_topic:' "$SETTINGS" | awk '{print $2}' | tr -d '"')
+TOPIC=$(ntfy_resolve_topic "$SETTINGS")
 if [ -z "$TOPIC" ]; then
-  echo "ntfy_topic not configured in settings.yaml" >&2
+  echo "NTFY_TOPIC is not configured" >&2
   exit 1
 fi
+ntfy_validate_topic "$TOPIC" || exit 1
 
 # 認証引数を取得（設定がなければ空 = 後方互換）
 AUTH_ARGS=()

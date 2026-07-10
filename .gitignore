@@ -86,6 +86,7 @@
 # Config (sample files only, no secrets)
 !config/
 !config/ntfy_auth.env.sample
+!config/drive_publisher.yaml.sample
 !config/opencode-tui.json
 !config/opencode-permissions.yaml
 
@@ -119,6 +120,7 @@ scripts/seo_qc.sh
 !scripts/switch_cli.sh
 !scripts/dashboard-viewer.py
 !scripts/mcp_health_check.sh
+!scripts/drive_publisher.py
 
 
 # SayTask (sample template only, not actual data)
