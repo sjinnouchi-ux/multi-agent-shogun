@@ -4,6 +4,7 @@
 #
 # 提供関数:
 #   ntfy_get_auth_args [auth_env_file]  → curl認証フラグを出力
+#   ntfy_resolve_topic [settings_file]  → 環境変数を優先してトピック名を出力
 #   ntfy_validate_topic [topic]         → 0=OK, 1=弱いトピック名
 #
 # 認証方式:
@@ -50,6 +51,21 @@ ntfy_get_auth_args() {
     return 0
 }
 
+# --- ntfy_resolve_topic ---
+# Secret Manager等から注入された環境変数を最優先にし、従来設定にも互換性を残す。
+ntfy_resolve_topic() {
+    local settings_file="${1:-}"
+
+    if [ -n "${NTFY_TOPIC:-}" ]; then
+        printf '%s\n' "$NTFY_TOPIC"
+        return 0
+    fi
+
+    if [ -f "$settings_file" ]; then
+        sed -n 's/^[[:space:]]*ntfy_topic:[[:space:]]*["'"'"']\{0,1\}\([^"'"'"'#[:space:]]*\).*/\1/p' "$settings_file" | head -n 1
+    fi
+}
+
 # --- ntfy_validate_topic ---
 # トピック名のセキュリティ強度を検証
 # 引数: topic — トピック名
@@ -66,7 +82,12 @@ ntfy_validate_topic() {
 
     # 長さチェック（8文字未満は危険）
     if [ "${#topic}" -lt 8 ]; then
-        echo "WARNING: ntfy topic '$topic' is too short (${#topic} chars). Recommend 12+ chars for security." >&2
+        echo "WARNING: ntfy topic is too short (${#topic} chars). Recommend 12+ chars for security." >&2
+        return 1
+    fi
+
+    if ! printf '%s' "$topic" | grep -Eq '^[A-Za-z0-9_-]+$'; then
+        echo "WARNING: ntfy topic contains unsupported characters." >&2
         return 1
     fi
 
@@ -76,7 +97,7 @@ ntfy_validate_topic() {
     lower_topic=$(echo "$topic" | tr '[:upper:]' '[:lower:]')
     for weak in $weak_topics; do
         if [ "$lower_topic" = "$weak" ]; then
-            echo "WARNING: ntfy topic '$topic' is a commonly used name. Use a random string." >&2
+            echo "WARNING: ntfy topic is a commonly used name. Use a random string." >&2
             return 1
         fi
     done

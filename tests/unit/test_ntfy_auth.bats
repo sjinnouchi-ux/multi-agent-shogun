@@ -35,9 +35,27 @@ setup() {
     unset NTFY_TOKEN
     unset NTFY_USER
     unset NTFY_PASS
+    unset NTFY_TOPIC
 
     # ライブラリ読み込み
     source "$NTFY_AUTH_LIB"
+}
+
+@test "ntfy_resolve_topic prefers Secret Manager injected environment value" {
+    printf 'ntfy_topic: "settings-topic-12345"\n' > "$TEST_TMPDIR/settings.yaml"
+    export NTFY_TOPIC="environment-topic-67890"
+
+    run ntfy_resolve_topic "$TEST_TMPDIR/settings.yaml"
+    [ "$status" -eq 0 ]
+    [ "$output" = "environment-topic-67890" ]
+}
+
+@test "ntfy_resolve_topic keeps settings fallback for compatibility" {
+    printf 'ntfy_topic: "settings-topic-12345"\n' > "$TEST_TMPDIR/settings.yaml"
+
+    run ntfy_resolve_topic "$TEST_TMPDIR/settings.yaml"
+    [ "$status" -eq 0 ]
+    [ "$output" = "settings-topic-12345" ]
 }
 
 teardown() {
