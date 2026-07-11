@@ -123,6 +123,8 @@ scripts/seo_qc.sh
 !scripts/dashboard-viewer.py
 !scripts/mcp_health_check.sh
 !scripts/drive_publisher.py
+!scripts/github_boundary_preflight.sh
+!scripts/shogun_completion_summary.py
 
 
 # SayTask (sample template only, not actual data)
@@ -142,6 +144,7 @@ logs/
 !docs/vps_pr118_verification_plan.md
 !docs/listener_standby.md
 !docs/known_issues.md
+!docs/github-boundary-operation.md
 
 # Deployment templates (installed copies remain local)
 !deploy/

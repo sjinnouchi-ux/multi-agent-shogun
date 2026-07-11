@@ -75,6 +75,31 @@ delete_line_from_file() {
     echo "$output" | grep -q 'assets/app.css'
 }
 
+@test "drive publisher supports project date task layout" {
+    printf '\nfolder_layout: project_date_task\n' >> "$TEST_TMPDIR/config.yaml"
+    run_dry
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q '"folder_layout": "project_date_task"'
+    echo "$output" | grep -q '10_プロジェクト/demo-project/2026-07-10/cmd_123'
+}
+
+@test "drive publisher rejects an unknown folder layout" {
+    printf '\nfolder_layout: unknown\n' >> "$TEST_TMPDIR/config.yaml"
+    run_dry
+    [ "$status" -eq 2 ]
+    echo "$output" | grep -q 'folder_layout must be review_stages or project_date_task'
+}
+
+@test "project date task layout requires an ISO timestamp" {
+    printf '\nfolder_layout: project_date_task\n' >> "$TEST_TMPDIR/config.yaml"
+    replace_in_file "$TEST_TMPDIR/manifest.yaml" \
+        'created_at: "2026-07-10T00:00:00+09:00"' \
+        'created_at: not-a-date'
+    run_dry
+    [ "$status" -eq 2 ]
+    echo "$output" | grep -q 'created_at must be an ISO-8601 timestamp'
+}
+
 @test "drive publisher rejects path traversal" {
     printf 'private\n' > "$TEST_TMPDIR/private.txt"
     replace_in_file "$TEST_TMPDIR/manifest.yaml" "  - index.html" "  - ../private.txt"

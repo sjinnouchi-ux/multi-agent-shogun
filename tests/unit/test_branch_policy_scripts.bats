@@ -19,6 +19,7 @@ setup() {
     git -C "$TEST_REPO" branch -M main
     git -C "$TEST_REPO" update-ref refs/remotes/origin/main HEAD
     git -C "$TEST_REPO" update-ref refs/remotes/origin/codd/demo-20000101 HEAD
+    git -C "$TEST_REPO" update-ref refs/remotes/origin/shogun/demo-20000101 HEAD
 
     cat > "$TEST_SETTINGS" <<EOF
 ntfy_topic: "test-topic-12345"
@@ -61,4 +62,18 @@ teardown() {
     [[ "$output" == *"[CANDIDATE]"* ]]
     [[ "$output" == *"[DRY-RUN] would merge origin/codd/demo-20000101 into main"* ]]
     git -C "$TEST_REPO" show-ref --verify --quiet refs/remotes/origin/codd/demo-20000101
+}
+
+@test "auto_merge_short_lived always excludes Shogun boundary branches" {
+    replace_pattern='^codd/[^/]+-[0-9]{8}$'
+    python3 -c \
+        'import pathlib,sys; p=pathlib.Path(sys.argv[1]); s=p.read_text(); p.write_text(s.replace(sys.argv[2], "^(codd|shogun)/[^/]+-[0-9]{8}$"))' \
+        "$TEST_SETTINGS" "$replace_pattern"
+
+    run env BRANCH_POLICY_SETTINGS="$TEST_SETTINGS" \
+        bash "$PROJECT_ROOT/scripts/auto_merge_short_lived.sh" --dry-run --no-fetch
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"GitHub boundary branch is never auto-merged: origin/shogun/demo-20000101"* ]]
+    [[ "$output" != *"would merge origin/shogun/demo-20000101"* ]]
 }
