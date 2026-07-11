@@ -390,6 +390,38 @@ else
     [ -d ./queue/inbox ] || mkdir -p ./queue/inbox
 fi
 
+write_oometsuke_task_file() {
+    cat > ./queue/tasks/oometsuke.yaml << 'EOF'
+# 大目付専用タスクファイル
+task:
+  task_id: null
+  parent_cmd: null
+  review_type: null
+  description: null
+  target_path: null
+  context_files: []
+  status: idle
+  timestamp: ""
+EOF
+}
+
+write_oometsuke_report_file() {
+    cat > ./queue/reports/oometsuke_report.yaml << 'EOF'
+worker_id: oometsuke
+task_id: null
+review_type: null
+timestamp: ""
+status: idle
+verdict: null
+findings: []
+advice: []
+EOF
+}
+
+# 既存環境を --clean なしで更新しても大目付を利用できるようにする。
+[ -f ./queue/tasks/oometsuke.yaml ] || write_oometsuke_task_file
+[ -f ./queue/reports/oometsuke_report.yaml ] || write_oometsuke_report_file
+
 if [ "$CLEAN_MODE" = true ]; then
     log_info "📜 前回の軍議記録を破棄中..."
 
@@ -419,6 +451,9 @@ task:
   timestamp: ""
 EOF
 
+    # 大目付タスクファイルリセット
+    write_oometsuke_task_file
+
     # 足軽レポートファイルリセット
     for i in $(seq 1 "$_ASHIGARU_COUNT"); do
         cat > ./queue/reports/ashigaru${i}_report.yaml << EOF
@@ -439,11 +474,14 @@ status: idle
 result: null
 EOF
 
+    # 大目付レポートファイルリセット
+    write_oometsuke_report_file
+
     # ntfy inbox リセット
     echo "inbox:" > ./queue/ntfy_inbox.yaml
 
     # agent inbox リセット
-    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi; do
+    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi oometsuke; do
         echo "messages:" > "./queue/inbox/${agent}.yaml"
     done
 
@@ -568,11 +606,12 @@ echo ""
 
 # pane-base-index を取得（1 の環境ではペインは 1,2,... になる）
 PANE_BASE=$(tmux show-options -gv pane-base-index 2>/dev/null || echo 0)
+LAST_AGENT_PANE=$((PANE_BASE + _ASHIGARU_COUNT + 2))
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# STEP 5.1: multiagent セッション作成（9ペイン：karo + ashigaru1-8）
+# STEP 5.1: multiagent セッション作成（10ペイン：karo + ashigaru + gunshi + oometsuke）
 # ═══════════════════════════════════════════════════════════════════════════════
-log_war "⚔️ 家老・足軽・軍師の陣を構築中（9名配備）..."
+log_war "⚔️ 家老・足軽・軍師・大目付の陣を構築中（$((_ASHIGARU_COUNT + 3))名配備）..."
 
 # 最初のペイン作成
 if ! tmux new-session -d -s multiagent -n "agents" 2>/dev/null; then
@@ -622,6 +661,10 @@ tmux split-window -v
 PANE_LABELS=("karo")
 AGENT_IDS=("karo")
 PANE_COLORS=("red")
+
+# 大目付用の10番目のペインを追加し、全体を均等配置
+tmux split-window -v -t "multiagent:agents.$((PANE_BASE+8))"
+tmux select-layout -t "multiagent:agents" tiled
 for _ai in $_ASHIGARU_IDS_STR; do
     PANE_LABELS+=("$_ai")
     AGENT_IDS+=("$_ai")
@@ -630,6 +673,9 @@ done
 PANE_LABELS+=("gunshi")
 AGENT_IDS+=("gunshi")
 PANE_COLORS+=("yellow")
+PANE_LABELS+=("oometsuke")
+AGENT_IDS+=("oometsuke")
+PANE_COLORS+=("magenta")
 
 # モデル名設定（pane-border-format で常時表示するため）- 動的構築
 MODEL_NAMES=()
@@ -671,7 +717,7 @@ done
 tmux set-option -t multiagent -w pane-border-status top
 tmux set-option -t multiagent -w pane-border-format '#{?pane_active,#[reverse],}#[bold]#{@agent_id}#[default] (#{@model_name}) #{@current_task}'
 
-log_success "  └─ 家老・足軽・軍師の陣、構築完了"
+log_success "  └─ 家老・足軽・軍師・大目付の陣、構築完了"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -792,12 +838,25 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
         _gunshi_cmd=$(build_cli_command "gunshi")
     fi
     tmux set-option -p -t "multiagent:agents.${p}" @agent_cli "$_gunshi_cli_type"
+
     tmux send-keys -t "multiagent:agents.${p}" "$_gunshi_cmd"
     tmux send-keys -t "multiagent:agents.${p}" Enter
     opencode_startup_delay "$_gunshi_cli_type"
     _gunshi_display=$(get_model_display_name "gunshi" 2>/dev/null || echo "Opus+T")
     tmux set-option -p -t "multiagent:agents.${p}" @model_name "$_gunshi_display" 2>/dev/null || true
     log_info "  └─ 軍師（${_gunshi_display}）、召喚完了"
+
+    # 大目付: 最終レビュー・3回差戻し助言専任
+    p=$((PANE_BASE + _ASHIGARU_COUNT + 2))
+    _oometsuke_cli_type=$(get_cli_type "oometsuke")
+    _oometsuke_cmd=$(build_cli_command "oometsuke")
+    tmux set-option -p -t "multiagent:agents.${p}" @agent_cli "$_oometsuke_cli_type"
+    tmux send-keys -t "multiagent:agents.${p}" "$_oometsuke_cmd"
+    tmux send-keys -t "multiagent:agents.${p}" Enter
+    opencode_startup_delay "$_oometsuke_cli_type"
+    _oometsuke_display=$(get_model_display_name "oometsuke" 2>/dev/null || echo "Opus+T")
+    tmux set-option -p -t "multiagent:agents.${p}" @model_name "$_oometsuke_display" 2>/dev/null || true
+    log_info "  └─ 大目付（${_oometsuke_display}）、待機配置完了"
 
     if [ "$KESSEN_MODE" = true ]; then
         log_success "✅ 決戦の陣で出陣！全軍Opus！"
@@ -896,7 +955,7 @@ NINJA_EOF
 
     # inbox ディレクトリ初期化（シンボリックリンク先のLinux FSに作成）
     mkdir -p "$SCRIPT_DIR/logs"
-    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi; do
+    for agent in shogun karo $_ASHIGARU_IDS_STR gunshi oometsuke; do
         [ -f "$SCRIPT_DIR/queue/inbox/${agent}.yaml" ] || echo "messages:" > "$SCRIPT_DIR/queue/inbox/${agent}.yaml"
     done
 
@@ -936,7 +995,14 @@ NINJA_EOF
         >> "$SCRIPT_DIR/logs/inbox_watcher_gunshi.log" 2>&1 &
     disown
 
-    log_success "  └─ $((_ASHIGARU_COUNT + 3))エージェント分のinbox_watcher起動完了（将軍+家老+足軽${_ASHIGARU_COUNT}+軍師）"
+    # 大目付のwatcher
+    p=$((PANE_BASE + _ASHIGARU_COUNT + 2))
+    _oometsuke_watcher_cli=$(tmux show-options -p -t "multiagent:agents.${p}" -v @agent_cli 2>/dev/null || echo "claude")
+    nohup bash "$SCRIPT_DIR/scripts/inbox_watcher.sh" "oometsuke" "multiagent:agents.${p}" "$_oometsuke_watcher_cli" \
+        >> "$SCRIPT_DIR/logs/inbox_watcher_oometsuke.log" 2>&1 &
+    disown
+
+    log_success "  └─ $((_ASHIGARU_COUNT + 4))エージェント分のinbox_watcher起動完了（将軍+家老+足軽${_ASHIGARU_COUNT}+軍師+大目付）"
 
     # STEP 6.7 は廃止 — CLAUDE.md Session Start (step 1: tmux agent_id) で各自が自律的に
     # 自分のinstructions/*.mdを読み込む。検証済み (2026-02-08)。
@@ -1075,7 +1141,7 @@ echo "     ┌──────────────────────
 echo "     │  Pane 0: 将軍 (SHOGUN)      │  ← 総大将・プロジェクト統括"
 echo "     └─────────────────────────────┘"
 echo ""
-echo "     【multiagentセッション】家老・足軽・軍師の陣（3x3 = 9ペイン）"
+echo "     【multiagentセッション】家老・足軽・軍師・大目付の陣（10ペイン）"
 echo "     ┌─────────┬─────────┬─────────┐"
 echo "     │  karo   │ashigaru3│ashigaru6│"
 echo "     │  (家老) │ (足軽3) │ (足軽6) │"
@@ -1086,6 +1152,7 @@ echo "     ├─────────┼─────────┼──
 echo "     │ashigaru2│ashigaru5│ gunshi  │"
 echo "     │ (足軽2) │ (足軽5) │ (軍師)  │"
 echo "     └─────────┴─────────┴─────────┘"
+echo "     大目付: oometsuke (Pane ${LAST_AGENT_PANE})"
 echo ""
 
 echo ""
@@ -1104,7 +1171,7 @@ if [ "$SETUP_ONLY" = true ]; then
     echo "  │    'claude ${PERMISSION_FLAG}' Enter         │"
     echo "  │                                                          │"
     echo "  │  # 家老・足軽を一斉召喚                                  │"
-    echo "  │  for p in \$(seq $PANE_BASE $((PANE_BASE+8))); do                                 │"
+    echo "  │  for p in \$(seq $PANE_BASE $LAST_AGENT_PANE); do                                 │"
     echo "  │      tmux send-keys -t multiagent:agents.\$p \\            │"
     echo "  │      'claude ${PERMISSION_FLAG}' Enter       │"
     echo "  │  done                                                    │"

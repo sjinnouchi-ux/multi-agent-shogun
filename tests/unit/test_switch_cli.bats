@@ -59,6 +59,7 @@ load_resolve_pane() {
         local agent_id="$1"
         local pane_base="${MOCK_PANE_BASE:-0}"
         case "$agent_id" in
+            shogun)     echo "shogun:main" ;;
             karo)       echo "multiagent:agents.$((pane_base + 0))" ;;
             ashigaru1)  echo "multiagent:agents.$((pane_base + 1))" ;;
             ashigaru2)  echo "multiagent:agents.$((pane_base + 2))" ;;
@@ -102,10 +103,16 @@ load_resolve_pane() {
     [ "$result" = "multiagent:agents.8" ]
 }
 
-@test "resolve_pane: unknown agent → return 1" {
+@test "resolve_pane: shogun → shogun:main" {
     load_resolve_pane
     MOCK_PANE_BASE=0
-    run resolve_pane "shogun"
+    result=$(resolve_pane "shogun")
+    [ "$result" = "shogun:main" ]
+}
+
+@test "resolve_pane: unknown agent → return 1" {
+    load_resolve_pane
+    run resolve_pane "unknown"
     [ "$status" -eq 1 ]
 }
 

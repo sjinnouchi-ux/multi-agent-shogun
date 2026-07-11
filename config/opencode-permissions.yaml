@@ -60,9 +60,11 @@ roles:
       - queue/shogun_to_karo_archive.yaml
       - queue/tasks/ashigaru*.yaml
       - queue/tasks/gunshi.yaml
+      - queue/tasks/oometsuke.yaml
       - queue/tasks/pending.yaml
       - queue/reports/ashigaru*_report.yaml
       - queue/reports/gunshi_report.yaml
+      - queue/reports/oometsuke_report.yaml
       - dashboard.md
       - saytask/streaks.yaml
       - context/*
@@ -75,6 +77,7 @@ roles:
       - queue/shogun_to_karo_archive.yaml
       - queue/tasks/ashigaru*.yaml
       - queue/tasks/gunshi.yaml
+      - queue/tasks/oometsuke.yaml
       - queue/tasks/pending.yaml
       - dashboard.md
       - saytask/streaks.yaml
@@ -136,3 +139,30 @@ roles:
       - queue/tasks/gunshi.yaml
       - queue/reports/gunshi_report.yaml
       - dashboard.md
+
+  oometsuke:
+    question: deny
+    read_deny:
+      - queue/inbox/*
+      - queue/tasks/*
+      - queue/reports/*
+      - queue/ntfy_inbox.yaml
+      - queue/shogun_to_karo.yaml
+      - queue/shogun_to_karo_archive.yaml
+      - dashboard.md
+      - saytask/*
+    read_allow:
+      - queue/inbox/oometsuke.yaml
+      - queue/tasks/oometsuke.yaml
+      - queue/reports/oometsuke_report.yaml
+      - context/*
+    edit_deny:
+      - queue/tasks/*
+      - queue/reports/*
+      - queue/ntfy_inbox.yaml
+      - queue/shogun_to_karo.yaml
+      - queue/shogun_to_karo_archive.yaml
+      - dashboard.md
+      - saytask/*
+    edit_allow:
+      - queue/reports/oometsuke_report.yaml

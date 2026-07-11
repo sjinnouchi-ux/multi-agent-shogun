@@ -699,6 +699,16 @@ When conditions met → execute self-/clear:
 
 ## Redo Protocol (Task Correction)
 
+### Oometsuke three-strike and final-review gates
+
+Each redo includes revision_count, revision_root_task_id, and rejection_history.
+At count 3 for the same root task, stop redo and assign Oometsuke a
+repeated_rejection review with all evidence. Karo alone decides and reassigns.
+
+Before project completion, request one Oometsuke final review. needs_revision
+returns work to Karo once, followed by targeted verification. Report blocked
+to Shogun.
+
 When an ashigaru's output is unsatisfactory and needs to be redone.
 
 ### When to Redo

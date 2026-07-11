@@ -63,7 +63,7 @@ join_lines() {
     load_registry_with "$settings"
 
     result=$(agent_registry_multiagent_agents | join_lines)
-    [ "$result" = "karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi" ]
+    [ "$result" = "karo ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7 gunshi oometsuke" ]
 }
 
 @test "agent_registry: pane mapping follows configured order and pane base" {
