@@ -354,6 +354,7 @@ get_instruction_file() {
         shogun)    role="shogun" ;;
         karo)      role="karo" ;;
         gunshi)    role="gunshi" ;;
+        oometsuke) role="oometsuke" ;;
         ashigaru*) role="ashigaru" ;;
         *)
             echo "" >&2
@@ -362,7 +363,11 @@ get_instruction_file() {
     esac
 
     case "$cli_type" in
-        claude)  echo "instructions/${role}.md" ;;
+        claude)
+            if [ "$role" = "oometsuke" ]; then
+                echo "instructions/generated/oometsuke.md"
+            else echo "instructions/${role}.md"; fi
+            ;;
         codex)   echo "instructions/codex-${role}.md" ;;
         copilot) echo ".github/copilot-instructions-${role}.md" ;;
         kimi)    echo "instructions/generated/kimi-${role}.md" ;;
@@ -487,6 +492,7 @@ get_agent_model() {
                 shogun)         echo "opus" ;;
                 karo)           echo "sonnet" ;;
                 gunshi)         echo "opus" ;;
+                oometsuke)      echo "claude-opus-4-8" ;;
                 ashigaru*)      echo "sonnet" ;;
                 *)              echo "sonnet" ;;
             esac

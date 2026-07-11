@@ -61,6 +61,7 @@
 #   T-SHOOK-003: Non-Claude CLIs still bypass throttle on count change
 #   T-CRESET-001: send_context_reset — suppresses /clear for karo
 #   T-CRESET-002: send_context_reset — suppresses /clear for gunshi
+#   T-CRESET-005: send_context_reset — suppresses /clear for oometsuke
 #   T-CRESET-003: send_context_reset — sends /clear for ashigaru
 #   T-CRESET-004: send_context_reset — sends /new for opencode
 #   T-COPILOT-001: send_cli_command — copilot /clear → Ctrl-C + restart
@@ -1327,6 +1328,23 @@ YAML
 
     # SKIP message in stderr
     echo "$output" | grep -q "SKIP.*gunshi"
+}
+
+# --- T-CRESET-005: send_context_reset suppresses /clear for oometsuke ---
+
+@test "T-CRESET-005: send_context_reset suppresses /clear for oometsuke" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="oometsuke"
+        send_context_reset
+    '
+    [ "$status" -eq 0 ]
+
+    # No send-keys should have occurred
+    ! grep -q "send-keys" "$MOCK_LOG"
+
+    # SKIP message in stderr
+    echo "$output" | grep -q "SKIP.*oometsuke"
 }
 
 # --- T-CRESET-003: send_context_reset sends /clear for ashigaru ---

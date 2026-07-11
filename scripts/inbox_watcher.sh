@@ -725,9 +725,9 @@ send_context_reset() {
 
     # Safety: never auto-reset context for command-layer agents.
     # Only ashigaru should receive automatic context resets (clear stale task context).
-    # Shogun (human-controlled), Karo (coordinator state), Gunshi (strategic state)
-    # all maintain complex running context that should not be wiped automatically.
-    if [ "$AGENT_ID" = "shogun" ] || [ "$AGENT_ID" = "karo" ] || [ "$AGENT_ID" = "gunshi" ]; then
+    # Shogun, Karo, Gunshi, and Oometsuke maintain complex review/coordinator
+    # context that must not be wiped automatically.
+    if [ "$AGENT_ID" = "shogun" ] || [ "$AGENT_ID" = "karo" ] || [ "$AGENT_ID" = "gunshi" ] || [ "$AGENT_ID" = "oometsuke" ]; then
         echo "[$(date)] [SKIP] $AGENT_ID: suppressing context reset (command-layer agent)" >&2
         return 0
     fi

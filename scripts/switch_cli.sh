@@ -73,6 +73,11 @@ usage() {
 resolve_pane() {
     local agent_id="$1"
 
+    if [[ "$agent_id" == "shogun" ]] && tmux has-session -t shogun 2>/dev/null; then
+        echo "shogun:main"
+        return 0
+    fi
+
     # Phase 1: @agent_id メタデータから動的検索
     local pane_count
     pane_count=$(tmux list-panes -t "multiagent:agents" 2>/dev/null | wc -l)

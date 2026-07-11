@@ -124,41 +124,48 @@ build_instruction_file "claude" "shogun" "shogun.md"
 build_instruction_file "claude" "karo" "karo.md"
 build_instruction_file "claude" "ashigaru" "ashigaru.md"
 build_instruction_file "claude" "gunshi" "gunshi.md"
+build_instruction_file "claude" "oometsuke" "oometsuke.md"
 
 # Build Codex instruction files
 build_instruction_file "codex" "shogun" "codex-shogun.md"
 build_instruction_file "codex" "karo" "codex-karo.md"
 build_instruction_file "codex" "ashigaru" "codex-ashigaru.md"
 build_instruction_file "codex" "gunshi" "codex-gunshi.md"
+build_instruction_file "codex" "oometsuke" "codex-oometsuke.md"
 
 # Build Copilot instruction files
 build_instruction_file "copilot" "shogun" "copilot-shogun.md"
 build_instruction_file "copilot" "karo" "copilot-karo.md"
 build_instruction_file "copilot" "ashigaru" "copilot-ashigaru.md"
 build_instruction_file "copilot" "gunshi" "copilot-gunshi.md"
+build_instruction_file "copilot" "oometsuke" "copilot-oometsuke.md"
 
 # Build Kimi K2 instruction files
 build_instruction_file "kimi" "shogun" "kimi-shogun.md"
 build_instruction_file "kimi" "karo" "kimi-karo.md"
 build_instruction_file "kimi" "ashigaru" "kimi-ashigaru.md"
 build_instruction_file "kimi" "gunshi" "kimi-gunshi.md"
+build_instruction_file "kimi" "oometsuke" "kimi-oometsuke.md"
 
 # Build OpenCode instruction files
 build_instruction_file "opencode" "shogun" "opencode-shogun.md"
 build_instruction_file "opencode" "karo" "opencode-karo.md"
 build_instruction_file "opencode" "ashigaru" "opencode-ashigaru.md"
 build_instruction_file "opencode" "gunshi" "opencode-gunshi.md"
+build_instruction_file "opencode" "oometsuke" "opencode-oometsuke.md"
 
 # Build Cursor Agent instruction files
 build_instruction_file "cursor" "shogun" "cursor-shogun.md"
 build_instruction_file "cursor" "karo" "cursor-karo.md"
 build_instruction_file "cursor" "ashigaru" "cursor-ashigaru.md"
 build_instruction_file "cursor" "gunshi" "cursor-gunshi.md"
+build_instruction_file "cursor" "oometsuke" "cursor-oometsuke.md"
 # Build Antigravity instruction files
 build_instruction_file "antigravity" "shogun" "antigravity-shogun.md"
 build_instruction_file "antigravity" "karo" "antigravity-karo.md"
 build_instruction_file "antigravity" "ashigaru" "antigravity-ashigaru.md"
 build_instruction_file "antigravity" "gunshi" "antigravity-gunshi.md"
+build_instruction_file "antigravity" "oometsuke" "antigravity-oometsuke.md"
 
 # ============================================================
 # AGENTS.md generation (Codex auto-load file)
@@ -330,7 +337,7 @@ generate_opencode_agents() {
     # derive generated file names from git-ignored config/settings.yaml or
     # runtime queue/tasks state.
     local agent_ids
-    agent_ids="shogun karo gunshi ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7"
+    agent_ids="shogun karo gunshi oometsuke ashigaru1 ashigaru2 ashigaru3 ashigaru4 ashigaru5 ashigaru6 ashigaru7"
 
     for agent_id in $agent_ids; do
         # Determine role (all ashigaru share the same role template)
@@ -352,6 +359,9 @@ generate_opencode_agents() {
             gunshi)
                 role_title="Gunshi — strategic analysis and quality control"
                 ;;
+            oometsuke)
+                role_title="Oometsuke — final review and escalation advice"
+                ;;
             ashigaru*)
                 local ashigaru_number="${agent_id#ashigaru}"
                 role_title="Ashigaru ${ashigaru_number} — front-line execution"
@@ -369,7 +379,7 @@ agent_id = sys.argv[2]
 def role_for_agent(agent_id: str) -> str:
     if agent_id.startswith('ashigaru'):
         return 'ashigaru'
-    if agent_id in {'shogun', 'karo', 'gunshi'}:
+    if agent_id in {'shogun', 'karo', 'gunshi', 'oometsuke'}:
         return agent_id
     return ''
 

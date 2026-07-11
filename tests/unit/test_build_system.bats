@@ -70,6 +70,14 @@ setup() {
 @test "claude: ashigaru.md generated" {
     [ -f "$OUTPUT_DIR/ashigaru.md" ]
 }
+@test "claude: oometsuke.md generated" {
+    [ -f "$OUTPUT_DIR/oometsuke.md" ]
+}
+
+@test "codex: codex-oometsuke.md generated" {
+    [ -f "$OUTPUT_DIR/codex-oometsuke.md" ]
+}
+
 
 # =============================================================================
 # ファイル生成テスト — Codex / OpenCode
@@ -179,6 +187,11 @@ setup() {
 
 @test "content: codex-ashigaru.md is not empty" {
     [ -s "$OUTPUT_DIR/codex-ashigaru.md" ]
+}
+
+@test "content: generated oometsuke instruction names its report path" {
+    grep -Fq 'queue/reports/oometsuke_report.yaml' "$OUTPUT_DIR/oometsuke.md"
+    grep -Fq 'queue/reports/oometsuke_report.yaml' "$OUTPUT_DIR/codex-oometsuke.md"
 }
 
 @test "content: opencode-shogun.md is not empty" {
@@ -306,12 +319,20 @@ setup() {
     [ -f "$OUTPUT_DIR/opencode-gunshi.md" ]
 }
 
+@test "opencode-inst: instructions/generated/opencode-oometsuke.md generated" {
+    [ -f "$OUTPUT_DIR/opencode-oometsuke.md" ]
+}
+
 @test "opencode-agent: .opencode/agents/shogun.md generated [R6]" {
     [ -f "$PROJECT_ROOT/.opencode/agents/shogun.md" ]
 }
 
 @test "opencode-agent: generated agent frontmatter contains permission section [R6]" {
     grep -q '^permission:' "$PROJECT_ROOT/.opencode/agents/shogun.md"
+}
+
+@test "opencode-agent: .opencode/agents/oometsuke.md generated" {
+    [ -f "$PROJECT_ROOT/.opencode/agents/oometsuke.md" ]
 }
 
 @test "opencode-agent: tracked agent frontmatter excludes runtime routing [R6]" {
@@ -359,6 +380,32 @@ for tool_name in ("glob", "list"):
     assert perm[tool_name]["queue/tasks/ashigaru1.yaml"] == "allow"
     assert perm[tool_name]["queue/reports/*"] == "deny"
     assert perm[tool_name]["queue/reports/ashigaru1_report.yaml"] == "allow"
+PYEOF
+}
+
+@test "opencode-agent: oometsuke can write only its own report queue" {
+    PROJECT_ROOT="$PROJECT_ROOT" "$PROJECT_ROOT/.venv/bin/python3" - <<'PYEOF'
+from pathlib import Path
+import os
+import yaml
+
+project_root = Path(os.environ["PROJECT_ROOT"])
+text = (project_root / ".opencode/agents/oometsuke.md").read_text(encoding="utf-8")
+frontmatter = yaml.safe_load(text.split("---", 2)[1])
+perm = frontmatter["permission"]
+
+assert perm["read"]["queue/inbox/*"] == "deny"
+assert perm["read"]["queue/inbox/oometsuke.yaml"] == "allow"
+assert perm["read"]["queue/tasks/*"] == "deny"
+assert perm["read"]["queue/tasks/oometsuke.yaml"] == "allow"
+assert perm["read"]["queue/reports/*"] == "deny"
+assert perm["read"]["queue/reports/oometsuke_report.yaml"] == "allow"
+
+for tool_name in ("edit", "patch", "write"):
+    rules = perm[tool_name]
+    assert rules["queue/tasks/*"] == "deny"
+    assert rules["queue/reports/*"] == "deny"
+    assert rules["queue/reports/oometsuke_report.yaml"] == "allow"
 PYEOF
 }
 

@@ -593,18 +593,22 @@ YAML
     [ "$(get_instruction_file shogun claude)" = "instructions/shogun.md" ]
     [ "$(get_instruction_file karo claude)" = "instructions/karo.md" ]
     [ "$(get_instruction_file ashigaru1 claude)" = "instructions/ashigaru.md" ]
+    [ "$(get_instruction_file oometsuke claude)" = "instructions/generated/oometsuke.md" ]
     # codex
     [ "$(get_instruction_file shogun codex)" = "instructions/codex-shogun.md" ]
     [ "$(get_instruction_file karo codex)" = "instructions/codex-karo.md" ]
     [ "$(get_instruction_file ashigaru3 codex)" = "instructions/codex-ashigaru.md" ]
+    [ "$(get_instruction_file oometsuke codex)" = "instructions/codex-oometsuke.md" ]
     # copilot
     [ "$(get_instruction_file shogun copilot)" = ".github/copilot-instructions-shogun.md" ]
     [ "$(get_instruction_file karo copilot)" = ".github/copilot-instructions-karo.md" ]
     [ "$(get_instruction_file ashigaru5 copilot)" = ".github/copilot-instructions-ashigaru.md" ]
+    [ "$(get_instruction_file oometsuke copilot)" = ".github/copilot-instructions-oometsuke.md" ]
     # kimi
     [ "$(get_instruction_file shogun kimi)" = "instructions/generated/kimi-shogun.md" ]
     [ "$(get_instruction_file karo kimi)" = "instructions/generated/kimi-karo.md" ]
     [ "$(get_instruction_file ashigaru7 kimi)" = "instructions/generated/kimi-ashigaru.md" ]
+    [ "$(get_instruction_file oometsuke kimi)" = "instructions/generated/kimi-oometsuke.md" ]
 }
 
 @test "get_instruction_file: 不明なagent_id → 空文字 + return 1" {
@@ -617,6 +621,9 @@ YAML
     load_adapter_with "${TEST_TMP}/settings_opencode.yaml"
     result=$(get_instruction_file "shogun")
     [ "$result" = "instructions/generated/opencode-shogun.md" ]
+
+    result=$(get_instruction_file "oometsuke" "opencode")
+    [ "$result" = "instructions/generated/opencode-oometsuke.md" ]
 }
 
 @test "get_instruction_file: antigravity + any role → instructions/generated/antigravity-shogun.md" {

@@ -19,7 +19,8 @@ agent_registry_default_agents() {
         ashigaru5 \
         ashigaru6 \
         ashigaru7 \
-        gunshi
+        gunshi \
+        oometsuke
 }
 
 agent_registry_read_agents_from_settings() {

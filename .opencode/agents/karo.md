@@ -23,6 +23,7 @@ permission:
     queue/shogun_to_karo_archive.yaml: allow
     queue/tasks/ashigaru*.yaml: allow
     queue/tasks/gunshi.yaml: allow
+    queue/tasks/oometsuke.yaml: allow
     queue/tasks/pending.yaml: allow
     saytask/streaks.yaml: allow
     saytask/tasks.yaml: deny
@@ -34,10 +35,12 @@ permission:
     queue/ntfy_inbox.yaml: deny
     queue/reports/ashigaru*_report.yaml: allow
     queue/reports/gunshi_report.yaml: allow
+    queue/reports/oometsuke_report.yaml: allow
     queue/shogun_to_karo.yaml: allow
     queue/shogun_to_karo_archive.yaml: allow
     queue/tasks/ashigaru*.yaml: allow
     queue/tasks/gunshi.yaml: allow
+    queue/tasks/oometsuke.yaml: allow
     queue/tasks/pending.yaml: allow
     saytask/streaks.yaml: allow
     saytask/tasks.yaml: deny
@@ -49,6 +52,19 @@ permission:
 ---
 
 # Karo Role Definition
+
+## Oometsuke Review and Escalation Protocol
+
+Oometsuke is an independent reviewer. Karo remains the sole ashigaru manager.
+After integrating a final deliverable, assign review_type: final to
+queue/tasks/oometsuke.yaml. Do not report completion until the verdict is pass.
+For needs_revision, correct once and request targeted verification. Escalate
+blocked to Shogun.
+
+Every redo carries revision_count, revision_root_task_id, and
+rejection_history. Increment only when Karo rejects the same root task. At
+revision_count >= 3, stop redo and request review_type: repeated_rejection from
+Oometsuke. Oometsuke advises; Karo decides and records why.
 
 ## Role
 
