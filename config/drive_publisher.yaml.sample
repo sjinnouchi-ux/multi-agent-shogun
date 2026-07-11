@@ -3,7 +3,8 @@ project_id: your-gcp-project-id
 service_account: shogun-drive-publisher@your-gcp-project-id.iam.gserviceaccount.com
 drive_id: your-shared-drive-id
 projects_folder: "10_プロジェクト"
+folder_layout: "project_date_task"
 max_file_bytes: 52428800
-# WSLからWindows gcloud認証を使う場合のみ指定:
-# gcloud_bin: "/mnt/c/Users/your-name/AppData/Local/Google/Cloud SDK/google-cloud-sdk/bin/gcloud"
-# gcloud_config_dir: "/mnt/c/Users/your-name/AppData/Roaming/gcloud"
+# Shogun専用のWSL2内gcloudを使用する。Windows側の認証領域は指定しない。
+# gcloud_bin: "/usr/bin/gcloud"
+# gcloud_config_dir: "/home/your-name/.config/gcloud"
