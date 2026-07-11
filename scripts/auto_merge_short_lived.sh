@@ -37,6 +37,7 @@ PRIMARY_BRANCH="$(branch_policy_query primary)"
 SHORT_LIVED_PATTERN="$(branch_policy_query short_lived_pattern)"
 MAX_AGE_SECONDS="$(branch_policy_query max_age_seconds)"
 NOW_SECONDS="$(date +%s)"
+BOUNDARY_PREFIX="${SHOGUN_BOUNDARY_PREFIX:-shogun/}"
 
 if [[ -n "$REPO_OVERRIDE" ]]; then
     REPO_PATHS=("$REPO_OVERRIDE")
@@ -124,6 +125,11 @@ for repo_path in "${REPO_PATHS[@]}"; do
 
         remote_name="${short_ref%%/*}"
         branch_name="${short_ref#*/}"
+
+        if [[ -n "$BOUNDARY_PREFIX" && "$branch_name" == "$BOUNDARY_PREFIX"* ]]; then
+            echo "[SKIP] GitHub boundary branch is never auto-merged: $short_ref"
+            continue
+        fi
 
         if branch_policy_is_allowed_long_lived "$branch_name"; then
             continue

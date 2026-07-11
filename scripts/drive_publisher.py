@@ -14,6 +14,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -37,6 +38,7 @@ STAGE_FOLDERS = {
     "review": "03_レビュー待ち",
     "approved": "04_承認済み成果物",
 }
+FOLDER_LAYOUTS = {"review_stages", "project_date_task"}
 SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BLOCKED_NAMES = {
     ".env",
@@ -95,6 +97,14 @@ def validate_identifier(value: str, label: str) -> None:
         raise PublisherError(
             f"{label} must use 1-128 ASCII letters, digits, dot, underscore, or hyphen"
         )
+
+
+def parse_created_date(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise PublisherError(f"created_at must be an ISO-8601 timestamp: {value}") from exc
+    return parsed.date().isoformat()
 
 
 def is_blocked_name(relative_path: Path) -> bool:
@@ -209,6 +219,17 @@ def validate_inputs(
     if not isinstance(gcloud_bin, str):
         raise PublisherError("gcloud_bin must be a string when provided")
     normalized["gcloud_bin"] = gcloud_bin.strip()
+    folder_layout = config.get("folder_layout", "review_stages")
+    if not isinstance(folder_layout, str) or folder_layout not in FOLDER_LAYOUTS:
+        raise PublisherError(
+            "folder_layout must be review_stages or project_date_task"
+        )
+    normalized["folder_layout"] = folder_layout
+    normalized["created_date"] = (
+        parse_created_date(normalized["created_at"])
+        if folder_layout == "project_date_task"
+        else ""
+    )
     return normalized, resolve_artifacts(manifest, artifact_dir, max_file_bytes)
 
 
@@ -400,19 +421,26 @@ def publish(
     root = normalized["drive_id"]
     projects = client.ensure_folder(root, normalized["projects_folder"])
     project = client.ensure_folder(projects["id"], normalized["project"])
-    stage_ids: dict[str, str] = {}
-    for folder_name in PROJECT_FOLDERS:
-        folder = client.ensure_folder(project["id"], folder_name)
-        stage_ids[folder_name] = folder["id"]
-    stage_folder_name = STAGE_FOLDERS[stage]
-    artifact_folder = client.ensure_folder(
-        stage_ids[stage_folder_name], normalized["artifact_id"]
-    )
+    if normalized["folder_layout"] == "project_date_task":
+        date_folder = client.ensure_folder(project["id"], normalized["created_date"])
+        artifact_folder = client.ensure_folder(
+            date_folder["id"], normalized["artifact_id"]
+        )
+    else:
+        stage_ids: dict[str, str] = {}
+        for folder_name in PROJECT_FOLDERS:
+            folder = client.ensure_folder(project["id"], folder_name)
+            stage_ids[folder_name] = folder["id"]
+        stage_folder_name = STAGE_FOLDERS[stage]
+        artifact_folder = client.ensure_folder(
+            stage_ids[stage_folder_name], normalized["artifact_id"]
+        )
     base_properties = {
         "artifact_id": normalized["artifact_id"],
         "project": normalized["project"],
         "stage": stage,
         "source_tool": normalized["source_tool"],
+        "folder_layout": normalized["folder_layout"],
     }
     uploaded = [
         client.upsert_bytes(
@@ -448,6 +476,7 @@ def publish(
         "project": normalized["project"],
         "artifact_id": normalized["artifact_id"],
         "stage": stage,
+        "folder_layout": normalized["folder_layout"],
         "folder_id": artifact_folder["id"],
         "folder_url": f"https://drive.google.com/drive/folders/{artifact_folder['id']}",
         "files": uploaded,
@@ -471,6 +500,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def dry_run_destination(normalized: dict[str, str], stage: str) -> str:
+    parts = [normalized["projects_folder"], normalized["project"]]
+    if normalized["folder_layout"] == "project_date_task":
+        parts.extend([normalized["created_date"], normalized["artifact_id"]])
+    else:
+        parts.extend([STAGE_FOLDERS[stage], normalized["artifact_id"]])
+    return "/".join(parts)
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -483,10 +521,8 @@ def main() -> int:
         if args.dry_run:
             result: dict[str, Any] = {
                 "status": "dry-run",
-                "destination": (
-                    f"{normalized['projects_folder']}/{normalized['project']}/"
-                    f"{STAGE_FOLDERS[args.stage]}/{normalized['artifact_id']}"
-                ),
+                "folder_layout": normalized["folder_layout"],
+                "destination": dry_run_destination(normalized, args.stage),
                 "files": [
                     {
                         "relative_path": item["relative_path"],
