@@ -159,11 +159,16 @@ release_inbox_lock() {
     rmdir "${LOCKFILE}.d" 2>/dev/null || true
 }
 
+handoff_watchdog_active() {
+    [ "${HANDOFF_WATCHDOG_ENABLED:-1}" = "1" ] \
+        && [ -f "${SCRIPT_DIR}/scripts/handoff_watchdog.py" ]
+}
+
 reconcile_handoff_watchdog() {
     local can_notify="${1:-1}"
     local helper="${SCRIPT_DIR}/scripts/handoff_watchdog.py"
 
-    if [ "${HANDOFF_WATCHDOG_ENABLED:-1}" != "1" ] || [ ! -f "$helper" ]; then
+    if ! handoff_watchdog_active; then
         echo '{"action":"none","escalate":false,"state":"disabled","unread_count":0}'
         return 0
     fi
@@ -190,7 +195,7 @@ reconcile_handoff_watchdog() {
 }
 
 watchdog_tracks_assigned_task() {
-    [ "${HANDOFF_WATCHDOG_ENABLED:-1}" = "1" ] || return 1
+    handoff_watchdog_active || return 1
     [ -f "$HANDOFF_TASK_FILE" ] || return 1
     TASK_PATH="$HANDOFF_TASK_FILE" "$SCRIPT_DIR/.venv/bin/python3" - <<'PY' 2>/dev/null
 import os
@@ -1321,7 +1326,7 @@ for s in data.get('specials', []):
             FIRST_UNREAD_SEEN=$now
         fi
 
-        if [ "${HANDOFF_WATCHDOG_ENABLED:-1}" = "1" ]; then
+        if handoff_watchdog_active; then
             case "$watchdog_action" in
                 notify)
                     send_wakeup "$normal_count"
@@ -1391,7 +1396,7 @@ for s in data.get('specials', []):
         fi
     else
         # No unread messages — reset escalation tracker
-        if [ "${HANDOFF_WATCHDOG_ENABLED:-1}" = "1" ]; then
+        if handoff_watchdog_active; then
             if [ "$watchdog_action" = "task_retry" ]; then
                 send_task_resume
             fi

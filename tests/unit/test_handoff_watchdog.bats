@@ -221,3 +221,8 @@ YAML
     grep -q "watchdog_tracks_assigned_task" "$PROJECT_ROOT/scripts/inbox_watcher.sh"
     grep -q "! watchdog_tracks_assigned_task" "$PROJECT_ROOT/scripts/inbox_watcher.sh"
 }
+
+@test "watcher falls back to the legacy notification path when helper is absent" {
+    grep -q "handoff_watchdog_active()" "$PROJECT_ROOT/scripts/inbox_watcher.sh"
+    grep -q "if handoff_watchdog_active; then" "$PROJECT_ROOT/scripts/inbox_watcher.sh"
+}
