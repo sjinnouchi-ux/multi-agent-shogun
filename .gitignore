@@ -126,6 +126,7 @@ scripts/seo_qc.sh
 !scripts/drive_publisher.py
 !scripts/github_boundary_preflight.sh
 !scripts/shogun_completion_summary.py
+!scripts/handoff_watchdog.py
 
 
 # SayTask (sample template only, not actual data)
@@ -146,6 +147,7 @@ logs/
 !docs/listener_standby.md
 !docs/known_issues.md
 !docs/github-boundary-operation.md
+!docs/handoff-watchdog.md
 
 # Deployment templates (installed copies remain local)
 !deploy/
