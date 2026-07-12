@@ -120,7 +120,7 @@ assert len(data['messages']) == 1, f'Expected 1 message, got {len(data["messages
 msg = data['messages'][0]
 
 # 必須フィールドの存在確認
-required_fields = ['id', 'from', 'timestamp', 'type', 'content', 'read']
+required_fields = ['id', 'from', 'timestamp', 'type', 'content', 'read', 'delivery']
 for field in required_fields:
     assert field in msg, f'Field {field} not found in message'
 
@@ -130,6 +130,9 @@ assert msg['type'] == 'cmd_new', f'Expected type=cmd_new, got {msg["type"]}'
 assert msg['content'] == 'テストメッセージ', f'Expected content=テストメッセージ, got {msg["content"]}'
 assert msg['read'] == False, f'Expected read=False, got {msg["read"]}'
 assert msg['id'].startswith('msg_'), f'Message ID should start with msg_, got {msg["id"]}'
+assert msg['delivery']['notification_count'] == 0
+assert msg['delivery']['created_at'] == msg['timestamp']
+assert msg['delivery']['acknowledged_at'] is None
 
 print('T-003: PASS')
 EOF

@@ -98,7 +98,16 @@ try:
         'timestamp': '$TIMESTAMP',
         'type': '$TYPE',
         'content': '''$CONTENT''',
-        'read': False
+        'read': False,
+        'delivery': {
+            'created_at': '$TIMESTAMP',
+            'notification_count': 0,
+            'first_notified_at': None,
+            'last_notified_at': None,
+            'acknowledged_at': None,
+            'stalled_at': None,
+            'escalation_sent_at': None,
+        },
     }
     data['messages'].append(new_msg)
 

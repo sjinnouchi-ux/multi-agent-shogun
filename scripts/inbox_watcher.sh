@@ -159,6 +159,95 @@ release_inbox_lock() {
     rmdir "${LOCKFILE}.d" 2>/dev/null || true
 }
 
+handoff_watchdog_active() {
+    [ "${HANDOFF_WATCHDOG_ENABLED:-1}" = "1" ] \
+        && [ -f "${SCRIPT_DIR}/scripts/handoff_watchdog.py" ]
+}
+
+reconcile_handoff_watchdog() {
+    local can_notify="${1:-1}"
+    local helper="${SCRIPT_DIR}/scripts/handoff_watchdog.py"
+
+    if ! handoff_watchdog_active; then
+        echo '{"action":"none","escalate":false,"state":"disabled","unread_count":0}'
+        return 0
+    fi
+
+    (
+        if ! acquire_inbox_lock; then
+            echo '{"action":"none","escalate":false,"state":"lock_unavailable","unread_count":0}'
+            exit 0
+        fi
+        trap release_inbox_lock EXIT
+        "$SCRIPT_DIR/.venv/bin/python3" "$helper" \
+            --inbox "$INBOX" \
+            --agent "$AGENT_ID" \
+            --status-file "$HANDOFF_STATUS_FILE" \
+            --task-file "$HANDOFF_TASK_FILE" \
+            --report-file "$HANDOFF_REPORT_FILE" \
+            --retry-after "$HANDOFF_RETRY_AFTER" \
+            --stall-after "$HANDOFF_STALL_AFTER" \
+            --task-retry-after "$HANDOFF_TASK_RETRY_AFTER" \
+            --task-stall-after "$HANDOFF_TASK_STALL_AFTER" \
+            --can-notify "$can_notify" \
+            2>/dev/null || echo '{"action":"none","escalate":false,"state":"error","unread_count":0}'
+    ) 200>"$LOCKFILE"
+}
+
+watchdog_tracks_assigned_task() {
+    handoff_watchdog_active || return 1
+    [ -f "$HANDOFF_TASK_FILE" ] || return 1
+    TASK_PATH="$HANDOFF_TASK_FILE" "$SCRIPT_DIR/.venv/bin/python3" - <<'PY' 2>/dev/null
+import os
+import sys
+import yaml
+
+with open(os.environ["TASK_PATH"], encoding="utf-8") as handle:
+    raw = yaml.safe_load(handle) or {}
+task = raw.get("task") or raw
+sys.exit(0 if isinstance(task, dict) and task.get("status") == "assigned" else 1)
+PY
+}
+
+watchdog_escalate() {
+    local state="${1:-handoff_stalled}"
+    local target=""
+
+    case "$AGENT_ID" in
+        ashigaru*|gunshi|oometsuke) target="karo" ;;
+        *)
+            # Do not inject input into Shogun. Karo/Shogun stalls remain a
+            # read-only management-terminal projection.
+            echo "[$(date)] [WATCHDOG] $AGENT_ID state=$state; status projection updated" >&2
+            return 0
+            ;;
+    esac
+
+    local message="handoff watchdog: ${AGENT_ID} が ${state}。status/handoff_watchdog/${AGENT_ID}.yaml を確認されたし。"
+    if bash "$SCRIPT_DIR/scripts/inbox_write.sh" "$target" "$message" watchdog_alert handoff_watchdog; then
+        echo "[$(date)] [WATCHDOG] Escalated $AGENT_ID state=$state to $target" >&2
+    else
+        echo "[$(date)] [WATCHDOG] WARNING: escalation write failed for $AGENT_ID" >&2
+    fi
+}
+
+send_task_resume() {
+    local effective_cli
+    effective_cli=$(get_effective_cli_type)
+    local prompt="handoff watchdog: queue/tasks/${AGENT_ID}.yaml の assigned 任務を再開し、完了時に状態と報告を更新せよ。"
+
+    echo "[$(date)] [WATCHDOG] Sending one task-resume notification to $AGENT_ID" >&2
+    if [[ "$effective_cli" == "codex" ]]; then
+        timeout 5 tmux send-keys -t "$PANE_TARGET" "x" 2>/dev/null || true
+        sleep 0.3
+        timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+        sleep 0.3
+    fi
+    timeout 5 tmux send-keys -l -t "$PANE_TARGET" "$prompt" 2>/dev/null || true
+    sleep 0.3
+    timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+}
+
 # ─── Context reset tracking ───
 # Tracks whether we've sent /new or /clear for the current task_assigned batch.
 # Resets to 0 when all messages are read (FIRST_UNREAD_SEEN → 0).
@@ -182,6 +271,17 @@ ASW_NO_IDLE_FULL_READ=${ASW_NO_IDLE_FULL_READ:-1}
 # - ASW_PROCESS_TIMEOUT=0: do not process unread on timeout ticks (event-only)
 ASW_DISABLE_ESCALATION=${ASW_DISABLE_ESCALATION:-0}
 ASW_PROCESS_TIMEOUT=${ASW_PROCESS_TIMEOUT:-1}
+
+# Persistent handoff watchdog. It reuses the existing watcher safety tick and
+# never starts an LLM polling loop.
+HANDOFF_WATCHDOG_ENABLED=${HANDOFF_WATCHDOG_ENABLED:-1}
+HANDOFF_RETRY_AFTER=${HANDOFF_RETRY_AFTER:-120}
+HANDOFF_STALL_AFTER=${HANDOFF_STALL_AFTER:-300}
+HANDOFF_TASK_RETRY_AFTER=${HANDOFF_TASK_RETRY_AFTER:-300}
+HANDOFF_TASK_STALL_AFTER=${HANDOFF_TASK_STALL_AFTER:-600}
+HANDOFF_STATUS_FILE=${HANDOFF_STATUS_FILE:-${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/status/handoff_watchdog/${AGENT_ID:-unknown}.yaml}
+HANDOFF_TASK_FILE=${HANDOFF_TASK_FILE:-${SCRIPT_DIR}/queue/tasks/${AGENT_ID}.yaml}
+HANDOFF_REPORT_FILE=${HANDOFF_REPORT_FILE:-${SCRIPT_DIR}/queue/reports/${AGENT_ID}_report.yaml}
 
 # ─── Metrics hooks (FR-006 / NFR-003) ───
 # unread_latency_sec / read_count / estimated_tokens are intentionally explicit
@@ -879,6 +979,7 @@ session_has_client() {
 #   3. tmux send-keys (短いnudgeのみ、timeout 5s)
 send_wakeup() {
     local unread_count="$1"
+    local force="${2:-0}"
     local nudge="inbox${unread_count}"
 
     if [ "${FINAL_ESCALATION_ONLY:-0}" = "1" ]; then
@@ -906,7 +1007,7 @@ send_wakeup() {
         return 0
     fi
 
-    if should_throttle_nudge "$unread_count"; then
+    if [ "$force" != "1" ] && should_throttle_nudge "$unread_count"; then
         return 0
     fi
 
@@ -1057,7 +1158,9 @@ process_unread() {
     local fast_count
     fast_count=$(echo "$fast_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(json.load(sys.stdin).get('count',0))" 2>/dev/null)
 
-    if no_idle_full_read "$trigger" && [ "$fast_count" -eq 0 ] 2>/dev/null; then
+    if no_idle_full_read "$trigger" \
+        && [ "$fast_count" -eq 0 ] 2>/dev/null \
+        && ! watchdog_tracks_assigned_task; then
         # no_idle_full_read guard: unread=0 and timeout path → no full inbox read
         if [ "$FIRST_UNREAD_SEEN" -ne 0 ]; then
             echo "[$(date)] All messages read for $AGENT_ID — escalation reset (fast-path)" >&2
@@ -1149,6 +1252,16 @@ for s in data.get('specials', []):
     local has_task_assigned
     has_task_assigned=$(echo "$info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(1 if json.load(sys.stdin).get('has_task_assigned') else 0)" 2>/dev/null)
 
+    local watchdog_can_notify=1
+    if [ "$AGENT_ID" != "shogun" ] && agent_is_busy; then
+        watchdog_can_notify=0
+    fi
+    local watchdog_info watchdog_action watchdog_escalation watchdog_state
+    watchdog_info=$(reconcile_handoff_watchdog "$watchdog_can_notify")
+    watchdog_action=$(echo "$watchdog_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(json.load(sys.stdin).get('action','none'))" 2>/dev/null || echo none)
+    watchdog_escalation=$(echo "$watchdog_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(1 if json.load(sys.stdin).get('escalate') else 0)" 2>/dev/null || echo 0)
+    watchdog_state=$(echo "$watchdog_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(json.load(sys.stdin).get('state','unknown'))" 2>/dev/null || echo unknown)
+
     if [ "$normal_count" -gt 0 ] 2>/dev/null; then
         local now
         now=$(date +%s)
@@ -1213,6 +1326,22 @@ for s in data.get('specials', []):
             FIRST_UNREAD_SEEN=$now
         fi
 
+        if handoff_watchdog_active; then
+            case "$watchdog_action" in
+                notify)
+                    send_wakeup "$normal_count"
+                    ;;
+                retry)
+                    echo "[$(date)] [WATCHDOG] One retry for $AGENT_ID" >&2
+                    send_wakeup "$normal_count" 1
+                    ;;
+            esac
+            if [ "$watchdog_escalation" = "1" ]; then
+                watchdog_escalate "$watchdog_state"
+            fi
+            return 0
+        fi
+
         if [ "${ASW_DISABLE_ESCALATION:-0}" = "1" ]; then
             echo "[$(date)] $normal_count unread for $AGENT_ID (escalation disabled)" >&2
             if disable_normal_nudge; then
@@ -1267,6 +1396,14 @@ for s in data.get('specials', []):
         fi
     else
         # No unread messages — reset escalation tracker
+        if handoff_watchdog_active; then
+            if [ "$watchdog_action" = "task_retry" ]; then
+                send_task_resume
+            fi
+            if [ "$watchdog_escalation" = "1" ]; then
+                watchdog_escalate "$watchdog_state"
+            fi
+        fi
         if [ "$FIRST_UNREAD_SEEN" -ne 0 ]; then
             echo "[$(date)] All messages read for $AGENT_ID — escalation reset" >&2
         fi
