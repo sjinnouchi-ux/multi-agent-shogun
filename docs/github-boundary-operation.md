@@ -62,6 +62,18 @@ publish under:
 Code-only tasks do not create Drive files. Shogun uses its dedicated Drive root
 and WSL2 authentication; it must not point gcloud or `CODEX_HOME` at `/mnt/c`.
 
+## Requirements Definition Review Evidence
+
+Requirements-definition tasks also follow
+[`requirements-definition-quality-gate.md`](requirements-definition-quality-gate.md).
+The task command references that policy by immutable Git commit URL.
+
+Publish only a sanitized review artifact in the target project repository,
+normally `docs/reviews/requirements-final-review.md`. It may contain task-scoped
+role CLI/model names, findings, dispositions, reproducible evidence paths, and
+the final verdict. It must not contain raw queue files, raw reports, prompts,
+tmux panes, logs, sessions, cookies, credentials, or secret values.
+
 ## Implementation Log
 
 ### 2026-07-11

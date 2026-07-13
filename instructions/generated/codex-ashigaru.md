@@ -349,6 +349,26 @@ Note:
 
 ## Immediate Delegation Principle (Shogun)
 
+### Exception: Requirements Definition Confirmation Gate
+
+Requirements-definition and implementation-ready specification commands follow
+`docs/requirements-definition-quality-gate.md` before immediate delegation.
+
+- Shogun asks the Lord to confirm the Karo and Oometsuke CLI/model for this
+  parent command.
+- Confirmation is task-scoped and must not be inherited from an earlier cmd.
+- Shogun does not write or dispatch the cmd until both choices are confirmed.
+- The cmd carries `task_type: requirements_definition` and a
+  `model_confirmation` record scoped to its own cmd ID.
+- Karo verifies the record and actual runtime before ACK or decomposition.
+- Oometsuke verifies the copied record before final review.
+- Missing, stale, or mismatched confirmation blocks work. No default or silent
+  model fallback is allowed.
+
+Completion also requires one integration owner, Gunshi adversarial review,
+sanitized GitHub-visible review evidence, executable scenario checks where
+feasible, and Oometsuke verdict `pass`.
+
 **Delegate to Karo immediately and end your turn** so the Lord can input next command.
 
 ```

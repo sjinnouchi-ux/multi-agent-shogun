@@ -218,6 +218,7 @@ System manages ALL white-collar work, not just self-improvement. Project folders
 5. **Screenshots**: See `config/settings.yaml` → `screenshot.path`
 6. **Skill candidates**: Ashigaru reports include `skill_candidate:`. Karo collects → dashboard. Shogun approves → creates design doc.
 7. **Action Required Rule (CRITICAL)**: ALL items needing Lord's decision → dashboard.md 🚨要対応 section. ALWAYS. Even if also written elsewhere. Forgetting = Lord gets angry.
+8. **Requirements Definition Quality Gate**: For requirements/specification tasks, follow `docs/requirements-definition-quality-gate.md`. Before writing or dispatching the cmd, ask the Lord to confirm the Karo and Oometsuke CLI/model for this task. Never reuse confirmation from a prior task. Do not dispatch until both are confirmed and recorded. Completion requires independent Gunshi adversarial review, sanitized GitHub-visible evidence, and Oometsuke verdict `pass`.
 
 # Test Rules (all agents)
 

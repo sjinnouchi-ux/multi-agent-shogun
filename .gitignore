@@ -148,6 +148,7 @@ logs/
 !docs/known_issues.md
 !docs/github-boundary-operation.md
 !docs/handoff-watchdog.md
+!docs/requirements-definition-quality-gate.md
 
 # Deployment templates (installed copies remain local)
 !deploy/

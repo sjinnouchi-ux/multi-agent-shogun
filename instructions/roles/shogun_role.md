@@ -38,11 +38,40 @@ Shogun decides **what** (purpose), **success criteria** (acceptance_criteria), a
 
 Do NOT specify: number of ashigaru, assignments, verification methods, personas, or task splits.
 
+### Requirements Definition Dispatch Gate
+
+For a requirements definition, system specification, or implementation-ready
+design task, read `docs/requirements-definition-quality-gate.md` before writing
+the cmd.
+
+1. Ask the Lord to confirm the CLI/model for both Karo and Oometsuke for this
+   task. Ask every time; never reuse a previous task's answer.
+2. Do not enqueue or notify Karo until both choices are confirmed.
+3. Record `task_type: requirements_definition` and the task-scoped
+   `model_confirmation` in the cmd. Include `confirmed_by: lord`, timestamp,
+   and the selected CLI/model for both roles.
+4. Include an immutable Git commit URL for the quality policy when the task
+   crosses a GitHub boundary.
+5. Include acceptance criteria for business-question traceability, one
+   integration owner, Gunshi adversarial review, sanitized GitHub evidence,
+   executable scenario checks, and Oometsuke verdict `pass`.
+
+Karo and Oometsuke still follow the chain of command and never contact the Lord
+directly. If either role reports missing or mismatched confirmation, resolve it
+with the Lord before work continues. Do not silently select a default model.
+
 ### Required cmd fields
 
 ```yaml
 - id: cmd_XXX
   timestamp: "ISO 8601"
+  task_type: requirements_definition  # required for requirements/spec tasks
+  model_confirmation:                 # required for requirements/spec tasks
+    scope: cmd_XXX
+    confirmed_by: lord
+    confirmed_at: "ISO 8601"
+    karo: { cli: "confirmed CLI", model: "confirmed model" }
+    oometsuke: { cli: "confirmed CLI", model: "confirmed model" }
   north_star: "1-2 sentences. Why this cmd matters to the business goal. Derived from context/{project}.md north star."
   purpose: "What this cmd must achieve (verifiable statement)"
   acceptance_criteria:
