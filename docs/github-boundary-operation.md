@@ -35,13 +35,19 @@ python3 scripts/shogun_completion_summary.py \
   --project PROJECT \
   --task-id COMMAND_ID \
   --base-commit BASE_SHA \
+  --pr-url DRAFT_PR_URL \
+  --report-url PRIMARY_REPORT_URL \
+  --summary "Safe one-sentence completion summary" \
+  --review-status approved \
   --verification "tests: passed" \
-  --output completion-summary.md
+  --output "status/completions/COMMAND_ID.md"
 ```
 
 The generator refuses dirty repositories. Push and Draft PR creation remain
 subject to the target repository rules and explicit user authorization. Never
-push directly to `main`.
+push directly to `main`. Karo creates this manifest once after the Oometsuke
+final verdict passes. The WebUI reads only allowlisted front-matter fields; it
+does not expose the summary body, raw reports, prompts, or local paths.
 
 ## Deliverables
 

@@ -265,13 +265,34 @@ Push notifications to the lord's phone via ntfy. Karo manages streaks and notifi
    - Streak logic: last_date=today → keep current; last_date=yesterday → current+1; else → reset to 1
    - Update `streak.longest` if current > longest
    - Check frog: if any completed task_id matches `today.frog` → 🐸 notification, reset frog
-6. **Daily log append** → `logs/daily/YYYY-MM-DD.md` に cmd サマリーを追記:
+6. **Completion manifest (Git-backed deliverables only)** → Oometsuke final verdict
+   が `pass` になった後、cmd を archive する前に1回だけ生成する:
+   ```bash
+   python3 scripts/shogun_completion_summary.py \
+     --repo "<clean-target-repo>" \
+     --project "<project-id>" \
+     --task-id "<cmd-id>" \
+     --base-commit "<recorded-base-commit>" \
+     --repo-url "<canonical-https-github-url>" \
+     --pr-url "<draft-pr-url-or-none>" \
+     --drive-url "<drive-folder-url-or-none>" \
+     --report-url "<primary-report-url-or-none>" \
+     --summary "<safe-one-sentence-summary>" \
+     --review-status approved \
+     --output "status/completions/<cmd-id>.md"
+   ```
+   Summary must not contain prompts, secrets, raw reports, logs, or absolute
+   paths. Use `none` when a Drive or report URL does not exist. Tasks without a
+   Git-backed deliverable do not create a manifest. If generation fails, do not
+   alter the project result; record "WebUI completion link unavailable" in the
+   dashboard 🚨 section with the safe error category.
+7. **Daily log append** → `logs/daily/YYYY-MM-DD.md` に cmd サマリーを追記:
    - cmd ID, ステータス, 目的
    - 足軽ごとの成果物一覧（subtask_id, 担当, 作成/変更ファイル）
    - タイムライン（開始〜完了）
    - 課題・気づき（あれば）
    - ファイルが無ければヘッダー `# 日報 YYYY-MM-DD` 付きで新規作成
-7. Send ntfy notification
+8. Send ntfy notification
 
 ## OSS Pull Request Review
 

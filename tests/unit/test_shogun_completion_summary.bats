@@ -30,7 +30,11 @@ run_summary() {
         --task-id cmd_123 \
         --base-commit "$BASE_COMMIT" \
         --verification "bats: passed" \
-        --risk "none"
+        --risk "none" \
+        --pr-url "https://github.com/sjinnouchi-ux/example/pull/1" \
+        --report-url "https://github.com/sjinnouchi-ux/example/blob/main/report.md" \
+        --summary "Implementation and verification completed." \
+        --review-status approved
 }
 
 @test "completion summary records Git boundary facts" {
@@ -39,6 +43,9 @@ run_summary() {
     [[ "$output" == *'source: "shogun"'* ]]
     [[ "$output" == *'working_branch: "shogun/cmd-123"'* ]]
     [[ "$output" == *'result_commit:'* ]]
+    [[ "$output" == *'report_url: "https://github.com/sjinnouchi-ux/example/blob/main/report.md"'* ]]
+    [[ "$output" == *'summary: "Implementation and verification completed."'* ]]
+    [[ "$output" == *'review_status: "approved"'* ]]
     [[ "$output" == *'- `file.txt`'* ]]
     [[ "$output" == *'- bats: passed'* ]]
 }
