@@ -44,6 +44,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--risk", action="append", default=[])
     parser.add_argument("--pr-url", default="none")
     parser.add_argument("--drive-url", default="none")
+    parser.add_argument("--report-url", default="none")
+    parser.add_argument("--summary", default="")
+    parser.add_argument(
+        "--review-status",
+        default="none",
+        choices=("none", "approved", "passed", "completed"),
+    )
     parser.add_argument("--output", type=Path)
     return parser.parse_args()
 
@@ -81,6 +88,9 @@ def build_summary(args: argparse.Namespace) -> str:
         f"result_commit: {scalar(head)}",
         f"pr_url: {scalar(args.pr_url)}",
         f"drive_url: {scalar(args.drive_url)}",
+        f"report_url: {scalar(args.report_url)}",
+        f"summary: {scalar(args.summary)}",
+        f"review_status: {scalar(args.review_status)}",
         "---",
         "",
         "# Shogun Completion Summary",
