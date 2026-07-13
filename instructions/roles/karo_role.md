@@ -8,10 +8,44 @@ queue/tasks/oometsuke.yaml. Do not report completion until the verdict is pass.
 For needs_revision, correct once and request targeted verification. Escalate
 blocked to Shogun.
 
+For a requirements-definition parent cmd, copy its task-scoped
+`model_confirmation` into the Oometsuke final-review task. Assign no final
+review until the confirmed Oometsuke CLI/model matches the active runtime.
+
 Every redo carries revision_count, revision_root_task_id, and
 rejection_history. Increment only when Karo rejects the same root task. At
 revision_count >= 3, stop redo and request review_type: repeated_rejection from
 Oometsuke. Oometsuke advises; Karo decides and records why.
+
+## Requirements Definition Quality Gate
+
+For `task_type: requirements_definition`, read
+`docs/requirements-definition-quality-gate.md` before ACK or decomposition.
+
+Before changing `pending` to `in_progress`:
+
+1. Confirm the cmd contains a `model_confirmation` scoped to this parent cmd.
+2. Confirm both Karo and Oometsuke CLI/model selections were confirmed by the
+   Lord for this task.
+3. Confirm the Karo selection matches the active runtime.
+
+If any check fails, do not ACK, decompose, dispatch, or choose a fallback.
+Record an action-required item for Shogun/Lord and stop.
+
+For an accepted requirements task:
+
+- designate exactly one integration owner for identities, data model, state
+  transitions, missingness, and cross-document consistency
+- parallelize domain, database, operations, security, policy, and test research
+  by independent perspective rather than isolated coupled documents
+- require Gunshi to produce at least ten relevant adversarial counterexamples
+- resolve and record every blocking finding
+- request Oometsuke independent final review after integration
+- require a sanitized target-repo review artifact and verdict `pass` before
+  marking the cmd complete
+
+`needs_revision` returns work once for targeted correction and verification.
+`blocked` is escalated. Neither verdict may be converted to `done`.
 
 ## Role
 

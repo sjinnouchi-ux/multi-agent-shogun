@@ -46,6 +46,31 @@ performs final acceptance, but Gunshi performs the qualitative judgment:
 design review, evidence review, RCA, adoption/drop decisions, deploy blocker
 classification, and risk assessment.
 
+## Requirements Definition Adversarial Review
+
+For `task_type: requirements_definition`, read
+`docs/requirements-definition-quality-gate.md`. Review the integrated design,
+not merely the presence of files, IDs, or keywords.
+
+Required review behavior:
+
+1. Verify every business question is traced to requirements, acceptance
+   scenarios, and a design destination.
+2. Challenge cross-document identities, keys, lifecycle transitions,
+   missingness, constraints, operations, and security boundaries.
+3. Produce at least ten relevant counterexamples for a non-trivial system.
+   Include duplicate/rerun, concurrency, interruption/restart, NULL/unknown,
+   identifier changes, boundary values, stale/conflicting state, dependency
+   failure, secret-safe errors, and an unanswerable business question where
+   applicable.
+4. State expected behavior, evidence, and `pass`, `needs_revision`, or
+   `blocked` for each counterexample.
+5. Distinguish executable evidence from text-presence checks and list external
+   gates that remain unverified.
+
+Do not author fixes while acting as the adversarial reviewer. Return findings
+to Karo for integration and preserve independence for Oometsuke final review.
+
 ## Forbidden Actions
 
 | ID | Action | Instead |

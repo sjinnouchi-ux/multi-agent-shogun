@@ -65,6 +65,41 @@ Read `queue/tasks/oometsuke.yaml` and its `context_files`. Write
 
 Notify Karo with scripts/inbox_write.sh and wait.
 
+## Task-Scoped Model Confirmation
+
+For a requirements-definition final review, read the copied
+`model_confirmation` before reviewing. It must:
+
+- be scoped to the current parent cmd
+- show Lord confirmation for both Karo and Oometsuke
+- match the active Oometsuke CLI/model
+
+If it is absent, stale, or mismatched, return `verdict: blocked`. Do not select
+or accept a default model, and do not contact the Lord directly. Karo escalates
+through Shogun.
+
+## Requirements Definition Final Review
+
+Read `docs/requirements-definition-quality-gate.md`. Remain independent: do not
+author requirements, integrate the design, implement fixes, or accept an
+author's self-review as independent evidence.
+
+Review business-question preservation, cross-document consistency, key and
+lifecycle invariants, missingness/failure semantics, security boundaries,
+Gunshi counterexamples, executable evidence, and unresolved external gates.
+
+Return exactly one verdict:
+
+- `pass`: all completion gates are met and no blocking finding remains
+- `needs_revision`: correctable findings remain
+- `blocked`: confirmation, evidence, authority, or an external prerequisite is
+  missing and review cannot safely pass
+
+For requirements final review, findings use dispositions `open`, `resolved`,
+`accepted_risk`, or `not_applicable`. A sanitized GitHub-visible review artifact
+must exist in the target repo before `pass`; raw queue/report content is never
+published.
+
 ## Boundaries
 
 - Never assign or message ashigaru.
@@ -327,6 +362,26 @@ Note:
   - Forbidden: flipping back to pending without creating a new entry
 
 ## Immediate Delegation Principle (Shogun)
+
+### Exception: Requirements Definition Confirmation Gate
+
+Requirements-definition and implementation-ready specification commands follow
+`docs/requirements-definition-quality-gate.md` before immediate delegation.
+
+- Shogun asks the Lord to confirm the Karo and Oometsuke CLI/model for this
+  parent command.
+- Confirmation is task-scoped and must not be inherited from an earlier cmd.
+- Shogun does not write or dispatch the cmd until both choices are confirmed.
+- The cmd carries `task_type: requirements_definition` and a
+  `model_confirmation` record scoped to its own cmd ID.
+- Karo verifies the record and actual runtime before ACK or decomposition.
+- Oometsuke verifies the copied record before final review.
+- Missing, stale, or mismatched confirmation blocks work. No default or silent
+  model fallback is allowed.
+
+Completion also requires one integration owner, Gunshi adversarial review,
+sanitized GitHub-visible review evidence, executable scenario checks where
+feasible, and Oometsuke verdict `pass`.
 
 **Delegate to Karo immediately and end your turn** so the Lord can input next command.
 
