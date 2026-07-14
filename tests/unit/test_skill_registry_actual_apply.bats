@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
 
 setup() {
+  local physical_tmp
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
-  TEST_ROOT="$(mktemp -d "${BATS_TEST_TMPDIR}/actual-registry.XXXXXX")"
+  physical_tmp="$(cd "$BATS_TEST_TMPDIR" && pwd -P)" || return 1
+  TEST_ROOT="$(mktemp -d "${physical_tmp}/actual-registry.XXXXXX")"
   export SHOGUN_SKILL_REGISTRY_CLAUDE_DIR="${TEST_ROOT}/claude"
   export SHOGUN_SKILL_REGISTRY_CODEX_DIR="${TEST_ROOT}/codex"
   export SHOGUN_SKILL_REGISTRY_STATE_DIR="${TEST_ROOT}/state"

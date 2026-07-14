@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
 
 setup() {
+    local physical_tmp
     export PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
-    export TEST_ROOT="$BATS_TEST_TMPDIR/case"
+    physical_tmp="$(cd "$BATS_TEST_TMPDIR" && pwd -P)" || return 1
+    export TEST_ROOT="$physical_tmp/case"
     export INSTALL_ROOT="$TEST_ROOT/install"
     mkdir -p "$INSTALL_ROOT" "$TEST_ROOT/work" "$TEST_ROOT/bin"
     cp -R "$PROJECT_ROOT/skills/shogun-agent-status" "$INSTALL_ROOT/"

@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 # Contract-first RED tests for the cross-CLI skill registry.
 #
-# These tests intentionally exercise the public wrapper only.  The fixture
-# repository, runtime destinations, and transaction state all live under the
-# Bats-owned temporary directory; no live Shogun state is read or modified.
+# These tests exercise the public wrapper except where a host filesystem cannot
+# represent a portable alias pair. Those cases call the pure inventory validator.
+# All fixture state lives under the Bats-owned temporary directory; no live
+# Shogun state is read or modified.
 
 setup_file() {
     export PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
@@ -19,7 +20,9 @@ setup_file() {
 }
 
 setup() {
-    export TEST_ROOT="$BATS_TEST_TMPDIR/skill-registry"
+    local physical_tmp
+    physical_tmp="$(cd "$BATS_TEST_TMPDIR" && pwd -P)" || return 1
+    export TEST_ROOT="$physical_tmp/skill-registry"
     export FIXTURE_ROOT="$TEST_ROOT/repository"
     export REGISTRY_FILE="$FIXTURE_ROOT/skills/registry.yaml"
     export LOCK_FILE="$FIXTURE_ROOT/skills/registry.lock.yaml"
@@ -938,6 +941,27 @@ octal_mode() {
         "$1"
 }
 
+run_portable_inventory_validation() {
+    run "$PYTHON" - "$PROJECT_ROOT/scripts/skill_registry.py" "$@" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("skill_registry", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+assert spec.loader is not None
+spec.loader.exec_module(module)
+
+try:
+    module.validate_portable_file_inventory(
+        sys.argv[2:], "synthetic source inventory"
+    )
+except module.RegistryError as exc:
+    print(exc)
+    raise SystemExit(2)
+raise SystemExit("synthetic portable inventory was unexpectedly accepted")
+PY
+}
+
 @test "skill registry validation: accepts the minimal portable schema" {
     run_registry validate
 
@@ -1069,34 +1093,27 @@ octal_mode() {
 }
 
 @test "skill registry validation: rejects portable source path collisions" {
-    printf 'one\n' > "$FIXTURE_ROOT/skills/demo-skill/references/Foo.md"
-    printf 'two\n' > "$FIXTURE_ROOT/skills/demo-skill/references/foo.md"
-
-    run_registry validate
+    run_portable_inventory_validation \
+        references/Foo.md \
+        references/foo.md
 
     [ "$status" -eq 2 ]
     [[ "$output" == *"collision"* || "$output" == *"portable"* || "$output" == *"NFC"* || "$output" == *"normalized"* ]]
 }
 
 @test "skill registry validation: rejects portable file-directory prefix collisions" {
-    printf 'file\n' > "$FIXTURE_ROOT/skills/demo-skill/references/Foo"
-    mkdir -p "$FIXTURE_ROOT/skills/demo-skill/references/foo"
-    printf 'child\n' > "$FIXTURE_ROOT/skills/demo-skill/references/foo/child.txt"
-
-    run_registry validate
+    run_portable_inventory_validation \
+        references/foo \
+        references/foo/child.txt
 
     [ "$status" -eq 2 ]
     [[ "$output" == *"collision"* || "$output" == *"portable"* || "$output" == *"ancestor"* ]]
 }
 
 @test "skill registry validation: rejects portable directory alias merges" {
-    mkdir -p \
-        "$FIXTURE_ROOT/skills/demo-skill/references/Refs" \
-        "$FIXTURE_ROOT/skills/demo-skill/references/refs"
-    printf 'one\n' > "$FIXTURE_ROOT/skills/demo-skill/references/Refs/a.txt"
-    printf 'two\n' > "$FIXTURE_ROOT/skills/demo-skill/references/refs/b.txt"
-
-    run_registry validate
+    run_portable_inventory_validation \
+        references/Refs/a.txt \
+        references/refs/b.txt
 
     [ "$status" -eq 2 ]
     [[ "$output" == *"collision"* || "$output" == *"portable"* || "$output" == *"alias"* ]]
@@ -1122,21 +1139,12 @@ PY
     [[ "$output" == *"NFC"* || "$output" == *"normalized"* || "$output" == *"portable"* ]]
 }
 
-@test "skill registry validation: rejects Unicode-normalized source path collisions" {
-    "$PYTHON" - "$FIXTURE_ROOT/skills/demo-skill/references" <<'PY'
-import pathlib
-import sys
-import unicodedata
-
-root = pathlib.Path(sys.argv[1])
-nfc = "caf\N{LATIN SMALL LETTER E WITH ACUTE}.md"
-nfd = unicodedata.normalize("NFD", nfc)
-assert nfc != nfd
-(root / nfc).write_text("one\n", encoding="utf-8")
-(root / nfd).write_text("two\n", encoding="utf-8")
-PY
-
-    run_registry validate
+@test "skill registry validation: rejects Unicode case-folded source path collisions" {
+    local sharp_s
+    sharp_s="$("$PYTHON" -c 'print("references/Stra" + chr(0xdf) + "e.md")')"
+    run_portable_inventory_validation \
+        "$sharp_s" \
+        references/STRASSE.md
 
     [ "$status" -eq 2 ]
     [[ "$output" == *"collision"* || "$output" == *"portable"* || "$output" == *"NFC"* || "$output" == *"normalized"* ]]
@@ -2642,12 +2650,12 @@ assert spec.loader is not None
 spec.loader.exec_module(module)
 
 root = pathlib.Path(sys.argv[2]) / "case-alias"
+root.mkdir(parents=True)
 upper = root / "Registry" / "state"
 lower = root / "registry" / "state"
-upper.parent.mkdir(parents=True)
-lower.parent.mkdir(parents=True)
 
 # Linux case-sensitive paths remain distinct.
+module.path_volume_is_case_insensitive = lambda _path: False
 assert not module.paths_overlap(upper, lower)
 
 # The same spelling pair aliases on a case-insensitive volume (default APFS
@@ -2727,10 +2735,9 @@ assert spec.loader is not None
 spec.loader.exec_module(module)
 
 root = pathlib.Path(sys.argv[2]) / "unicode-case-alias"
+root.mkdir(parents=True)
 composed = root / "Caf\N{LATIN SMALL LETTER E WITH ACUTE}" / "state"
 decomposed = root / "Cafe\N{COMBINING ACUTE ACCENT}" / "state"
-composed.parent.mkdir(parents=True)
-decomposed.parent.mkdir(parents=True)
 module.path_volume_is_case_insensitive = lambda _path: False
 assert module.paths_overlap(composed, decomposed)
 module.path_volume_is_case_insensitive = lambda _path: True

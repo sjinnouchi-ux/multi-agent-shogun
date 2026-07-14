@@ -25,6 +25,19 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "unit-test CI exposes the venv Python and macOS GNU test tools" {
+  workflow="${REPO_ROOT}/.github/workflows/test.yml"
+
+  run grep -F 'echo "$PWD/.venv/bin" >> "$GITHUB_PATH"' "$workflow"
+  [ "$status" -eq 0 ]
+
+  run grep -F 'brew install bash coreutils gnu-sed shellcheck' "$workflow"
+  [ "$status" -eq 0 ]
+
+  run grep -F 'echo "$(brew --prefix)/opt/gnu-sed/libexec/gnubin" >> "$GITHUB_PATH"' "$workflow"
+  [ "$status" -eq 0 ]
+}
+
 @test "build drift gates cover every tracked instruction output" {
   workflow="${REPO_ROOT}/.github/workflows/test.yml"
   makefile="${REPO_ROOT}/Makefile"

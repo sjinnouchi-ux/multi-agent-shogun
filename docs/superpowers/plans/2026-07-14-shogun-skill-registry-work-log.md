@@ -39,7 +39,7 @@ This table distinguishes interim evidence from final close-out. No row marked pe
 |-------|--------|-------|
 | Documentation terminology/count parity | pass (2026-07-14) | Six-file assertion: 11 enabled + 1 quarantined, paired role/boundary/session rules, no stale count phrases, balanced fences, consistent per-file line endings |
 | Registry validate/check/lock | pass | `validate` and `check --base-ref 3621e9718a401451e9330ecbf7f73245bb7e63b6`: 12 entries; deterministic lock regenerated and verified |
-| Registry/unit/pressure tests | pass | Full root suite 31/31; full unit suite 707/707; focused new-skill/Registry suite 189/189; four structured pressure-evidence records validated; no skips accepted as evidence |
+| Registry/unit/pressure tests | pass | Full root suite 31/31; full unit suite 708/708; full Registry suite 148/148; focused portability suite 7/7; four structured pressure-evidence records validated; no skips accepted as evidence |
 | Generated instruction idempotence | pass | Build-system suite 84/84, including all-CLI LF/trailing-whitespace checks and a byte-identical second build; post-build unstaged diff was empty |
 | Repository lint checks | pass | `make lint` covered 26 shell files; changed shell files passed `bash -n` 6/6 and `shellcheck -S error` 6/6 |
 | Repository integration target | unavailable (pre-existing) | `make test-int` exits before tests because this revision has no tracked `tests/integration/` directory; no integration test was skipped or claimed |

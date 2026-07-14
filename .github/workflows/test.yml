@@ -35,9 +35,10 @@ jobs:
       - name: Install GNU tools (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install bash coreutils
-          echo "$(brew --prefix)/bin" >> $GITHUB_PATH
-          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH
+          brew install bash coreutils gnu-sed shellcheck
+          echo "$(brew --prefix)/bin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix)/opt/coreutils/libexec/gnubin" >> "$GITHUB_PATH"
+          echo "$(brew --prefix)/opt/gnu-sed/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Setup bats helpers
         run: |
@@ -55,6 +56,7 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install --quiet pyyaml
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Validate and check skill registry
         env:
