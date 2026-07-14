@@ -2,9 +2,9 @@
 
 ## Status
 
-- State: implementation and local verification complete; publication pending
-- Final aggregate verification: passed, subject to the final frozen-diff review
-- Pull request: pending (not opened or claimed by this log)
+- State: implementation and local verification complete; draft review in progress
+- Final aggregate verification: passed; independent frozen-diff review passed
+- Pull request: draft [#9](https://github.com/sjinnouchi-ux/multi-agent-shogun/pull/9)
 
 ## Canonical Context
 
@@ -47,9 +47,9 @@ This table distinguishes interim evidence from final close-out. No row marked pe
 
 ## Pull Request Handoff
 
-- PR number/URL: pending
-- Draft status: pending
-- Review findings: no unresolved Critical or Important finding before final frozen-diff sweep
+- PR number/URL: [#9](https://github.com/sjinnouchi-ux/multi-agent-shogun/pull/9)
+- Draft status: open as draft
+- Review findings: final independent review passed with no unresolved Critical or Important finding; documented Minor threat-boundary items are non-blocking
 - Merge commit: pending
 - Post-merge Windows Codex install: pending explicit operation
 - Post-merge WSL Shogun apply: pending explicit operation
@@ -60,5 +60,5 @@ This table distinguishes interim evidence from final close-out. No row marked pe
 - [x] Independent review findings resolved or explicitly deferred
 - [x] Registry lock matches the reviewed sources and lifecycle states
 - [x] No secrets, raw operational state, or local-only implementation files
-- [ ] Changes committed and pushed to the task branch
-- [ ] Draft PR opened with baseline, decisions, test evidence, and deployment boundary
+- [x] Changes committed and pushed to the task branch
+- [x] Draft PR opened with baseline, decisions, test evidence, and deployment boundary
