@@ -363,18 +363,14 @@ get_instruction_file() {
     esac
 
     case "$cli_type" in
-        claude)
-            if [ "$role" = "oometsuke" ]; then
-                echo "instructions/generated/oometsuke.md"
-            else echo "instructions/${role}.md"; fi
-            ;;
-        codex)   echo "instructions/codex-${role}.md" ;;
-        copilot) echo ".github/copilot-instructions-${role}.md" ;;
+        claude)  echo "instructions/generated/${role}.md" ;;
+        codex)   echo "instructions/generated/codex-${role}.md" ;;
+        copilot) echo "instructions/generated/copilot-${role}.md" ;;
         kimi)    echo "instructions/generated/kimi-${role}.md" ;;
         opencode) echo "instructions/generated/opencode-${role}.md" ;;
         cursor)  echo "instructions/generated/cursor-${role}.md" ;;
         antigravity) echo "instructions/generated/antigravity-${role}.md" ;;
-        *)       echo "instructions/${role}.md" ;;
+        *)       echo "instructions/generated/${role}.md" ;;
     esac
 }
 

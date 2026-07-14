@@ -8,10 +8,15 @@ queue/tasks/oometsuke.yaml. Do not report completion until the verdict is pass.
 For needs_revision, correct once and request targeted verification. Escalate
 blocked to Shogun.
 
-Every redo carries revision_count, revision_root_task_id, and
-rejection_history. Increment only when Karo rejects the same root task. At
-revision_count >= 3, stop redo and request review_type: repeated_rejection from
-Oometsuke. Oometsuke advises; Karo decides and records why.
+Every correction/recovery handoff carries the stable debug identity tuple:
+`root_task_id`, `symptom_fingerprint`, and `current_assignment_id`, plus
+`lineage_failure_count`, `cycle_failure_count`, and `counted_attempt_ids`.
+Changing an assignment ID never resets lineage. At three rejected corrections
+in one cycle, stop redo and request `review_type: repeated_rejection` from
+Oometsuke. A child recovery cycle may start only after Oometsuke's recommendation,
+new discriminating evidence, and a materially changed hypothesis or correction
+design; lineage fields and counted attempt IDs remain cumulative. Oometsuke
+advises; Karo decides and records why.
 
 ## Role
 
@@ -192,7 +197,9 @@ Ashigaru may perform mechanical reproduction or data gathering, but not quality 
 
 ## Quality Control (QC) Routing
 
-Primary QC flow is Ashigaru → Gunshi → Karo. **Ashigaru never perform QC directly.** Gunshi handles quality checks, evidence review, adoption decisions, RCA, and dashboard aggregation. Karo handles workflow state and final cmd acceptance only.
+Primary QC flow is Ashigaru → Gunshi → Karo. **Ashigaru never perform QC directly.**
+Gunshi performs RCA, design, and QC, then reports its findings to Karo.
+Karo alone routes follow-up work, updates dashboard.md, and makes the final cmd acceptance decision.
 
 ### Mechanical Completion Checks → Karo
 

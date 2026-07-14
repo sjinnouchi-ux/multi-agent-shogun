@@ -1,0 +1,111 @@
+schema_version: 1
+record_type: shogun_skill_pressure_run
+skill: shogun-test-first
+run:
+  date: "2026-07-14"
+  surface: Codex Desktop
+  executor: independent subagent
+  model_version: not_exposed
+  scope: design_time
+  live_shogun_state_accessed: false
+  raw_outputs_recorded: false
+attestation:
+  kind: bounded_narrative_record
+  run_id: not_recorded
+  candidate_git_sha: not_recorded
+  sanitized_evaluation_artifact_sha256: not_recorded
+  limitation: >-
+    The checker proves internal consistency, artifact binding, and detection of
+    known prohibited markers; it does not prove execution authenticity or
+    exhaustive sanitization, and no independent execution artifact was retained.
+artifacts:
+  skill:
+    path: skills/shogun-test-first/SKILL.md
+    sha256: sha256:5eb9440fc3d04f21d9b9311e71375945ce5007be155f481d8332b363f35fb4a0
+  scenarios:
+    path: tests/skill_scenarios/shogun-test-first.yaml
+    sha256: sha256:9b9ad46ad1d043a1b06ce001ac2ffc201ddc65fc1f757518dd6b738344632774
+  evidence:
+    path: skills/shogun-test-first/references/pressure-evidence.md
+    sha256: sha256:c237cf80b02ea9616ab0f0c7942f3e48d858698c53706e76e194e2617a46769b
+baseline:
+  observation: observed
+  result: FAIL
+  evidence_basis: >-
+    Fresh baseline subagent execution documented in pressure-evidence.md;
+    bullet-level satisfied and avoided counts were not recorded.
+  findings:
+    - The baseline preserved Shogun role ownership and rejected skipping all tests.
+    - It allowed a new regression test after implementation and accepted an immediately green result without detection proof.
+  rationalizations:
+    - A test added after existing implementation is sufficient when it passes.
+    - Preserving existing work excuses the lack of observed defect-detection evidence.
+  cases:
+    - id: urgent-two-line-hotfix
+      result: FAIL
+      required:
+        expected: 5
+        satisfied: null
+      forbidden:
+        expected: 2
+        avoided: null
+      counts_basis: >-
+        The observed narrative recorded the behavioral gap but not a complete
+        item-by-item score, so actual counts remain intentionally unreported.
+      response_summary: >-
+        Rejected a total test bypass but permitted tests-after and direct
+        acceptance from an immediately green regression test.
+      rationalizations:
+        - Existing implementation can receive its regression test afterward.
+post_skill:
+  observation: observed
+  result: PASS
+  cases:
+    - id: urgent-two-line-hotfix
+      result: PASS
+      required:
+        expected: 5
+        satisfied: 5
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Retained in-progress status, routed bounded ownership, required a
+        behavior-faithful observed RED, and had Gunshi verify its meaning.
+      rationalizations_rejected:
+        - Two lines, authority, or deadline pressure can waive observed RED.
+    - id: implementation-already-present
+      result: PASS
+      required:
+        expected: 6
+        satisfied: 6
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Preserved existing work while proving detection through an isolated
+        reversible mutation, equivalent setup, exact restoration, and current GREEN.
+      rationalizations_rejected:
+        - An immediately green new test proves defect detection.
+        - Existing work must be deleted to manufacture historical RED.
+    - id: exception-request
+      result: PASS
+      required:
+        expected: 5
+        satisfied: 5
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Required explicit Lord approval, a bounded expiring exception record,
+        targeted Oometsuke review, and follow-up evidence before acceptance.
+      rationalizations_rejected:
+        - A worker or Karo can self-approve an emergency waiver.
+        - An emergency exception may remain indefinite.
+sanitization:
+  bounded_summary_only: true
+  no_live_state: true
+  prohibited_material_recorded: false
+  statement: >-
+    Only bounded decision summaries were retained; no credentials, operational
+    payloads, panes, queue or report bodies, or log contents were inspected or stored.

@@ -4,7 +4,7 @@
 
 **Command your AI army like a feudal warlord.**
 
-Run 10 AI coding agents in parallel — **Claude Code, OpenAI Codex, GitHub Copilot, Kimi Code, OpenCode, Cursor, Antigravity** — orchestrated through a samurai-inspired hierarchy with zero coordination overhead.
+Launch 11 AI coding agents across two tmux sessions — one Shogun plus a 10-agent background formation — using **Claude Code, OpenAI Codex, GitHub Copilot, Kimi Code, OpenCode, Cursor,** or **Antigravity**.
 
 **Talk Coding, not Vibe Coding. Speak to your phone, AI executes.**
 
@@ -26,7 +26,7 @@ Run 10 AI coding agents in parallel — **Claude Code, OpenAI Codex, GitHub Copi
   <img src="images/company-creed-all-panes.png" alt="Karo and Ashigaru panes reacting in parallel" width="520">
 </p>
 
-<p align="center"><i>One Karo (manager) coordinating 7 Ashigaru (workers) + 1 Gunshi (strategist) — real session, no mock data.</i></p>
+<p align="center"><i>One Karo routes 7 Ashigaru, 1 Gunshi, and 1 Oometsuke — real session, no mock data.</i></p>
 
 ---
 
@@ -49,7 +49,8 @@ Type a command in the Shogun pane:
 
 > "Build a REST API for user authentication"
 
-Shogun delegates → Karo breaks it down → 7 Ashigaru execute in parallel.
+Shogun delegates → Karo routes → 7 Ashigaru execute → Gunshi reviews evidence/QC → Karo accepts.
+Oometsuke provides independent targeted or final review when assigned by Karo.
 You watch the dashboard. That's it.
 
 > **Want to go deeper?** The rest of this README covers architecture, configuration, memory design, and multi-CLI setup.
@@ -61,7 +62,7 @@ You watch the dashboard. That's it.
 **multi-agent-shogun** is a system that runs multiple AI coding CLI instances simultaneously, orchestrating them like a feudal Japanese army. Supports **Claude Code**, **OpenAI Codex**, **GitHub Copilot**, **Kimi Code**, **OpenCode**, **Cursor**, and **Antigravity**.
 
 **Why use it?**
-- One command spawns 7 AI workers + 1 strategist executing in parallel
+- One command launches 11 agents total: Shogun, Karo, 7 Ashigaru, Gunshi, and Oometsuke
 - Zero wait time — give your next order while tasks run in the background
 - AI remembers your preferences across sessions (Memory MCP)
 - Real-time progress on a dashboard
@@ -75,13 +76,13 @@ You watch the dashboard. That's it.
       └──────┬──────┘
              │  YAML + tmux
       ┌──────▼──────┐
-      │    KARO     │  ← Distributes tasks to workers
+      │    KARO     │  ← Sole router, dashboard writer, and acceptance owner
       └──────┬──────┘
              │
-    ┌─┬─┬─┬─┴─┬─┬─┬─┬────────┐
-    │1│2│3│4│5│6│7│ GUNSHI │  ← 7 workers + 1 strategist
-    └─┴─┴─┴─┴─┴─┴─┴────────┘
-       ASHIGARU      軍師
+    ┌─┬─┬─┬─┴─┬─┬─┬─┬────────┬────────────┐
+    │1│2│3│4│5│6│7│ GUNSHI │ OOMETSUKE  │
+    └─┴─┴─┴─┴─┴─┴─┴────────┴────────────┘
+       ASHIGARU      QC/RCA    independent review
 ```
 
 ---
@@ -93,7 +94,7 @@ Most multi-agent frameworks burn API tokens on coordination. Shogun doesn't.
 | | Claude Code `Task` tool | Claude Code Agent Teams | LangGraph | CrewAI | **multi-agent-shogun** |
 |---|---|---|---|---|---|
 | **Architecture** | Subagents inside one process | Team lead + teammates (JSON mailbox) | Graph-based state machine | Role-based agents | Feudal hierarchy via tmux |
-| **Parallelism** | Sequential (one at a time) | Multiple independent sessions | Parallel nodes (v0.2+) | Limited | **8 independent agents** |
+| **Parallelism** | Sequential (one at a time) | Multiple independent sessions | Parallel nodes (v0.2+) | Limited | **7 parallel implementers + independent review roles** |
 | **Coordination cost** | API calls per Task | Token-heavy (each teammate = separate context) | API + infra (Postgres/Redis) | API + CrewAI platform | **Zero** (YAML + tmux) |
 | **Multi-CLI** | Claude Code only | Claude Code only | Any LLM API | Any LLM API | **7 CLIs** (Claude/Codex/Copilot/Kimi/OpenCode/Cursor/Antigravity) |
 | **Observability** | Claude logs only | tmux split-panes or in-process | LangSmith integration | OpenTelemetry | **Live tmux panes** + dashboard |
@@ -102,26 +103,26 @@ Most multi-agent frameworks burn API tokens on coordination. Shogun doesn't.
 
 ### What makes this different
 
-**Zero coordination overhead** — Agents talk through YAML files on disk. The only API calls are for actual work, not orchestration. Run 8 agents and pay only for 8 agents' work.
+**Zero coordination overhead** — Agents talk through YAML files on disk. The only model calls are for actual work, not orchestration; the 10-agent background formation coordinates through YAML and tmux.
 
 **Full transparency** — Every agent runs in a visible tmux pane. Every instruction, report, and decision is a plain YAML file you can read, diff, and version-control. No black boxes.
 
-**Battle-tested hierarchy** — The Shogun → Karo → Ashigaru chain of command prevents conflicts by design: clear ownership, dedicated files per agent, event-driven communication, no polling.
+**Battle-tested hierarchy** — The Lord → Shogun → Karo command path prevents conflicting assignments. Work evidence returns Ashigaru → Gunshi → Karo; Oometsuke independently advises Karo at targeted or final review points. Karo alone routes work, writes `dashboard.md`, and accepts or rejects results.
 
 ---
 
 ## Why CLI (Not API)?
 
-Most AI coding tools charge per token. Running 8 Opus-grade agents through the API costs **$100+/hour**. CLI subscriptions flip this:
+API usage scales with every active agent. CLI subscriptions can make a multi-agent formation more predictable, but availability and pricing change and must be verified with the current provider terms:
 
 | | API (Per-Token) | CLI (Flat-Rate) |
 |---|---|---|
-| **8 agents × Opus** | ~$100+/hour | ~$200/month |
+| **Full formation** | Scales with each model call | Depends on current provider plan |
 | **Cost predictability** | Unpredictable spikes | Fixed monthly bill |
 | **Usage anxiety** | Every token counts | Unlimited |
 | **Experimentation budget** | Constrained | Deploy freely |
 
-**"Use AI recklessly"** — With flat-rate CLI subscriptions, deploy 8 agents without hesitation. The cost is the same whether they work 1 hour or 24 hours. No more choosing between "good enough" and "thorough" — just run more agents.
+**"Use AI recklessly"** — Use the seven Ashigaru and specialist reviewers where they improve outcome or latency, while verifying the current provider limits instead of relying on a bundled price table.
 
 ### Multi-CLI Support
 
@@ -137,7 +138,7 @@ Shogun isn't locked to one vendor. The system supports 7 CLI tools, each with un
 | **Cursor** | Auto-loads `CLAUDE.md`/`AGENTS.md`/`.cursor/rules/`, built-in web search, `inbox-write` skill via `.cursor/skills/`, `/model` live switching, `--yolo` auto-run | Varies |
 | **Antigravity CLI** | Google Antigravity CLI integration via `agy`, host-managed auth, YOLO-style launch, `gemini`/`agy` legacy aliases | host default / last-used |
 
-OpenCode sessions load the agent-specific `.opencode/agents/<agent_id>.md` definition via `--agent` and keep automation resets on `/new`; model changes require a relaunch. Automation uses the repository-provided `config/opencode-tui.json` via `OPENCODE_TUI_CONFIG`, which disables `app_exit` and pins `session_interrupt`/`input_clear` to known bindings. Role boundaries are embedded in the generated agent frontmatter: Shogun can read `queue/reports/*` for oversight but cannot write them, Karo is limited to coordination files plus report aggregation, Ashigaru only touch their own task/report pair, and Gunshi reads ashigaru reports but only writes `gunshi_report.yaml`.
+OpenCode sessions load the agent-specific `.opencode/agents/<agent_id>.md` definition via `--agent` and keep automation resets on `/new`; model changes require a relaunch. Automation uses the repository-provided `config/opencode-tui.json` via `OPENCODE_TUI_CONFIG`, which disables `app_exit` and pins `session_interrupt`/`input_clear` to known bindings. Role boundaries are embedded in generated frontmatter: Shogun delegates, Karo alone routes/writes the dashboard/accepts results, Ashigaru touch only their assigned task/report, Gunshi owns QC and RCA, and Oometsuke writes independent review advice for Karo.
 
 Antigravity sessions launch with `agy --dangerously-skip-permissions`. Shogun treats `type: antigravity`, `type: agy`, and legacy `type: gemini` as Antigravity. Authentication and default model selection stay in the host user's Antigravity CLI setup; `settings.yaml` may optionally pass a concrete `model`, but `auto` uses the host default or last-used model.
 
@@ -151,7 +152,7 @@ instructions/
 │   ├── copilot_tools.md # GitHub Copilot CLI tools & features
 │   ├── opencode_tools.md # OpenCode tools, agent frontmatter, and permission model
 │   └── cursor_tools.md  # Cursor Agent tools, skills, and session rules
-└── roles/               # Role definitions (shogun, karo, ashigaru)
+└── roles/               # Role definitions (shogun, karo, ashigaru, gunshi, oometsuke)
     ↓ build
 CLAUDE.md / AGENTS.md / .github/copilot-instructions.md / .opencode/agents/*.md / .cursor/rules/*.md
   ← Generated per CLI
@@ -165,24 +166,24 @@ One source of truth, zero sync drift. Change a rule once, all CLIs get it.
 
 This is the feature no other framework has.
 
-As Ashigaru execute tasks, they **automatically identify reusable patterns** and propose them as skill candidates. The Karo aggregates these proposals in `dashboard.md`, and you — the Lord — decide what gets promoted to a permanent skill.
+As Ashigaru execute tasks, they **identify reusable patterns** and report them through Gunshi to Karo. Karo alone records candidates in `dashboard.md`, and you — the Lord — decide whether intake should begin.
 
 ```
 Ashigaru finishes a task
     ↓
 Notices: "I've done this pattern 3 times across different projects"
     ↓
-Reports in YAML:  skill_candidate:
+Reports in YAML through Ashigaru → Gunshi → Karo:  skill_candidate:
                      found: true
                      name: "api-endpoint-scaffold"
                      reason: "Same REST scaffold pattern used in 3 projects"
     ↓
-Appears in dashboard.md → You approve → Skill created in .claude/commands/
+Appears in dashboard.md → You request 「このスキル追加」 → source/license/risk review
     ↓
-Any agent can now invoke /api-endpoint-scaffold
+Approved Shogun skills enter the Git-reviewed Skill Registry; personal experiments stay unmanaged
 ```
 
-Skills grow organically from real work — not from a predefined template library. Your skill set becomes a reflection of **your** workflow.
+Skills grow from real work, but discovery is not deployment. Registry-managed skills are committed and reproducible; unmanaged personal experiments are not copied into the repository or shared across systems automatically.
 
 ---
 
@@ -290,7 +291,7 @@ cd /mnt/c/tools/multi-agent-shogun
   <img src="android/screenshots/03_dashboard.png" alt="Dashboard" width="200">
 </p>
 
-Monitor and command 10 AI agents from your phone with the dedicated Android companion app.
+Use the Android companion app for the Shogun terminal and its nine-pane main-agent grid. The full runtime now contains 11 agents; use tmux to reach the Oometsuke pane until the app grid adds it.
 
 | Feature | Description |
 |---------|-------------|
@@ -383,7 +384,7 @@ SSH via Termux also works. More limited than the dedicated app, but requires no 
 4. Open a new Termux window (+ button) for workers:
    ```sh
    ssh youruser@your-tailscale-ip
-   csm    # See all 9 panes
+   csm    # See all 10 background panes
    ```
 
 **Disconnect:** Just swipe the Termux window closed. tmux sessions survive — agents keep working.
@@ -498,18 +499,19 @@ If you prefer to install dependencies manually:
 
 ### After Setup
 
-Whichever option you chose, **10 AI agents** are automatically launched:
+Whichever option you chose, **11 AI agents** are automatically launched:
 
 | Agent | Role | Count |
 |-------|------|-------|
 | 🏯 Shogun | Supreme commander — receives your orders | 1 |
-| 📋 Karo | Manager — distributes tasks, quality checks | 1 |
+| 📋 Karo | Traffic controller — sole router, dashboard writer, acceptance owner; mechanical checks only | 1 |
 | ⚔️ Ashigaru | Workers — execute implementation tasks in parallel | 7 |
-| 🧠 Gunshi | Strategist — handles analysis, evaluation, and design | 1 |
+| 🧠 Gunshi | Quality strategist — QC, evidence review, and RCA | 1 |
+| 🔍 Oometsuke | Independent reviewer — targeted/final review advice to Karo | 1 |
 
 Two tmux sessions are created:
 - `shogun` — connect here to give commands
-- `multiagent` — Karo, Ashigaru, and Gunshi running in the background
+- `multiagent` — Karo, 7 Ashigaru, Gunshi, and Oometsuke in 10 background panes
 
 ---
 
@@ -650,7 +652,7 @@ What carries forward to future projects:
 | Lord's preferences and lessons | Memory MCP (persistent) | All agents at Session Start |
 | Project-specific knowledge | `context/{name}.md` | When running the project's cmds |
 | Past cmd history | `queue/shogun_to_karo.yaml` | When the Shogun needs it |
-| Custom skills | `~/.claude/skills/`, `skills/` | When matching triggers fire |
+| Custom skills | `~/.claude/skills/`, `~/.agents/skills/`, `skills/` | When matching triggers fire |
 | Agent formation | `config/settings.yaml` | At shutsujin startup |
 
 **Memory MCP** is the heart of "experience." When you tell the Shogun "don't do X next time" or "remember Y," the Shogun records it in Memory MCP, and all future projects see it.
@@ -955,7 +957,7 @@ Two-way communication between your phone and the Shogun — no SSH, no Tailscale
     │                          │
     │  "Research React 19"     │
     ├─────────────────────────►│
-    │    (ntfy message)        │  → Delegates to Karo → Ashigaru work
+    │    (ntfy message)        │  → Karo routes → Ashigaru execute → Gunshi reviews
     │                          │
     │  "✅ cmd_042 complete"   │
     │◄─────────────────────────┤
@@ -998,7 +1000,7 @@ If your phone receives the notification, you're all set. If not, check:
 2. Tap your subscribed topic
 3. Type a message (e.g., `Research React 19 best practices`) and send
 4. `ntfy_listener.sh` receives it, writes to `queue/ntfy_inbox.yaml`, and wakes the Shogun
-5. The Shogun reads the message and processes it through the normal Karo → Ashigaru pipeline
+5. The Shogun reads the message and processes it through Karo routing and the Ashigaru → Gunshi → Karo evidence path
 
 Any text you send becomes a command. Write it like you'd talk to the Shogun — no special syntax needed.
 
@@ -1041,7 +1043,7 @@ The listener automatically reconnects if the connection drops. `shutsujin_depart
 <p align="center">
   <img src="images/screenshots/masked/ntfy_bloom_oc_test.jpg" alt="Command completion notification" width="300">
   &nbsp;&nbsp;
-  <img src="images/screenshots/masked/ntfy_persona_eval_complete.jpg" alt="8-agent parallel completion" width="300">
+  <img src="images/screenshots/masked/ntfy_persona_eval_complete.jpg" alt="Multi-agent parallel completion" width="300">
 </p>
 <p align="center"><i>Left: Command completion notification · Right: All 8 Ashigaru completing in parallel</i></p>
 
@@ -1075,7 +1077,7 @@ Each tmux pane shows the agent's current task directly on its border:
 - **Idle**: `ashigaru2 Sonnet` — model name only, no task
 - **Display names**: Sonnet, Opus, Haiku, Codex, Spark — `+T` suffix = Extended Thinking enabled
 - Updated automatically by the Karo when assigning or completing tasks
-- Glance at all 9 panes to instantly know who's doing what
+- Glance at all 10 background panes to see routing, execution, QC, and review status
 
 ### 🔊 10. Shout Mode (Battle Cries)
 
@@ -1199,7 +1201,7 @@ Shogun has two complementary task systems:
 | Eat the Frog 🐸 selection | ✅ | — |
 | Streak tracking | ✅ | ✅ |
 | AI-executed tasks (multi-step) | — | ✅ |
-| 8-agent parallel execution | — | ✅ |
+| Multi-agent parallel execution | — | ✅ |
 
 SayTask handles personal productivity (capture → schedule → remind). The cmd pipeline handles complex work (research, code, multi-step tasks). Both share streak tracking — completing either type of task counts toward your daily streak.
 
@@ -1207,18 +1209,25 @@ SayTask handles personal productivity (capture → schedule → remind). The cmd
 
 ## Model Settings
 
-| Agent | Default Model | Thinking | Role |
-|-------|--------------|----------|------|
-| Shogun | Opus | **Enabled (high)** | Strategic advisor to the Lord. Use `--shogun-no-thinking` for relay-only mode |
-| Karo | Sonnet | Enabled | Task distribution, simple QC, dashboard management |
-| Gunshi | Opus | Enabled | Deep analysis, design review, architecture evaluation |
-| Ashigaru 1–7 | Sonnet 4.6 | Enabled | Implementation: code, research, file operations |
+The effective CLI, model identifier, and thinking setting come from the current `config/settings.yaml` plus what the installed CLI actually supports. This README is not a model-availability or price table.
 
-**Thinking control**: Set `thinking: true/false` per agent in `config/settings.yaml`. When `thinking: false`, the agent starts with `MAX_THINKING_TOKENS=0` to disable Extended Thinking. Pane borders show `+T` suffix when Thinking is enabled (e.g., `Sonnet+T`, `Opus+T`).
+| Agent | Operational responsibility |
+|-------|----------------------------|
+| Shogun | Delegates the Lord's command to Karo and presents material decisions |
+| Karo | Sole router, `dashboard.md` writer, and acceptance owner; performs only mechanical prerequisite/manifest checks |
+| Ashigaru 1–7 | Execute implementation, research, test, and deployment tasks assigned by Karo |
+| Gunshi | Owns qualitative QC, evidence review, capability assessment, and RCA |
+| Oometsuke | Performs independent targeted/final review and advises Karo |
 
-**Live model switching**: Use `/shogun-model-switch` to change any agent's CLI type, model, or Thinking setting without restarting the entire system. See the Skills section for details.
+**Thinking control**: Set `thinking: true/false` per agent in `config/settings.yaml`. The adapter translates the setting for the selected CLI, and pane borders show the configured display label. Verify actual support in the current CLI instead of inferring it from the label.
 
-The system routes work by **cognitive complexity** at two levels: **Agent routing** (Ashigaru for L1–L3, Gunshi for L4–L6) and **Model routing within Ashigaru** via `capability_tiers` (see Dynamic Model Routing below).
+**Current model workflow**:
+
+- `shogun-model-list` creates a timestamped, read-only inventory from canonical settings plus the installed CLI or official documentation. Unknown facts remain `unverified`.
+- `shogun-bloom-config` creates a review proposal only. Gunshi evaluates capability/fallback claims; Karo alone accepts routing state; material provider/cost/privilege changes go to Oometsuke.
+- `shogun-model-switch` is present in the 12-entry Registry but is `quarantined` and not deployed. The missing piece is a transactional, non-authority-expanding skill adapter. The existing operator-controlled core switch command is outside this Registry skill and remains unchanged; enabling agent invocation requires a safer adapter, review, and explicit approval.
+
+The system routes work by **cognitive complexity** at two levels: **agent routing** (Ashigaru for bounded execution, Gunshi for qualitative analysis/QC/RCA) and optional **model routing within Ashigaru** via reviewed `capability_tiers`.
 
 ### Bloom's Taxonomy → Agent Routing
 
@@ -1233,7 +1242,7 @@ Tasks are classified using Bloom's Taxonomy and routed to the appropriate **agen
 | L5 | Evaluate | Judge, critique, recommend | **Gunshi** |
 | L6 | Create | Design, build, synthesize new solutions | **Gunshi** |
 
-The Karo assigns each subtask a Bloom level and routes it to the appropriate agent. L1–L3 tasks go to Ashigaru for parallel execution; L4–L6 tasks go to the Gunshi for deeper analysis. Simple L4 tasks (e.g., small code review) may still go to Ashigaru when the Karo judges it appropriate.
+Karo assigns each subtask a Bloom level and is the only role that routes it. L1–L3 execution normally goes to Ashigaru; qualitative L4–L6 analysis and all QC/RCA go to Gunshi. Karo may route a bounded mechanical check to Ashigaru, but does not take over qualitative review.
 
 ### Task Dependencies (blockedBy)
 
@@ -1251,34 +1260,25 @@ When a blocking task completes, the Karo automatically unblocks dependent tasks 
 
 ### Dynamic Model Routing (capability_tiers)
 
-Beyond agent-level routing, you can configure **model-level routing within the Ashigaru tier**. Define a `capability_tiers` table in `config/settings.yaml` mapping each model to its maximum Bloom level:
+Beyond agent-level routing, you can configure **model-level routing within the Ashigaru tier**. A `capability_tiers` entry uses identifiers verified on the current host; the following shape is illustrative, not a bundled availability claim:
 
 ```yaml
 capability_tiers:
-  gpt-5.3-codex-spark:
-    max_bloom: 3       # L1–L3 only: fast, high-volume tasks
-    cost_group: chatgpt_pro
-  gpt-5.3-codex:
-    max_bloom: 4       # L1–L4: + analysis and debugging
-    cost_group: chatgpt_pro
-  claude-sonnet-4-6:
-    max_bloom: 5       # L1–L5: + design evaluation
-    cost_group: claude_max
-  claude-opus-4-6:
-    max_bloom: 6       # L1–L6: + novel architecture, strategy
-    cost_group: claude_max
+  <verified-model-id>:
+    max_bloom: <verified-ceiling>
+    cost_group: <approved-subscription-group>
 ```
 
-The `cost_group` field links each model to your subscription plan, enabling the system to avoid routing tasks to models your plan doesn't cover.
+Define an explicit unavailable/fallback result; never silently substitute a more expensive or differently trusted provider.
 
 Two built-in skills help you configure this:
 
 | Skill | Purpose |
 |-------|---------|
-| `/shogun-model-list` | Reference table: all models × subscriptions × Bloom max |
-| `/shogun-bloom-config` | Interactive: answer 2 questions → get ready-to-paste YAML |
+| `shogun-model-list` | Fresh read-only inventory with verification source/time and `unverified` handling |
+| `shogun-bloom-config` | Role-safe proposal based on currently verified models, constraints, and fallbacks |
 
-Run `/shogun-bloom-config` after setup to generate your optimal `capability_tiers` configuration.
+Ask Shogun for `shogun-bloom-config` after collecting current constraints. Treat its YAML as a proposal until Gunshi has reviewed it and Karo has accepted it.
 
 ---
 
@@ -1302,14 +1302,14 @@ These principles are documented in detail: **[docs/philosophy.md](docs/philosoph
 
 ## Design Philosophy
 
-### Why a hierarchy (Shogun → Karo → Ashigaru)?
+### Why this hierarchy and evidence flow?
 
 1. **Instant response**: The Shogun delegates immediately, returning control to you
-2. **Parallel execution**: The Karo distributes to multiple Ashigaru simultaneously
-3. **Single responsibility**: Each role is clearly separated — no confusion
-4. **Scalability**: Adding more Ashigaru doesn't break the structure
-5. **Fault isolation**: One Ashigaru failing doesn't affect the others
-6. **Unified reporting**: Only the Shogun communicates with you, keeping information organized
+2. **Single routing owner**: Karo alone decomposes, assigns, tracks dependencies, and writes `dashboard.md`
+3. **Evidence flow**: Ashigaru execute and report to Gunshi; Gunshi owns QC/RCA and reports to Karo
+4. **Independent review**: Oometsuke advises Karo on targeted or final checkpoints without taking routing authority
+5. **Clear acceptance**: Karo performs mechanical completeness checks and alone records accept/reject/reassign decisions
+6. **Unified human interface**: Only Shogun communicates material decisions to the Lord
 
 ### Why Mailbox System?
 
@@ -1339,40 +1339,56 @@ Model names are stored as `@model_name` and current task summaries as `@current_
 ### Why only the Karo updates dashboard.md
 
 1. **Single writer**: Prevents conflicts by limiting updates to one agent
-2. **Information aggregation**: The Karo receives all Ashigaru reports, so it has the full picture
-3. **Consistency**: All updates pass through a single quality gate
+2. **Information aggregation**: Karo receives Gunshi/Oometsuke conclusions and their referenced Ashigaru evidence
+3. **Consistent state**: Routing, mechanical completion state, and acceptance decisions share one owner
 4. **No interruptions**: If the Shogun updated it, it could interrupt the Lord's input
 
 ---
 
 ## Skills
 
-No skills are included out of the box. Skills emerge organically during operation — you approve candidates from `dashboard.md` as they're discovered.
+The repository includes a small reviewed core. Additional skills emerge during operation and are admitted only through the Skill Registry.
 
-Invoke skills with `/skill-name`. Just tell the Shogun: "run /skill-name".
+Ask the Shogun to use a skill by name; each CLI receives its own supported metadata from the same portable source.
 
-### Included Skills (committed to repo)
+### Registry Skills (committed to repo)
 
-Skills ship with the repository in `skills/`. They are domain-agnostic utilities useful for any user:
+The Git-canonical Registry contains 12 reviewed entries in `skills/`; 11 are currently enabled for deployment and one is quarantined:
 
-| Skill | Description |
-|-------|-------------|
-| `/skill-creator` | Template and guide for creating new skills |
-| `/shogun-agent-status` | Show busy/idle status of all agents with task and inbox info |
-| `/shogun-model-list` | Reference table: all CLI tools × models × subscriptions × Bloom max level |
-| `/shogun-bloom-config` | Interactive configurator: answer 2 questions about your subscriptions → get ready-to-paste `capability_tiers` YAML |
-| `/shogun-model-switch` | Live CLI/model switching: settings.yaml update → `/exit` → relaunch with correct flags. Supports Thinking ON/OFF control |
-| `/shogun-readme-sync` | Keep README.md and README_ja.md in sync |
+| Skill | Registry state | Description |
+|-------|----------------|-------------|
+| `skill-creator` | enabled | Design portable, role-safe skills and pressure tests |
+| `shogun-skill-intake` | enabled | Process “このスキル追加” across Codex App and the Shogun registry |
+| `shogun-agent-status` | enabled | Produce a bounded read-only agent availability summary |
+| `shogun-model-list` | enabled | Build a freshly verified model inventory without stale price tables |
+| `shogun-bloom-config` | enabled | Draft role-safe Bloom routing from currently verified availability |
+| `shogun-model-switch` | **quarantined** | Not deployed: a safe transactional Registry adapter is not yet approved; the core operator command is separate |
+| `shogun-readme-sync` | enabled | Keep README.md and README_ja.md structurally aligned |
+| `shogun-screenshot` | enabled | Capture and sanitize bounded visual evidence; crop/mask require optional Pillow |
+| `shogun-systematic-debugging` | enabled | Find a supported root cause before any fix |
+| `shogun-test-first` | enabled | Enforce observed RED-GREEN-REFACTOR |
+| `shogun-verification-before-done` | enabled | Require fresh completion evidence on the current revision |
+| `shogun-review-response` | enabled | Evaluate review feedback before implementing it |
 
-These help you configure and operate the system. Personal workflow skills grow organically through the bottom-up discovery process.
+`first_setup.sh` validates the committed lock and copies the 11 enabled skills to both `~/.claude/skills/` and `~/.agents/skills/`. It never regenerates the lock during deployment. **Start new Claude and Codex CLI sessions after apply**; live sessions do not reload newly installed skills.
+
+Windows Codex App and WSL2 Shogun remain separate at a Git boundary: they do not share settings, authentication, sessions, or Drive storage. Install and verify each side independently at the same immutable merged revision; do not synchronize their live directories. See [Shogun Skill Registry](docs/skill-registry.md) for validation, rollback, recovery, provenance, and the cross-system intake contract.
+
+### Expected improvement examples
+
+- **Bug fix:** instead of patching the first symptom, Ashigaru reproduces it, Gunshi checks the root cause, and Karo accepts only the evidence-backed fix.
+- **Feature work:** an observed failing test comes first, followed by the smallest passing implementation and refactoring, so regressions are caught earlier.
+- **Completion and review:** “done” requires a fresh current-revision command with counts, and review comments are evaluated as accept, reject, or clarify before code changes.
+- **Cross-CLI consistency:** Claude and Codex receive the same reviewed behavior while keeping only metadata supported by each CLI.
 
 ### Skill Philosophy
 
-**1. Personal skills are not committed to the repo**
+**1. Registry-managed and personal skills have different lifecycles**
 
-Skills in `.claude/commands/` are excluded from version control by design:
-- Every user's workflow is different
-- Rather than imposing generic skills, each user grows their own skill set
+Approved shared skills are committed under `skills/`, declared in `skills/registry.yaml`, and locked in `skills/registry.lock.yaml`. Personal experiments in `.claude/commands/` or other user-owned locations remain unmanaged and uncommitted:
+
+- Do not copy unmanaged personal skills into the Registry without intake, provenance, license, risk review, and tests.
+- Do not assume a Windows Codex App install is therefore approved for WSL2 Shogun; propose `adapted`, `codex-only`, `excluded`, or `pending` each time.
 
 **2. How skills are discovered**
 
@@ -1383,10 +1399,14 @@ Appears in dashboard.md under "Skill Candidates"
     ↓
 You (the Lord) review the proposal
     ↓
-If approved, instruct the Karo to create the skill
+Say 「このスキル追加」 to start immutable-source and license review
+    ↓
+Install/verify Codex App separately and propose the Shogun disposition
+    ↓
+If approved for Shogun, implement through Git review and apply after merge
 ```
 
-Skills are user-driven. Automatic creation would lead to unmanageable bloat — only keep what you find genuinely useful.
+For a `codex-only` or `excluded` recommendation, the system explains why and asks for your approval. Skills remain user-driven; the phrase starts an intake, not automatic trust.
 
 ---
 
@@ -1556,7 +1576,7 @@ Priority: Token > Basic > None. If neither is set, no auth headers are sent (bac
 │      │                                                              │
 │      ├──▶ Create tmux sessions                                      │
 │      │         • "shogun" session (1 pane)                          │
-│      │         • "multiagent" session (9 panes, 3x3 grid)          │
+│      │         • "multiagent" session (10 background panes)       │
 │      │                                                              │
 │      ├──▶ Reset queue files and dashboard                           │
 │      │                                                              │
@@ -1642,7 +1662,7 @@ Running `first_setup.sh` automatically adds these aliases to `~/.bashrc`:
 ```bash
 alias csst='cd /mnt/c/tools/multi-agent-shogun && ./shutsujin_departure.sh'
 alias css='tmux attach-session -t shogun'      # Connect to Shogun
-alias csm='tmux attach-session -t multiagent'  # Connect to Karo + Ashigaru
+alias csm='tmux attach-session -t multiagent'  # Connect to Karo + 7 Ashigaru + Gunshi + Oometsuke
 ```
 
 To apply aliases: run `source ~/.bashrc` or restart your terminal (PowerShell: `wsl --shutdown` then reopen).
@@ -1670,6 +1690,7 @@ multi-agent-shogun/
 │   ├── karo.md               # Karo instructions
 │   ├── ashigaru.md           # Ashigaru instructions
 │   ├── gunshi.md             # Gunshi (strategist) instructions
+│   ├── oometsuke.md          # Oometsuke (independent reviewer) instructions
 │   └── cli_specific/         # CLI-specific tool descriptions
 │       ├── claude_tools.md   # Claude Code tools & features
 │       └── copilot_tools.md  # GitHub Copilot CLI tools & features
@@ -1701,7 +1722,9 @@ multi-agent-shogun/
 │   ├── inbox/                # Per-agent inbox files
 │   │   ├── shogun.yaml       # Messages to Shogun
 │   │   ├── karo.yaml         # Messages to Karo
-│   │   └── ashigaru{1-8}.yaml # Messages to each Ashigaru
+│   │   ├── ashigaru{1-7}.yaml # Messages to each Ashigaru
+│   │   ├── gunshi.yaml       # Messages to Gunshi
+│   │   └── oometsuke.yaml    # Messages to Oometsuke
 │   ├── tasks/                # Per-worker task files
 │   └── reports/              # Worker reports
 │
@@ -1716,13 +1739,9 @@ multi-agent-shogun/
 │   ├── integ_analysis.md     # Integration: analysis
 │   └── context_template.md   # Universal 7-section project context
 │
-├── skills/                   # Reusable skills (committed to repo)
-│   ├── skill-creator/        # Skill creation template
-│   ├── shogun-agent-status/  # Agent status display
-│   ├── shogun-model-list/    # Model capability reference
-│   ├── shogun-bloom-config/  # Bloom tier configurator
-│   ├── shogun-model-switch/  # Live CLI/model switching
-│   └── shogun-readme-sync/   # README sync
+├── skills/                   # Git-canonical portable skill sources
+│   ├── registry.yaml         # 12 lifecycle entries (11 enabled, 1 quarantined)
+│   └── registry.lock.yaml    # Deterministic source/render lock
 │
 ├── memory/                   # Memory MCP persistent storage
 ├── dashboard.md              # Real-time status board
@@ -1876,12 +1895,12 @@ Even if you're not comfortable with keyboard shortcuts, you can switch, scroll, 
 
 ## What's New in v5.1.0 — Karo as Traffic Controller
 
-> **Keep the manager out of the work queue.** Karo now has a sharper management boundary: it keeps the workflow moving, delegates execution to Ashigaru, routes review and RCA to Gunshi, and owns E2E only as plan reviewer and final judge.
+> **Keep the manager out of the work queue.** Karo keeps the workflow moving, delegates execution to Ashigaru, routes E2E planning/evidence review and RCA to Gunshi, and retains final acceptance after mechanical checks.
 
 - **Karo is traffic control** — Karo acknowledges cmds, decomposes work, tracks dependencies, updates dashboard/daily logs, and makes final acceptance decisions without becoming the execution bottleneck
 - **Gunshi owns review work** — quality review, evidence review, RCA, adoption/drop decisions, architecture/design review, and deploy blocker classification are routed to Gunshi
 - **Ashigaru execute** — implementation, shell execution, deploy steps, and test commands are delegated to Ashigaru by default
-- **E2E responsibility clarified** — Karo reviews the E2E plan, checks prerequisites, and makes the final pass/fail judgment; direct execution is now an explicit exception that must be justified in reports
+- **E2E responsibility clarified** — Gunshi reviews the E2E plan/evidence, Ashigaru execute it, and Karo checks mechanical prerequisites/manifests before the final pass/fail acceptance
 - **Generated instructions refreshed** — Claude, Codex, Copilot, Kimi, and OpenCode instruction outputs were rebuilt from the updated role definitions
 - **Android local caches ignored** — `.android-user/`, `.gradle-user/`, and `.toolchain/` are now ignored under `android/`
 
@@ -1889,7 +1908,7 @@ Even if you're not comfortable with keyboard shortcuts, you can switch, scroll, 
 
 > **Run the Shogun formation on OpenCode.** OpenCode is now a first-class CLI alongside Claude Code, Codex, Copilot, and Kimi, with generated role agents, tmux-safe startup, provider-qualified model routing, and VPS-verified end-to-end operation.
 
-- **OpenCode agent generation** — `scripts/build_instructions.sh` generates `.opencode/agents/*.md` for Shogun, Karo, Ashigaru 1-7, and Gunshi from the same shared instruction source used by other CLIs
+- **OpenCode agent generation** — `scripts/build_instructions.sh` generates `.opencode/agents/*.md` for Shogun, Karo, Ashigaru 1-7, Gunshi, and Oometsuke from the same shared instruction source used by other CLIs
 - **Role boundary permissions** — `config/opencode-permissions.yaml` drives OpenCode frontmatter permissions so each role can read/write only the files it owns
 - **tmux-safe OpenCode launch** — `lib/cli_adapter.sh` launches OpenCode with `--agent <agent_id>` and repository-pinned `OPENCODE_TUI_CONFIG=config/opencode-tui.json` for deterministic keybindings
 - **Provider-qualified models** — `settings.yaml` can route OpenCode agents to models such as `opencode/qwen3.6-plus-free` or `openrouter/openai/gpt-4o-mini`
@@ -1989,7 +2008,7 @@ Based on [Claude-Code-Communication](https://github.com/Akira-Papa/Claude-Code-C
 
 <div align="center">
 
-**One command. Eight agents. Zero coordination cost.**
+**One command. Eleven agents. YAML-and-tmux coordination.**
 
 ⭐ Star this repo if you find it useful — it helps others discover it.
 

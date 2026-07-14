@@ -536,31 +536,31 @@ YAML
 @test "get_instruction_file: shogun + claude → instructions/shogun.md" {
     load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
     result=$(get_instruction_file "shogun")
-    [ "$result" = "instructions/shogun.md" ]
+    [ "$result" = "instructions/generated/shogun.md" ]
 }
 
 @test "get_instruction_file: karo + claude → instructions/karo.md" {
     load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
     result=$(get_instruction_file "karo")
-    [ "$result" = "instructions/karo.md" ]
+    [ "$result" = "instructions/generated/karo.md" ]
 }
 
 @test "get_instruction_file: ashigaru1 + claude → instructions/ashigaru.md" {
     load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
     result=$(get_instruction_file "ashigaru1")
-    [ "$result" = "instructions/ashigaru.md" ]
+    [ "$result" = "instructions/generated/ashigaru.md" ]
 }
 
 @test "get_instruction_file: ashigaru5 + codex → instructions/codex-ashigaru.md" {
     load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
     result=$(get_instruction_file "ashigaru5")
-    [ "$result" = "instructions/codex-ashigaru.md" ]
+    [ "$result" = "instructions/generated/codex-ashigaru.md" ]
 }
 
 @test "get_instruction_file: ashigaru7 + copilot → .github/copilot-instructions-ashigaru.md" {
     load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
     result=$(get_instruction_file "ashigaru7")
-    [ "$result" = ".github/copilot-instructions-ashigaru.md" ]
+    [ "$result" = "instructions/generated/copilot-ashigaru.md" ]
 }
 
 @test "get_instruction_file: ashigaru3 + kimi → instructions/generated/kimi-ashigaru.md" {
@@ -578,32 +578,32 @@ YAML
 @test "get_instruction_file: cli_type引数で明示指定 (codex)" {
     load_adapter_with "${TEST_TMP}/settings_none.yaml"
     result=$(get_instruction_file "shogun" "codex")
-    [ "$result" = "instructions/codex-shogun.md" ]
+    [ "$result" = "instructions/generated/codex-shogun.md" ]
 }
 
 @test "get_instruction_file: cli_type引数で明示指定 (copilot)" {
     load_adapter_with "${TEST_TMP}/settings_none.yaml"
     result=$(get_instruction_file "karo" "copilot")
-    [ "$result" = ".github/copilot-instructions-karo.md" ]
+    [ "$result" = "instructions/generated/copilot-karo.md" ]
 }
 
 @test "get_instruction_file: 全CLI × 全role組み合わせ" {
     load_adapter_with "${TEST_TMP}/settings_none.yaml"
     # claude
-    [ "$(get_instruction_file shogun claude)" = "instructions/shogun.md" ]
-    [ "$(get_instruction_file karo claude)" = "instructions/karo.md" ]
-    [ "$(get_instruction_file ashigaru1 claude)" = "instructions/ashigaru.md" ]
+    [ "$(get_instruction_file shogun claude)" = "instructions/generated/shogun.md" ]
+    [ "$(get_instruction_file karo claude)" = "instructions/generated/karo.md" ]
+    [ "$(get_instruction_file ashigaru1 claude)" = "instructions/generated/ashigaru.md" ]
     [ "$(get_instruction_file oometsuke claude)" = "instructions/generated/oometsuke.md" ]
     # codex
-    [ "$(get_instruction_file shogun codex)" = "instructions/codex-shogun.md" ]
-    [ "$(get_instruction_file karo codex)" = "instructions/codex-karo.md" ]
-    [ "$(get_instruction_file ashigaru3 codex)" = "instructions/codex-ashigaru.md" ]
-    [ "$(get_instruction_file oometsuke codex)" = "instructions/codex-oometsuke.md" ]
+    [ "$(get_instruction_file shogun codex)" = "instructions/generated/codex-shogun.md" ]
+    [ "$(get_instruction_file karo codex)" = "instructions/generated/codex-karo.md" ]
+    [ "$(get_instruction_file ashigaru3 codex)" = "instructions/generated/codex-ashigaru.md" ]
+    [ "$(get_instruction_file oometsuke codex)" = "instructions/generated/codex-oometsuke.md" ]
     # copilot
-    [ "$(get_instruction_file shogun copilot)" = ".github/copilot-instructions-shogun.md" ]
-    [ "$(get_instruction_file karo copilot)" = ".github/copilot-instructions-karo.md" ]
-    [ "$(get_instruction_file ashigaru5 copilot)" = ".github/copilot-instructions-ashigaru.md" ]
-    [ "$(get_instruction_file oometsuke copilot)" = ".github/copilot-instructions-oometsuke.md" ]
+    [ "$(get_instruction_file shogun copilot)" = "instructions/generated/copilot-shogun.md" ]
+    [ "$(get_instruction_file karo copilot)" = "instructions/generated/copilot-karo.md" ]
+    [ "$(get_instruction_file ashigaru5 copilot)" = "instructions/generated/copilot-ashigaru.md" ]
+    [ "$(get_instruction_file oometsuke copilot)" = "instructions/generated/copilot-oometsuke.md" ]
     # kimi
     [ "$(get_instruction_file shogun kimi)" = "instructions/generated/kimi-shogun.md" ]
     [ "$(get_instruction_file karo kimi)" = "instructions/generated/kimi-karo.md" ]

@@ -1,0 +1,402 @@
+schema_version: 1
+outputs:
+  claude:
+    path: "~/.claude/skills"
+  codex:
+    path: "~/.agents/skills"
+skills:
+  - id: skill-creator
+    version: 1.0.0
+    source: skill-creator
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: optional
+    eligible_roles: [shogun, ashigaru, gunshi, oometsuke]
+    applicability: Design or revise portable Shogun skills after an approved intake.
+    claude:
+      argument_hint: "[skill name or goal]"
+    codex:
+      interface:
+        display_name: "Shogun Skill Creator"
+        short_description: "Design and review portable Shogun skills"
+        default_prompt: "Use $skill-creator to design or review a portable Shogun skill."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-agent-status
+    version: 1.0.0
+    source: shogun-agent-status
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: optional
+    eligible_roles: [shogun, karo]
+    applicability: Read-only bounded capacity checks for routing decisions.
+    codex:
+      interface:
+        display_name: "Shogun Agent Status"
+        short_description: "Inspect bounded Shogun agent availability"
+        default_prompt: "Use $shogun-agent-status to inspect current Shogun agent availability."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-bloom-config
+    version: 1.0.0
+    source: shogun-bloom-config
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: optional
+    eligible_roles: [shogun, ashigaru, gunshi, oometsuke]
+    applicability: Draft Bloom routing from currently verified CLI and subscription availability.
+    codex:
+      interface:
+        display_name: "Shogun Bloom Config"
+        short_description: "Generate role-safe Bloom model routing YAML"
+        default_prompt: "Use $shogun-bloom-config to generate role-safe Bloom routing YAML."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-model-list
+    version: 1.0.0
+    source: shogun-model-list
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: optional
+    eligible_roles: [shogun, karo, ashigaru, gunshi, oometsuke]
+    applicability: Build a current read-only model inventory without stale bundled pricing claims.
+    codex:
+      interface:
+        display_name: "Shogun Model List"
+        short_description: "Compare supported CLI models and Bloom tiers"
+        default_prompt: "Use $shogun-model-list to compare supported models and Bloom tiers."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-model-switch
+    version: 1.0.0
+    source: shogun-model-switch
+    status: quarantined
+    targets: [claude, codex]
+    activation: manual
+    classification: optional
+    eligible_roles: [karo]
+    applicability: Quarantined pending a transactional, non-authority-expanding Registry adapter; the existing operator-controlled core command remains outside this skill.
+    claude:
+      argument_hint: "[agent name and approved target model]"
+    codex:
+      interface:
+        display_name: "Shogun Model Switch"
+        short_description: "Safely switch Shogun agent CLI models"
+        default_prompt: "Use $shogun-model-switch to switch an idle agent under Karo control."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-readme-sync
+    version: 1.0.0
+    source: shogun-readme-sync
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: optional
+    eligible_roles: [ashigaru, gunshi, oometsuke]
+    applicability: Keep English and Japanese operational documentation factually aligned.
+    codex:
+      interface:
+        display_name: "Shogun README Sync"
+        short_description: "Keep English and Japanese README files aligned"
+        default_prompt: "Use $shogun-readme-sync to check and repair README language drift."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-screenshot
+    version: 1.0.0
+    source: shogun-screenshot
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: optional
+    eligible_roles: [shogun, ashigaru, gunshi, oometsuke]
+    applicability: Capture and sanitize bounded visual evidence when it materially helps review.
+    claude:
+      argument_hint: "[bounded target or existing image]"
+    codex:
+      interface:
+        display_name: "Shogun Screenshot"
+        short_description: "Capture, crop, and mask screenshots safely"
+        default_prompt: "Use $shogun-screenshot to capture or safely process a screenshot."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-skill-intake
+    version: 1.0.0
+    source: shogun-skill-intake
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: required
+    eligible_roles: [shogun, karo, ashigaru, gunshi, oometsuke]
+    applicability: Process “このスキル追加” across the separate Codex App and Shogun Git boundary.
+    codex:
+      interface:
+        display_name: "Shogun Skill Intake"
+        short_description: "Route skill additions across both systems"
+        default_prompt: "Use $shogun-skill-intake to evaluate and route an approved skill addition."
+    provenance:
+      kind: bundled
+      license: MIT
+
+  - id: shogun-systematic-debugging
+    version: 1.0.0
+    source: shogun-systematic-debugging
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: required
+    eligible_roles: [shogun, karo, ashigaru, gunshi, oometsuke]
+    applicability: Bugs, failing checks, unclear causes, and repeated rejected correction attempts.
+    distribution:
+      exclude:
+        - references/pressure-evidence.md
+        - references/pressure-run.yaml
+    codex:
+      interface:
+        display_name: "Shogun Systematic Debugging"
+        short_description: "Find root causes before Shogun fixes"
+        default_prompt: "Use $shogun-systematic-debugging to establish a root cause before a fix."
+    provenance:
+      kind: adapted
+      license: MIT
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/systematic-debugging/SKILL.md
+      upstream_sha256: sha256:3b20719eca4f0461cb51a195221320d775dcf03b6859271066a03a5132a6ce7a
+      adaptation_revision: 1
+      notice_file: third_party/superpowers/LICENSE
+
+  - id: shogun-test-first
+    version: 1.0.0
+    source: shogun-test-first
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: required
+    eligible_roles: [shogun, karo, ashigaru, gunshi, oometsuke]
+    applicability: Every feature or bug fix before production behavior changes.
+    distribution:
+      exclude:
+        - references/pressure-evidence.md
+        - references/pressure-run.yaml
+    codex:
+      interface:
+        display_name: "Shogun Test First"
+        short_description: "Run role-safe RED-GREEN-REFACTOR"
+        default_prompt: "Use $shogun-test-first to establish an observed RED-GREEN-REFACTOR cycle."
+    provenance:
+      kind: adapted
+      license: MIT
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/test-driven-development/SKILL.md
+      upstream_sha256: sha256:b5b4717b8b761cce15a6cfe9022e33fd959e0894c0c39d72c9cb49c23486c10e
+      adaptation_revision: 1
+      notice_file: third_party/superpowers/LICENSE
+
+  - id: shogun-verification-before-done
+    version: 1.0.0
+    source: shogun-verification-before-done
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: required
+    eligible_roles: [shogun, karo, ashigaru, gunshi, oometsuke]
+    applicability: Before commit, acceptance, deployment, merge, or any completion claim.
+    distribution:
+      exclude:
+        - references/pressure-evidence.md
+        - references/pressure-run.yaml
+    codex:
+      interface:
+        display_name: "Shogun Verification Before Done"
+        short_description: "Require fresh evidence before completion"
+        default_prompt: "Use $shogun-verification-before-done to prove completion on the current revision."
+    provenance:
+      kind: adapted
+      license: MIT
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/verification-before-completion/SKILL.md
+      upstream_sha256: sha256:ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c
+      adaptation_revision: 1
+      notice_file: third_party/superpowers/LICENSE
+
+  - id: shogun-review-response
+    version: 1.0.0
+    source: shogun-review-response
+    status: enabled
+    targets: [claude, codex]
+    activation: automatic
+    classification: required
+    eligible_roles: [shogun, karo, ashigaru, gunshi, oometsuke]
+    applicability: Review comments, requested changes, ambiguity, scope pressure, and disputed advice.
+    distribution:
+      exclude:
+        - references/pressure-evidence.md
+        - references/pressure-run.yaml
+    codex:
+      interface:
+        display_name: "Shogun Review Response"
+        short_description: "Evaluate review feedback before changes"
+        default_prompt: "Use $shogun-review-response to evaluate review feedback before implementing it."
+    provenance:
+      kind: adapted
+      license: MIT
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/receiving-code-review/SKILL.md
+      upstream_sha256: sha256:647036bbdab7bf2317e14e079595e984c9030f64295e2b4c0fb57dbeb48f25dd
+      adaptation_revision: 1
+      notice_file: third_party/superpowers/LICENSE
+
+approvals:
+  - id: superpowers-partial-adoption-2026-07-14
+    kind: explicit-user
+    recorded_at: "2026-07-14"
+    scope: The Lord approved adding only the selected Shogun adaptations and retaining the remaining reviewed Superpowers skills as Codex-only.
+
+intake_decisions:
+  - id: systematic-debugging
+    disposition: adapted
+    reason: Root-cause discipline is required, but upstream orchestration was replaced with Shogun role routing and bounded evidence.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/systematic-debugging/SKILL.md
+  - id: test-driven-development
+    disposition: adapted
+    reason: Test-first behavior is required after adding Shogun roles, legacy-code preservation, and an explicit exception gate.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/test-driven-development/SKILL.md
+  - id: verification-before-completion
+    disposition: adapted
+    reason: Fresh evidence is required with Shogun acceptance ownership and sanitized current-revision packets.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/verification-before-completion/SKILL.md
+  - id: receiving-code-review
+    disposition: adapted
+    reason: Technical review discipline is required after replacing direct responses and edits with Shogun evaluation and routing.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/receiving-code-review/SKILL.md
+  - id: brainstorming
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Useful in Codex App creative design, but Shogun already separates strategy, routing, execution, and review.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/brainstorming/SKILL.md
+  - id: dispatching-parallel-agents
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex may use it locally; importing its orchestration would conflict with Karo-only Shogun routing.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/dispatching-parallel-agents/SKILL.md
+  - id: executing-plans
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex plan execution remains useful, while Shogun execution must flow through task YAML and role ownership.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/executing-plans/SKILL.md
+  - id: finishing-a-development-branch
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Local Codex branch completion is useful, but Shogun integration and acceptance already have canonical Git-boundary gates.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/finishing-a-development-branch/SKILL.md
+  - id: requesting-code-review
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex may request local review; Shogun review is explicitly routed through Gunshi and Oometsuke.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/requesting-code-review/SKILL.md
+  - id: subagent-driven-development
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex local subagent workflows must not replace Shogun's Karo-managed worker hierarchy.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/subagent-driven-development/SKILL.md
+  - id: using-git-worktrees
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex may use worktrees locally; Shogun worktree policy remains a repository implementation concern, not an agent behavior skill.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/using-git-worktrees/SKILL.md
+  - id: using-superpowers
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Required for the Codex Superpowers bundle, but its global skill-invocation contract would override Shogun governance.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/using-superpowers/SKILL.md
+  - id: writing-plans
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex plan authoring is useful, while Shogun planning already belongs to its role and task protocol.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/writing-plans/SKILL.md
+  - id: writing-skills
+    disposition: codex-only
+    approval_ref: superpowers-partial-adoption-2026-07-14
+    reason: Codex can use the upstream authoring workflow; Shogun uses the registry intake and role-safe skill-creator adaptation.
+    upstream:
+      repository: "https://github.com/obra/superpowers"
+      tag: v6.1.1
+      commit: d884ae04edebef577e82ff7c4e143debd0bbec99
+      path: skills/writing-skills/SKILL.md

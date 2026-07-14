@@ -8,9 +8,10 @@ Thank you for your interest in contributing to multi-agent-shogun! This document
 2. [Project Structure](#project-structure)
 3. [.gitignore Whitelist Approach](#gitignore-whitelist-approach)
 4. [Coding Conventions](#coding-conventions)
-5. [Testing](#testing)
-6. [Pull Request Guidelines](#pull-request-guidelines)
-7. [Communication](#communication)
+5. [Skill Registry Contributions](#skill-registry-contributions)
+6. [Testing](#testing)
+7. [Pull Request Guidelines](#pull-request-guidelines)
+8. [Communication](#communication)
 
 ---
 
@@ -60,6 +61,8 @@ multi-agent-shogun/
 │   ├── shogun.md         # Shogun (commander) instructions
 │   ├── karo.md           # Karo (manager) instructions
 │   ├── ashigaru.md       # Ashigaru (worker) instructions
+│   ├── gunshi.md         # Gunshi (QC/RCA) instructions
+│   ├── oometsuke.md      # Oometsuke (independent review) instructions
 │   ├── cli_specific/     # CLI-specific tool descriptions
 │   │   ├── claude_tools.md
 │   │   ├── codex_tools.md
@@ -95,6 +98,10 @@ multi-agent-shogun/
 │   ├── integration/      # bats integration tests
 │   └── e2e/              # bats end-to-end tests and mocks
 │
+├── skills/               # Git-canonical portable skills
+│   ├── registry.yaml     # Lifecycle, target, role, provenance metadata
+│   └── registry.lock.yaml # Deterministic source/render inventory
+│
 ├── docs/                 # Documentation
 │   └── philosophy.md     # Design principles
 │
@@ -119,6 +126,14 @@ multi-agent-shogun/
 | `queue/` | Runtime data | Git-ignored, generated at runtime |
 | `templates/` | Reusable templates | Used for reports and context files |
 | `tests/` | Test suite | bats format, organized by level (unit/integration) |
+| `skills/` | Shared skill source and Registry | Commit reviewed skills; never edit installed copies as source |
+
+### Role Governance
+
+- The command path is Lord → Shogun → Karo. Karo alone routes/reassigns work, updates `dashboard.md`, and records acceptance.
+- The evidence path is Ashigaru → Gunshi → Karo. Gunshi owns qualitative QC, evidence review, and RCA.
+- Karo may perform mechanical prerequisite and completion-manifest checks, but must not absorb implementation or qualitative review.
+- Oometsuke provides independent targeted/final review advice. Karo retains the accept/reject/reassign decision.
 
 ---
 
@@ -157,7 +172,7 @@ The following are intentionally excluded (do NOT whitelist these):
 - `projects/` — Contains confidential client information
 - `queue/` — Runtime data, generated dynamically
 - `memory/` — User-specific persistent memory
-- `.claude/commands/` — User-specific skills (not committed)
+- `.claude/commands/` — Unmanaged user-specific skill experiments (not committed)
 - `saytask/streaks.yaml` — User-specific task data
 
 ### Checking Before Commit
@@ -201,7 +216,7 @@ All shell scripts must adhere to these standards:
    # Function: send_message
    # Description: Writes a message to an agent's inbox
    # Arguments:
-   #   $1 - target_agent (shogun|karo|ashigaru1-8)
+   #   $1 - target_agent (shogun|karo|ashigaru1-7|gunshi|oometsuke)
    #   $2 - message content
    # Returns: 0 on success, 1 on error
    send_message() {
@@ -253,6 +268,30 @@ task:
 
 ---
 
+## Skill Registry Contributions
+
+Shared skills are committed under `skills/<skill-id>/`, declared in `skills/registry.yaml`, and pinned by `skills/registry.lock.yaml`. The current Registry has 12 reviewed entries: 11 enabled and `shogun-model-switch` quarantined. A skill found in `.claude/commands/` or another personal directory remains unmanaged until it passes intake.
+
+For every Registry change:
+
+1. Pin the canonical source, immutable commit, source path/hash, and license.
+2. Keep portable `SKILL.md` frontmatter limited to the shared contract; put Claude/Codex target metadata in the Registry.
+3. Review executable, network, credential, destructive, lifecycle-hook, and instruction risks. Adapt to Shogun roles instead of copying upstream orchestration blindly.
+4. Add pressure evidence and tests, choose an explicit lifecycle (`enabled`, `quarantined`, or excluded intake decision), and increase SemVer when behavior/lifecycle changes.
+5. Generate and check the deterministic lock from the repository root:
+
+   ```bash
+   scripts/skill_registry.sh validate
+   scripts/skill_registry.sh lock
+   scripts/skill_registry.sh check --base-ref <explicit-base-commit>
+   ```
+
+Do not deploy from an unmerged branch or regenerate the lock during deployment. After merge, apply the immutable revision and start **new Claude and Codex CLI sessions**; running sessions do not reload installed skills.
+
+Windows Codex App and WSL2 Shogun remain separate systems at a Git boundary. They do not share settings, authentication, sessions, or Drive data. Install and verify each side independently at the same immutable merged revision; never synchronize live skill directories between them.
+
+---
+
 ## Testing
 
 ### Test Levels
@@ -263,7 +302,7 @@ The project uses a three-tier testing strategy:
 |-------|------|------|----------|-------------|
 | L1 | Unit | bats | `tests/unit/` | `make test` |
 | L2 | Integration | bats | `tests/integration/` | `make test-int` |
-| L3 | End-to-End | Manual | N/A | Karo executes |
+| L3 | End-to-End | Manual | N/A | Karo routes; Ashigaru executes; Gunshi reviews; Karo accepts |
 
 ### SKIP = FAIL Policy
 
@@ -341,7 +380,7 @@ teardown() {
    }
    ```
 
-4. **E2E tests**: Only Karo can execute E2E tests (requires multi-agent control)
+4. **E2E tests**: Karo owns the plan, prerequisites, routing, and final acceptance. Ashigaru execute commands; Gunshi reviews evidence/RCA. Karo performs only mechanical checks directly.
 
 ---
 
@@ -352,6 +391,7 @@ teardown() {
 - [ ] All tests pass (`make test`, `make test-int`)
 - [ ] Shellcheck passes (`make lint`)
 - [ ] Generated instructions are in sync (`make check`)
+- [ ] Skill Registry validates and the committed lock is current (`scripts/skill_registry.sh check --base-ref <base>`)
 - [ ] New files are added to `.gitignore` whitelist
 - [ ] Commits have clear, descriptive messages
 - [ ] Documentation is updated (if applicable)

@@ -1,51 +1,18 @@
 ---
 name: shogun-agent-status
-description: 全エージェント（家老・足軽1-7・軍師）の稼働状態を一覧表示するスキル。tmux pane状態（稼働中/待機中/不在）とタスクYAML状態（task_id, status）と未読inbox数を統合表示。「稼働確認」「エージェント状態」「布陣確認」「agent status」で起動。
+description: Produce a bounded read-only summary of Shogun agent availability. Use when Shogun or Karo needs routing capacity without opening tmux panes or raw operational files.
 ---
 
-# /agent-status - エージェント稼働確認
+# Shogun agent status
 
-## Overview
+This is a read-only routing aid for Shogun and Karo. It must not assign work, update the dashboard, or mutate queue state.
 
-全エージェントの稼働状態を2つのデータソースから統合判定して一覧表示する。
+1. Run the installed [status helper](scripts/agent_status.sh) with no arguments. It is self-contained and works from any current directory.
+2. Accept only its JSON Lines records. Every record has exactly `agent_id`, `role`, and `coarse_availability`; availability is one of `available`, `busy`, `offline`, or `unknown`.
+3. The helper may read only bounded tmux metadata: the allowlisted `@agent_id`, the pane dead bit, and whether `@current_task` is empty. It never emits the task value.
+4. Never pass a caller-selected pane or session. Never capture pane content or read task, report, queue, log, repository, authentication, or environment-selected helper data.
+5. Karo may use the summary to route work. Shogun may use it to assess capacity. Other roles should request routing through Karo.
 
-1. **Pane状態**: tmux capture-paneの末尾5行からCLI固有のidle/busyパターンを検出
-2. **タスクYAML**: `queue/tasks/{agent}.yaml` のtask_idとstatus
-3. **未読inbox**: `queue/inbox/{agent}.yaml` の未処理メッセージ数
+If tmux metadata is unavailable, the helper returns the canonical records with `unknown` availability instead of guessing from processes or files. Ignore any record that does not use the exact schema.
 
-Claude Code / Codex CLI 両方に対応。
-
-## When to Use
-
-- 「稼働確認」「エージェント状態」「布陣確認」と言われた時
-- 足軽が暇そうか確認したい時
-- タスク配分前に空いているエージェントを探す時
-- 誰かが止まっているか調べたい時
-
-## Instructions
-
-以下のコマンドを実行する:
-
-```bash
-bash scripts/agent_status.sh
-```
-
-## 出力の読み方
-
-| Column | 意味 |
-|--------|------|
-| Agent | エージェント名 |
-| CLI | CLI種別（claude/codex） |
-| Pane | tmux pane状態: 稼働中/待機中/不在 |
-| Task ID | タスクYAMLのtask_id（---=未割当） |
-| Status | タスクYAMLのstatus: assigned/done/idle等 |
-| Inbox | 未読inboxメッセージ数 |
-
-## 状態の解釈
-
-- **Pane=待機中 + Status=done**: 完了済み、次タスク待ち。新タスク配分可能。
-- **Pane=稼働中 + Status=assigned**: 正常にタスク実行中。放置してよい。
-- **Pane=待機中 + Status=assigned**: タスク割当済みだがCLIが止まっている。要調査。
-- **Pane=稼働中 + Status=done**: タスク完了後に別作業中（inbox処理等）。
-- **Inbox > 0**: 未読メッセージあり。エージェントが処理していない可能性。
-- **Pane=不在**: tmux paneが存在しない（shutsujin未実行 or pane killed）。
+The output is evidence for a current routing decision only. Treat it as stale after any assignment or session restart.

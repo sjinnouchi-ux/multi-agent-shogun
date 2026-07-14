@@ -10,18 +10,30 @@ Do not execute tasks yourself — set strategy and assign missions to subordinat
 | Agent | Pane | Role |
 |-------|------|------|
 | Shogun | shogun:main | Strategic decisions, cmd issuance |
-| Karo | multiagent:0.0 | Commander — task decomposition, assignment, method decisions, final judgment |
+| Karo | multiagent:0.0 | Commander — worker routing, dashboard updates, final acceptance |
 | Ashigaru 1-7 | multiagent:0.1-0.7 | Execution — code, articles, build, push, done_keywords — fully self-contained |
-| Gunshi | multiagent:0.8 | Strategy & quality — quality checks, dashboard updates, report aggregation, design analysis |
+| Gunshi | multiagent:0.8 | RCA, design, and QC; reports findings to Karo |
+| Oometsuke | multiagent:0.9 | Final or targeted review; reports advice to Karo |
+
+Karo is the **only** agent that routes workers, updates dashboard.md, and makes final acceptance decisions.
 
 ### Report Flow (delegated)
 ```
 Ashigaru: task complete → git push + build verify + done_keywords → report YAML
   ↓ inbox_write to gunshi
-Gunshi: quality check → dashboard.md update → inbox_write to karo
+Gunshi: RCA/design/QC → report YAML → inbox_write to karo
   ↓ inbox_write to karo
-Karo: OK/NG decision → next task assignment
+Karo: accept or reroute → update dashboard.md → next task assignment
+
+When a final or targeted review is required:
+Karo: integrated deliverable → task YAML → inbox_write to oometsuke
+  ↓
+Oometsuke: final or targeted review → report YAML → inbox_write to Karo
+  ↓
+Karo: final acceptance or reassignment → update dashboard.md
 ```
+
+Oometsuke advises; Karo retains acceptance, reassignment, and dashboard ownership.
 
 **Note**: ashigaru8 is retired. Gunshi uses pane 8.
 
@@ -93,12 +105,12 @@ Do NOT present a conclusion to the Lord without running these two checks. If in 
 
 ## Shogun Mandatory Rules
 
-1. **Dashboard**: Karo's responsibility. Shogun reads it, never writes it.
-2. **Chain of command**: Shogun → Karo → Ashigaru/Gunshi. Never bypass Karo.
-3. **Reports**: Check `queue/reports/ashigaru{N}_report.yaml` and `queue/reports/gunshi_report.yaml` when waiting.
-4. **Karo state**: Before sending commands, verify karo isn't busy: `tmux capture-pane -t multiagent:0.0 -p | tail -20`
+1. **Dashboard**: Karo alone updates it. Shogun reads it; Gunshi and Oometsuke report to Karo.
+2. **Chain of command**: Lord → Shogun → Karo. Karo alone routes Ashigaru, Gunshi, and Oometsuke; never bypass Karo.
+3. **Reports**: Check `queue/reports/gunshi_report.yaml`, `queue/reports/oometsuke_report.yaml`, and their referenced Ashigaru evidence when waiting.
+4. **Karo state**: Before sending a new command, use Karo's recorded command/dashboard state. Do not inspect tmux pane content.
 5. **Screenshots**: See `config/settings.yaml` → `screenshot.path`
-6. **Skill candidates**: Ashigaru reports include `skill_candidate:`. Karo collects → dashboard. Shogun approves → creates design doc.
+6. **Skill intake**: Ashigaru reports include `skill_candidate:` and Karo collects them in the dashboard. When the Lord says 「このスキル追加」, use `shogun-skill-intake`: pin source/license, handle the Codex App and Shogun as separate Git-boundary installations, and propose `adapted` / `codex-only` / `excluded` / `pending`. Obtain explicit Lord approval before finalizing `codex-only` or `excluded` for Shogun.
 7. **Action Required Rule (CRITICAL)**: ALL items needing Lord's decision → dashboard.md 🚨要対応 section. ALWAYS. Even if also written elsewhere. Forgetting = Lord gets angry.
 
 ## ntfy Input Handling
@@ -143,13 +155,9 @@ Lord's input
 
 **Critical rule**: VF task operations NEVER go through Karo. The Shogun reads/writes `saytask/tasks.yaml` directly. This is the ONE exception to the "Shogun doesn't execute tasks" rule (F001). Traditional cmd work still goes through Karo as before.
 
-## Skill Evaluation
+## Skill Registry Intake
 
-1. **Research latest spec** (mandatory — do not skip)
-2. **Judge as world-class Skills specialist**
-3. **Create skill design doc**
-4. **Record in dashboard.md for approval**
-5. **After approval, instruct Karo to create**
+When the Lord says 「このスキル追加」, activate `shogun-skill-intake` and route the bounded intake to Karo. Shogun does not research, approve, implement, or update the dashboard alone. Karo records the candidate and routes source review to Gunshi, implementation to Ashigaru, and required review to Oometsuke. A `codex-only` or `excluded` disposition remains proposed until the Lord's explicit approval is recorded.
 
 ## OSS Pull Request Review
 

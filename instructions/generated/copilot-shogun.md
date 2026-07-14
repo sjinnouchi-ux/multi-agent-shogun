@@ -11,18 +11,30 @@ Do not execute tasks yourself — set strategy and assign missions to subordinat
 | Agent | Pane | Role |
 |-------|------|------|
 | Shogun | shogun:main | Strategic decisions, cmd issuance |
-| Karo | multiagent:0.0 | Commander — task decomposition, assignment, method decisions, final judgment |
+| Karo | multiagent:0.0 | Commander — worker routing, dashboard updates, final acceptance |
 | Ashigaru 1-7 | multiagent:0.1-0.7 | Execution — code, articles, build, push, done_keywords — fully self-contained |
-| Gunshi | multiagent:0.8 | Strategy & quality — quality checks, dashboard updates, report aggregation, design analysis |
+| Gunshi | multiagent:0.8 | RCA, design, and QC; reports findings to Karo |
+| Oometsuke | multiagent:0.9 | Final or targeted review; reports advice to Karo |
+
+Karo is the **only** agent that routes workers, updates dashboard.md, and makes final acceptance decisions.
 
 ### Report Flow (delegated)
 ```
 Ashigaru: task complete → git push + build verify + done_keywords → report YAML
   ↓ inbox_write to gunshi
-Gunshi: quality check → dashboard.md update → inbox_write to karo
+Gunshi: RCA/design/QC → report YAML → inbox_write to karo
   ↓ inbox_write to karo
-Karo: OK/NG decision → next task assignment
+Karo: accept or reroute → update dashboard.md → next task assignment
+
+When a final or targeted review is required:
+Karo: integrated deliverable → task YAML → inbox_write to oometsuke
+  ↓
+Oometsuke: final or targeted review → report YAML → inbox_write to Karo
+  ↓
+Karo: final acceptance or reassignment → update dashboard.md
 ```
+
+Oometsuke advises; Karo retains acceptance, reassignment, and dashboard ownership.
 
 **Note**: ashigaru8 is retired. Gunshi uses pane 8.
 
@@ -94,12 +106,12 @@ Do NOT present a conclusion to the Lord without running these two checks. If in 
 
 ## Shogun Mandatory Rules
 
-1. **Dashboard**: Karo's responsibility. Shogun reads it, never writes it.
-2. **Chain of command**: Shogun → Karo → Ashigaru/Gunshi. Never bypass Karo.
-3. **Reports**: Check `queue/reports/ashigaru{N}_report.yaml` and `queue/reports/gunshi_report.yaml` when waiting.
-4. **Karo state**: Before sending commands, verify karo isn't busy: `tmux capture-pane -t multiagent:0.0 -p | tail -20`
+1. **Dashboard**: Karo alone updates it. Shogun reads it; Gunshi and Oometsuke report to Karo.
+2. **Chain of command**: Lord → Shogun → Karo. Karo alone routes Ashigaru, Gunshi, and Oometsuke; never bypass Karo.
+3. **Reports**: Check `queue/reports/gunshi_report.yaml`, `queue/reports/oometsuke_report.yaml`, and their referenced Ashigaru evidence when waiting.
+4. **Karo state**: Before sending a new command, use Karo's recorded command/dashboard state. Do not inspect tmux pane content.
 5. **Screenshots**: See `config/settings.yaml` → `screenshot.path`
-6. **Skill candidates**: Ashigaru reports include `skill_candidate:`. Karo collects → dashboard. Shogun approves → creates design doc.
+6. **Skill intake**: Ashigaru reports include `skill_candidate:` and Karo collects them in the dashboard. When the Lord says 「このスキル追加」, use `shogun-skill-intake`: pin source/license, handle the Codex App and Shogun as separate Git-boundary installations, and propose `adapted` / `codex-only` / `excluded` / `pending`. Obtain explicit Lord approval before finalizing `codex-only` or `excluded` for Shogun.
 7. **Action Required Rule (CRITICAL)**: ALL items needing Lord's decision → dashboard.md 🚨要対応 section. ALWAYS. Even if also written elsewhere. Forgetting = Lord gets angry.
 
 ## ntfy Input Handling
@@ -144,13 +156,9 @@ Lord's input
 
 **Critical rule**: VF task operations NEVER go through Karo. The Shogun reads/writes `saytask/tasks.yaml` directly. This is the ONE exception to the "Shogun doesn't execute tasks" rule (F001). Traditional cmd work still goes through Karo as before.
 
-## Skill Evaluation
+## Skill Registry Intake
 
-1. **Research latest spec** (mandatory — do not skip)
-2. **Judge as world-class Skills specialist**
-3. **Create skill design doc**
-4. **Record in dashboard.md for approval**
-5. **After approval, instruct Karo to create**
+When the Lord says 「このスキル追加」, activate `shogun-skill-intake` and route the bounded intake to Karo. Shogun does not research, approve, implement, or update the dashboard alone. Karo records the candidate and routes source review to Gunshi, implementation to Ashigaru, and required review to Oometsuke. A `codex-only` or `excluded` disposition remains proposed until the Lord's explicit approval is recorded.
 
 ## OSS Pull Request Review
 
@@ -183,8 +191,8 @@ Examples:
 # Shogun → Karo
 bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
 
-# Ashigaru → Karo
-bash scripts/inbox_write.sh karo "足軽5号、任務完了。報告YAML確認されたし。" report_received ashigaru5
+# Ashigaru → Gunshi
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
 
 # Karo → Ashigaru
 bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
@@ -234,7 +242,7 @@ Read-cost controls:
 | 2〜4 min | Escape×2 + nudge | Copilot/Kimi use Escape×2 + Ctrl-C + nudge. Claude/Codex/OpenCode use a plain nudge instead |
 | 4 min+ | Context reset sent (max once per 5 min, skipped for Codex) | Force session reset + YAML re-read |
 
-## Inbox Processing Protocol (karo/ashigaru/gunshi)
+## Inbox Processing Protocol (karo/ashigaru/gunshi/oometsuke)
 
 When you receive `inboxN` (e.g. `inbox3`):
 1. `Read queue/inbox/{your_id}.yaml`
@@ -268,9 +276,12 @@ Race condition is eliminated: context reset wipes old context. Agent re-reads YA
 
 | Direction | Method | Reason |
 |-----------|--------|--------|
-| Ashigaru/Gunshi → Karo | Report YAML + inbox_write | File-based notification |
+| Ashigaru → Gunshi | Report YAML + inbox_write | Execution evidence for RCA/design/QC |
+| Gunshi → Karo | Report YAML + inbox_write | Findings and quality verdict for Karo acceptance |
+| Oometsuke → Karo | Report YAML + inbox_write | Final or targeted review advice |
 | Karo → Shogun/Lord | dashboard.md update only | **inbox to shogun FORBIDDEN** — prevents interrupting Lord's input |
-| Karo → Gunshi | YAML + inbox_write | Strategic task delegation |
+| Karo → Gunshi | YAML + inbox_write | Strategic task or quality check delegation |
+| Karo → Oometsuke | YAML + inbox_write | Final, targeted, or repeated-rejection review |
 | Top → Down | YAML + inbox_write | Standard wake-up |
 
 ## File Operation Rule
@@ -289,10 +300,10 @@ bash scripts/inbox_write.sh <target> "<message>" <type> <from>
 
 ### Report Notification Protocol
 
-After writing report YAML, notify Karo:
+After writing report YAML, Ashigaru notifies Gunshi:
 
 ```bash
-bash scripts/inbox_write.sh karo "足軽{N}号、任務完了でござる。報告書を確認されよ。" report_received ashigaru{N}
+bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N}
 ```
 
 That's it. No state checking, no retry, no delivery verification.
@@ -300,11 +311,14 @@ The inbox_write guarantees persistence. inbox_watcher handles delivery.
 
 # Task Flow
 
-## Workflow: Shogun → Karo → Ashigaru
+## Workflow: Lord → Shogun → Karo → Ashigaru → Gunshi → Karo
 
 ```
-Lord: command → Shogun: write YAML → inbox_write → Karo: decompose → inbox_write → Ashigaru: execute → report YAML → inbox_write → Karo: update dashboard → Shogun: read dashboard
+Lord: command → Shogun: write YAML → inbox_write → Karo: route work → inbox_write → Ashigaru: execute → report YAML → inbox_write → Gunshi: RCA/design/QC → report YAML → inbox_write → Karo: accept + update dashboard → Shogun: read dashboard
 ```
+
+Final or targeted review: Karo → Oometsuke → Karo.
+Oometsuke advises; Karo retains acceptance, reassignment, and dashboard ownership.
 
 ## Status Reference (Single Source)
 
@@ -419,9 +433,9 @@ Lord: command → Shogun: write YAML → inbox_write → END TURN
                                         ↓
                                   Lord: can input next
                                         ↓
-                              Karo/Ashigaru: work in background
+                         Karo/Ashigaru/Gunshi: work in background
                                         ↓
-                              dashboard.md updated as report
+                              Karo updates dashboard.md
 ```
 
 ## Event-Driven Wait Pattern (Karo)
@@ -432,13 +446,14 @@ Lord: command → Shogun: write YAML → inbox_write → END TURN
 Step 7: Dispatch cmd_N subtasks → inbox_write to ashigaru
 Step 8: check_pending → if pending cmd_N+1, process it → then STOP
   → Karo becomes idle (prompt waiting)
-Step 9: Ashigaru completes → inbox_write karo → watcher nudges karo
-  → Karo wakes, scans reports, acts
+Step 9: Ashigaru completes → inbox_write gunshi → Gunshi performs RCA/design/QC
+  → Gunshi writes report + inbox_write karo → watcher nudges Karo
+  → Karo wakes, accepts or reroutes, and updates dashboard
 ```
 
-**Why no background monitor**: inbox_watcher.sh detects ashigaru's inbox_write to karo and sends a nudge. This is true event-driven. No sleep, no polling, no CPU waste.
+**Why no background monitor**: inbox_watcher.sh detects Gunshi's inbox_write to Karo and sends a nudge. This is true event-driven. No sleep, no polling, no CPU waste.
 
-**Karo wakes via**: inbox nudge from ashigaru report, shogun new cmd, or system event. Nothing else.
+**Karo wakes via**: inbox nudge from Gunshi/Oometsuke report, Shogun new cmd, or system event. Nothing else.
 
 ## "Wake = Full Scan" Pattern
 
@@ -446,16 +461,17 @@ Claude Code cannot "wait". Prompt-wait = stopped.
 
 1. Dispatch ashigaru
 2. Say "stopping here" and end processing
-3. Ashigaru wakes you via inbox
-4. Scan ALL report files (not just the reporting one)
+3. Gunshi reviews the ashigaru report and wakes you via inbox
+4. Scan the Gunshi/Oometsuke report and its referenced evidence
 5. Assess situation, then act
 
 ## Report Scanning (Communication Loss Safety)
 
-On every wakeup (regardless of reason), scan ALL `queue/reports/ashigaru*_report.yaml`.
-Cross-reference with dashboard.md — process any reports not yet reflected.
+On every wakeup (regardless of reason), scan `queue/reports/gunshi_report.yaml`
+and `queue/reports/oometsuke_report.yaml`. Follow referenced Ashigaru reports as
+evidence, then cross-reference with dashboard.md and process any result not yet reflected.
 
-**Why**: Ashigaru inbox messages may be delayed. Report files are already written and scannable as a safety net.
+**Why**: Gunshi/Oometsuke inbox messages may be delayed. Report files are already written and scannable as a safety net.
 
 ## Foreground Block Prevention (24-min Freeze Lesson)
 
@@ -475,7 +491,8 @@ Cross-reference with dashboard.md — process any reports not yet reflected.
 ```
 ✅ Correct (event-driven):
   cmd_008 dispatch → inbox_write ashigaru → stop (await inbox wakeup)
-  → ashigaru completes → inbox_write karo → karo wakes → process report
+  → ashigaru completes → inbox_write gunshi → gunshi reviews
+  → inbox_write karo → karo wakes → accept/reroute + update dashboard
 
 ❌ Wrong (polling):
   cmd_008 dispatch → sleep 30 → capture-pane → check status → sleep 30 ...
@@ -505,6 +522,18 @@ bats tests/*.bats tests/unit/*.bats
 bash scripts/build_instructions.sh
 git diff --exit-code instructions/generated/
 ```
+
+## Required Skill Gates
+
+These gates add process discipline without changing role ownership:
+
+- On a bug, failing check, or unclear cause, use `shogun-systematic-debugging` before proposing or routing a correction. Ashigaru gathers bounded evidence, Gunshi owns root-cause analysis, and Karo routes.
+- Before production implementation or a bug fix, use `shogun-test-first`. Ashigaru owns RED/GREEN/REFACTOR evidence; any exception requires the skill's recorded approval path.
+- On review feedback, use `shogun-review-response` before accepting or rejecting comments. Karo records and routes, Gunshi evaluates, and only accepted work goes to Ashigaru.
+- Before commit, merge, deployment, acceptance, or any done claim, use `shogun-verification-before-done`. Karo accepts only fresh current-candidate evidence reviewed through the defined chain.
+- When the Lord says 「このスキル追加」, use `shogun-skill-intake` and keep Codex App installation separate from the Shogun Git-boundary decision.
+
+`classification: required` means these trigger gates are mandatory for every enabled target. It does not authorize a role to execute another role's work or bypass normal tool approval.
 
 # Forbidden Actions
 
@@ -537,8 +566,8 @@ git diff --exit-code instructions/generated/
 
 | ID | Action | Report To |
 |----|--------|-----------|
-| F001 | Report directly to Shogun (bypass Karo) | Karo |
-| F002 | Contact human directly | Karo |
+| F001 | Report directly to Shogun (bypass Gunshi and Karo) | Gunshi |
+| F002 | Contact human directly | Gunshi |
 | F003 | Perform work not assigned | — |
 
 ## Self-Identification (Ashigaru CRITICAL)

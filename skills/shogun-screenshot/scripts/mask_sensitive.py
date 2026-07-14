@@ -1,101 +1,121 @@
 #!/usr/bin/env python3
-"""機微情報マスキングスクリプト — スクショ内の機密情報を黒塗りする"""
+"""Opaque-mask effective regions in a selector-bound image."""
+
+from __future__ import annotations
+
 import argparse
+import io
 import sys
 
+from safe_image_io import (
+    ScreenshotSafetyError,
+    read_image_snapshot,
+    reject_pillow_decompression_bombs,
+    require_absent_output,
+    require_bounded_image_dimensions,
+    require_distinct_paths,
+    save_image_exclusive,
+)
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="スクショ内の機微情報を矩形で塗りつぶす",
-        epilog='例: mask_sensitive.py --input shot.png --output masked.png --regions "100,50,400,80" "500,200,800,230"',
-    )
-    parser.add_argument("--input", required=True, help="入力画像のパス")
-    parser.add_argument("--output", required=True, help="出力画像のパス")
-    parser.add_argument(
-        "--regions",
-        nargs="+",
-        required=True,
-        help='マスク領域 "x1,y1,x2,y2"（複数指定可。左上(0,0)基準、ピクセル値）',
-    )
-    parser.add_argument(
-        "--color",
-        default="0,0,0",
-        help='塗りつぶし色 "R,G,B"（デフォルト: 0,0,0 = 黒）',
-    )
-    parser.add_argument(
-        "--preview",
-        action="store_true",
-        help="マスク領域を赤枠で表示（塗りつぶさない。位置確認用）",
-    )
-    args = parser.parse_args()
+
+def _triplet(value: str) -> tuple[int, int, int]:
+    try:
+        result = tuple(int(item.strip()) for item in value.split(","))
+        if len(result) != 3 or any(item < 0 or item > 255 for item in result):
+            raise ValueError
+        return result
+    except ValueError as exc:
+        raise ScreenshotSafetyError(
+            '--color must use three values from 0 to 255: "R,G,B"'
+        ) from exc
+
+
+def _region(value: str, index: int) -> tuple[int, int, int, int]:
+    try:
+        result = tuple(int(item.strip()) for item in value.split(","))
+        if len(result) != 4:
+            raise ValueError
+        return result
+    except ValueError as exc:
+        raise ScreenshotSafetyError(
+            f'region {index} must use the form "x1,y1,x2,y2"'
+        ) from exc
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="mask one selector-bound image")
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--input-identity", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--regions", nargs="+", required=True)
+    parser.add_argument("--color", default="0,0,0")
+    parser.add_argument("--preview", action="store_true", help=argparse.SUPPRESS)
+    args = parser.parse_args(argv)
+
+    if args.preview:
+        print(
+            "ERROR: preview output is forbidden because it contains unredacted data",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        require_distinct_paths(args.input, args.output)
+        require_absent_output(args.output)
+        fill_color = _triplet(args.color)
+        snapshot = read_image_snapshot(args.input, args.input_identity)
+    except ScreenshotSafetyError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     try:
         from PIL import Image, ImageDraw
     except ImportError:
-        print(
-            "ERROR: Pillow が未インストールです。以下のコマンドでインストールしてください:",
-            file=sys.stderr,
-        )
-        print("  pip install Pillow", file=sys.stderr)
-        sys.exit(1)
+        print("ERROR: Pillow is required for image processing", file=sys.stderr)
+        return 1
 
-    # 色のパース
     try:
-        fill_color = tuple(int(v.strip()) for v in args.color.split(","))
-        if len(fill_color) != 3:
-            raise ValueError
-    except ValueError:
-        print(
-            'ERROR: --color は "R,G,B" 形式で指定してください（例: "0,0,0"）',
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        with reject_pillow_decompression_bombs(Image):
+            with Image.open(io.BytesIO(snapshot.data)) as source:
+                require_bounded_image_dimensions(*source.size)
+                source.load()
+                result = source.copy()
+        width, height = result.size
 
-    # 画像読み込み
-    try:
-        img = Image.open(args.input)
-    except FileNotFoundError:
-        print(f"ERROR: 入力ファイルが見つかりません: {args.input}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: 画像を開けません: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    w, h = img.size
-    draw = ImageDraw.Draw(img)
-    masked_count = 0
-
-    for i, region in enumerate(args.regions, 1):
-        try:
-            coords = tuple(int(v.strip()) for v in region.split(","))
-            if len(coords) != 4:
-                raise ValueError
-            x1, y1, x2, y2 = coords
-        except ValueError:
-            print(
-                f'ERROR: 領域{i} "{region}" は "x1,y1,x2,y2" 形式で指定してください',
-                file=sys.stderr,
+        clipped_regions: list[tuple[int, int, int, int]] = []
+        for index, value in enumerate(args.regions, 1):
+            x1, y1, x2, y2 = _region(value, index)
+            if x2 <= x1 or y2 <= y1:
+                raise ScreenshotSafetyError(f"region {index} has zero area")
+            clipped = (
+                max(0, min(x1, width)),
+                max(0, min(y1, height)),
+                max(0, min(x2, width)),
+                max(0, min(y2, height)),
             )
-            sys.exit(1)
+            if clipped[2] <= clipped[0] or clipped[3] <= clipped[1]:
+                raise ScreenshotSafetyError(
+                    f"region {index} does not overlap the image"
+                )
+            clipped_regions.append(clipped)
 
-        # 座標をクランプ
-        x1 = max(0, min(x1, w))
-        y1 = max(0, min(y1, h))
-        x2 = max(x1, min(x2, w))
-        y2 = max(y1, min(y2, h))
+        draw = ImageDraw.Draw(result)
+        for x1, y1, x2, y2 in clipped_regions:
+            draw.rectangle((x1, y1, x2 - 1, y2 - 1), fill=fill_color)
 
-        if args.preview:
-            # プレビューモード: 赤枠で表示
-            draw.rectangle([x1, y1, x2, y2], outline=(255, 0, 0), width=3)
-        else:
-            # マスクモード: 塗りつぶし
-            draw.rectangle([x1, y1, x2, y2], fill=fill_color)
-        masked_count += 1
+        save_image_exclusive(result, args.output)
+    except ScreenshotSafetyError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        print(f"ERROR: image processing failed: {exc}", file=sys.stderr)
+        return 1
 
-    img.save(args.output)
-    mode = "preview" if args.preview else "masked"
-    print(f"OK: {args.output} ({w}x{h}, {masked_count} regions {mode})")
+    print(
+        f"OK: {args.output} ({width}x{height}, {len(clipped_regions)} regions masked)"
+    )
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

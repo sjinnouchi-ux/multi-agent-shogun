@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- Git-canonical Shogun Skill Registry with portable Claude/Codex rendering, deterministic lock, provenance, validation, transactional apply/rollback/recovery, and the 「このスキル追加」 intake contract
+- 12 reviewed Registry entries: 11 enabled for deployment and `shogun-model-switch` quarantined pending a transactional, non-authority-expanding skill adapter; the existing operator-controlled core command remains separate
+
+### Changed
+- Unified role governance around Lord → Shogun → Karo commands, Ashigaru → Gunshi → Karo evidence, Oometsuke independent review, and Karo-only routing/dashboard/acceptance with mechanical checks only
+- Replaced static model/price guidance with current CLI verification, review-only Bloom proposals, explicit fallback handling, and `unverified` status for unknown facts
+- Documented that Windows Codex App and WSL2 Shogun remain Git-boundary-separated and that newly applied skills require new Claude/Codex CLI sessions
+
 ## [5.2.0] - 2026-06-06
 
 ### Added
@@ -22,7 +33,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Clarified Karo as a workflow traffic controller instead of an execution bottleneck
 - Moved qualitative review ownership to Gunshi for QC, evidence review, RCA, adoption/drop decisions, and deploy blocker classification
-- Reframed E2E ownership: Karo reviews the plan, checks prerequisites, and makes the final pass/fail decision while execution is delegated by default
+- Reframed E2E ownership: Gunshi reviews the plan/evidence, Ashigaru execute, and Karo checks mechanical prerequisites/manifests before final pass/fail acceptance
 - Regenerated Claude, Codex, Copilot, Kimi, and OpenCode instruction files from the updated role definitions
 
 ### Fixed
