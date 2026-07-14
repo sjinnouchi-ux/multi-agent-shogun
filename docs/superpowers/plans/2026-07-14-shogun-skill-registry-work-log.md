@@ -10,7 +10,8 @@
 
 - Repository: `sjinnouchi-ux/multi-agent-shogun`
 - Baseline `main`: `3621e9718a401451e9330ecbf7f73245bb7e63b6`
-- Working branch: `codex/shogun-skill-registry`
+- Implementation branch: `codex/shogun-skill-registry`
+- Post-merge work-log branch: `codex/registry-deploy-log-94e6052d`
 - Work date: 2026-07-14
 - Deployment boundary: Git-reviewed immutable revision; no live Shogun/tmux/queue/report/log/auth state is part of this implementation workspace
 
@@ -55,7 +56,7 @@ This table distinguishes interim evidence from final close-out. No row marked pe
 - Merge commit: [`b32db5a40f65b251eae0a5f6497e92d566f79d07`](https://github.com/sjinnouchi-ux/multi-agent-shogun/commit/b32db5a40f65b251eae0a5f6497e92d566f79d07)
 - Post-merge Windows Codex install: complete and byte-verified for `shogun-skill-intake` only
 - Post-merge WSL Shogun apply: complete and idempotence-verified for both Claude and Codex targets
-- Session boundary: no live session was restarted; newly installed skills are discovered in a new Claude/Codex session, or after restart if automatic detection does not appear
+- Session boundary: no live session was restarted and skill discovery was not claimed from a live session; use a new Claude/Codex CLI session for the WSL copies, and restart Windows Codex only if its automatic user-skill detection does not appear
 
 ## Close-out Checklist
 
