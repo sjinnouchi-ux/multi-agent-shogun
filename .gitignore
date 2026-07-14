@@ -133,6 +133,8 @@ scripts/seo_qc.sh
 !scripts/handoff_watchdog.py
 !scripts/skill_registry.py
 !scripts/skill_registry.sh
+!scripts/codex_diagnostics.py
+!scripts/rollback_codex_diagnostics_snapshot.py
 
 
 # SayTask (sample template only, not actual data)
@@ -160,6 +162,7 @@ logs/
 !docs/superpowers/specs/*.md
 !docs/superpowers/plans/
 !docs/superpowers/plans/*.md
+!docs/codex-diagnostics.md
 
 # Deployment templates (installed copies remain local)
 !deploy/
@@ -246,6 +249,13 @@ tests/specs/osato_lms_*
 !tests/fixtures/*.yaml
 !tests/unit/
 !tests/unit/*.bats
+!tests/unit/test_codex_diagnostics.py
+!tests/unit/test_rollback_codex_diagnostics_snapshot.py
+!tests/integration/test_codex_diagnostics_tmux.py
+!tests/contract/
+!tests/contract/__init__.py
+!tests/contract/codex_diagnostics_consumer.py
+!tests/contract/test_codex_diagnostics_consumer.py
 !tests/skill_scenarios/
 !tests/skill_scenarios/*.yaml
 !tests/integration/
