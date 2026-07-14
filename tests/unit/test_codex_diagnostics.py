@@ -5,8 +5,10 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -158,6 +160,141 @@ class CliAndSourceHashTests(unittest.TestCase):
         self.assertLessEqual(
             sum(item.get("status") == "active" for item in value["deployments"]), 1
         )
+
+
+class ScriptedRunner:
+    def __init__(self, results):
+        self.results = dict(results)
+        self.calls = []
+
+    def __call__(self, argv):
+        self.calls.append(argv)
+        if argv not in self.results:
+            raise AssertionError(f"unexpected command: {argv!r}")
+        return self.results[argv]
+
+
+class CommandRunnerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def test_stream_budget_enforces_bytes_and_records_without_partial_result(self) -> None:
+        budget = self.module._StreamBudget(max_bytes=8, max_records=2)
+        self.assertFalse(budget.feed(b"one\n"))
+        self.assertFalse(budget.feed(b"two"))
+        self.assertTrue(budget.feed(b"\nX"))
+        self.assertTrue(budget.limited)
+        self.assertLessEqual(len(budget.data), 9)
+
+        bytes_budget = self.module._StreamBudget(max_bytes=4, max_records=128)
+        self.assertTrue(bytes_budget.feed(b"12345"))
+        self.assertTrue(bytes_budget.limited)
+
+        nul_budget = self.module._StreamBudget(max_bytes=1_024, max_records=2)
+        self.assertTrue(nul_budget.feed(b"one\0two\0three\0"))
+        self.assertTrue(nul_budget.limited)
+
+    def test_drain_discards_partial_output_after_nul_record_limit(self) -> None:
+        stdout_read, stdout_write = os.pipe()
+        stderr_read, stderr_write = os.pipe()
+        os.write(stdout_write, b"\0".join([b"record"] * 129) + b"\0")
+        os.close(stdout_write)
+        os.close(stderr_write)
+        stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        process = mock.Mock(pid=42, stdout=stdout, stderr=stderr)
+        try:
+            with mock.patch.object(self.module, "_terminate_and_reap") as terminate:
+                result = self.module.drain_process(
+                    process,
+                    command_deadline=2.0,
+                    overall_deadline=10.0,
+                    monotonic=lambda: 0.0,
+                )
+        finally:
+            stdout.close()
+            stderr.close()
+        self.assertEqual(
+            result,
+            self.module.CommandResult("output_limited", None, b""),
+        )
+        terminate.assert_called_once()
+
+    def test_terminate_does_not_wait_after_overall_deadline_is_exhausted(self) -> None:
+        process = mock.Mock(pid=42)
+        with mock.patch.object(self.module.os, "killpg"):
+            self.module._terminate_and_reap(
+                process,
+                deadline=10.0,
+                monotonic=lambda: 10.0,
+            )
+        process.wait.assert_not_called()
+        process.poll.assert_called_once_with()
+
+    def test_runner_rejects_non_allowlisted_executable_without_spawning(self) -> None:
+        factory = mock.Mock()
+        runner = self.module.CommandRunner(popen_factory=factory)
+        result = runner(("/bin/sh", "-c", "id"))
+        self.assertEqual(result, self.module.CommandResult("failed", None, b""))
+        factory.assert_not_called()
+
+    def test_runner_uses_fixed_process_boundary_and_discards_stderr(self) -> None:
+        process = mock.Mock()
+        drain = mock.Mock(
+            return_value=self.module.CommandResult("ok", 0, b"main\n")
+        )
+        factory = mock.Mock(return_value=process)
+        runner = self.module.CommandRunner(
+            popen_factory=factory,
+            drain=drain,
+            monotonic=lambda: 100.0,
+        )
+        result = runner(("/usr/bin/git", "branch", "--show-current"))
+        self.assertEqual(result.stdout, b"main\n")
+        _, kwargs = factory.call_args
+        self.assertFalse(kwargs["shell"])
+        self.assertEqual(kwargs["cwd"], ".")
+        self.assertIs(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], subprocess.PIPE)
+        self.assertIs(kwargs["stderr"], subprocess.PIPE)
+        self.assertTrue(kwargs["start_new_session"])
+        self.assertEqual(
+            kwargs["env"],
+            {
+                "PATH": "/usr/bin:/bin",
+                "LANG": "C",
+                "LC_ALL": "C",
+                "HOME": "/nonexistent",
+                "XDG_CONFIG_HOME": "/nonexistent",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_PAGER": "cat",
+            },
+        )
+        drain.assert_called_once()
+
+    def test_runner_honors_shared_ten_second_deadline_before_spawn(self) -> None:
+        ticks = iter((0.0, 10.01))
+        factory = mock.Mock()
+        runner = self.module.CommandRunner(
+            popen_factory=factory,
+            monotonic=lambda: next(ticks),
+        )
+        result = runner(("/usr/bin/git", "status"))
+        self.assertEqual(result.status, "timeout")
+        factory.assert_not_called()
+
+    def test_real_runner_accepts_only_bounded_git_output(self) -> None:
+        runner = self.module.CommandRunner()
+        result = runner(("/usr/bin/git", "--version"))
+        self.assertEqual(result.status, "ok")
+        self.assertLessEqual(len(result.stdout), 65_536)
+        self.assertNotIn(b"traceback", result.stdout.lower())
+
+        failure = runner(("/usr/bin/git", "--definitely-invalid-diagnostics-option"))
+        self.assertEqual(failure.status, "nonzero")
+        self.assertFalse(hasattr(failure, "stderr"))
+        self.assertNotIn(b"usage:", failure.stdout.lower())
 
 
 if __name__ == "__main__":
