@@ -224,7 +224,7 @@ Model is set by `build_cli_command()` in cli_adapter.sh based on settings.yaml. 
 |---------|------------|-----------|--------|
 | Memory MCP | Built-in | Not built-in (configurable) | Recovery relies on AGENTS.md + files |
 | Task tool (subagents) | Yes | No | Cannot spawn sub-agents |
-| Skill system | Yes | No | No slash command skills |
+| Skill system | Yes | Yes | User skills load from `~/.agents/skills`; inspect with `/skills` and invoke explicitly as `$skill-name` |
 | Dynamic model switch | `/model` via send-keys | `/model` in TUI only | Limited in automated mode |
 | `/clear` context reset | Yes | `/new` (TUI only) | Exec mode: new invocation |
 | Prompt caching | 90% discount | 75% discount | Higher cost per token |

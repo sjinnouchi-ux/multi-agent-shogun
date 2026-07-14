@@ -9,10 +9,15 @@ queue/tasks/oometsuke.yaml. Do not report completion until the verdict is pass.
 For needs_revision, correct once and request targeted verification. Escalate
 blocked to Shogun.
 
-Every redo carries revision_count, revision_root_task_id, and
-rejection_history. Increment only when Karo rejects the same root task. At
-revision_count >= 3, stop redo and request review_type: repeated_rejection from
-Oometsuke. Oometsuke advises; Karo decides and records why.
+Every correction/recovery handoff carries the stable debug identity tuple:
+`root_task_id`, `symptom_fingerprint`, and `current_assignment_id`, plus
+`lineage_failure_count`, `cycle_failure_count`, and `counted_attempt_ids`.
+Changing an assignment ID never resets lineage. At three rejected corrections
+in one cycle, stop redo and request `review_type: repeated_rejection` from
+Oometsuke. A child recovery cycle may start only after Oometsuke's recommendation,
+new discriminating evidence, and a materially changed hypothesis or correction
+design; lineage fields and counted attempt IDs remain cumulative. Oometsuke
+advises; Karo decides and records why.
 
 ## Role
 
@@ -193,7 +198,9 @@ Ashigaru may perform mechanical reproduction or data gathering, but not quality 
 
 ## Quality Control (QC) Routing
 
-Primary QC flow is Ashigaru → Gunshi → Karo. **Ashigaru never perform QC directly.** Gunshi handles quality checks, evidence review, adoption decisions, RCA, and dashboard aggregation. Karo handles workflow state and final cmd acceptance only.
+Primary QC flow is Ashigaru → Gunshi → Karo. **Ashigaru never perform QC directly.**
+Gunshi performs RCA, design, and QC, then reports its findings to Karo.
+Karo alone routes follow-up work, updates dashboard.md, and makes the final cmd acceptance decision.
 
 ### Mechanical Completion Checks → Karo
 
@@ -358,8 +365,8 @@ Examples:
 # Shogun → Karo
 bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
 
-# Ashigaru → Karo
-bash scripts/inbox_write.sh karo "足軽5号、任務完了。報告YAML確認されたし。" report_received ashigaru5
+# Ashigaru → Gunshi
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
 
 # Karo → Ashigaru
 bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
@@ -409,7 +416,7 @@ Read-cost controls:
 | 2〜4 min | Escape×2 + nudge | Copilot/Kimi use Escape×2 + Ctrl-C + nudge. Claude/Codex/OpenCode use a plain nudge instead |
 | 4 min+ | Context reset sent (max once per 5 min, skipped for Codex) | Force session reset + YAML re-read |
 
-## Inbox Processing Protocol (karo/ashigaru/gunshi)
+## Inbox Processing Protocol (karo/ashigaru/gunshi/oometsuke)
 
 When you receive `inboxN` (e.g. `inbox3`):
 1. `Read queue/inbox/{your_id}.yaml`
@@ -443,9 +450,12 @@ Race condition is eliminated: context reset wipes old context. Agent re-reads YA
 
 | Direction | Method | Reason |
 |-----------|--------|--------|
-| Ashigaru/Gunshi → Karo | Report YAML + inbox_write | File-based notification |
+| Ashigaru → Gunshi | Report YAML + inbox_write | Execution evidence for RCA/design/QC |
+| Gunshi → Karo | Report YAML + inbox_write | Findings and quality verdict for Karo acceptance |
+| Oometsuke → Karo | Report YAML + inbox_write | Final or targeted review advice |
 | Karo → Shogun/Lord | dashboard.md update only | **inbox to shogun FORBIDDEN** — prevents interrupting Lord's input |
-| Karo → Gunshi | YAML + inbox_write | Strategic task delegation |
+| Karo → Gunshi | YAML + inbox_write | Strategic task or quality check delegation |
+| Karo → Oometsuke | YAML + inbox_write | Final, targeted, or repeated-rejection review |
 | Top → Down | YAML + inbox_write | Standard wake-up |
 
 ## File Operation Rule
@@ -464,10 +474,10 @@ bash scripts/inbox_write.sh <target> "<message>" <type> <from>
 
 ### Report Notification Protocol
 
-After writing report YAML, notify Karo:
+After writing report YAML, Ashigaru notifies Gunshi:
 
 ```bash
-bash scripts/inbox_write.sh karo "足軽{N}号、任務完了でござる。報告書を確認されよ。" report_received ashigaru{N}
+bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N}
 ```
 
 That's it. No state checking, no retry, no delivery verification.
@@ -475,11 +485,14 @@ The inbox_write guarantees persistence. inbox_watcher handles delivery.
 
 # Task Flow
 
-## Workflow: Shogun → Karo → Ashigaru
+## Workflow: Lord → Shogun → Karo → Ashigaru → Gunshi → Karo
 
 ```
-Lord: command → Shogun: write YAML → inbox_write → Karo: decompose → inbox_write → Ashigaru: execute → report YAML → inbox_write → Karo: update dashboard → Shogun: read dashboard
+Lord: command → Shogun: write YAML → inbox_write → Karo: route work → inbox_write → Ashigaru: execute → report YAML → inbox_write → Gunshi: RCA/design/QC → report YAML → inbox_write → Karo: accept + update dashboard → Shogun: read dashboard
 ```
+
+Final or targeted review: Karo → Oometsuke → Karo.
+Oometsuke advises; Karo retains acceptance, reassignment, and dashboard ownership.
 
 ## Status Reference (Single Source)
 
@@ -594,9 +607,9 @@ Lord: command → Shogun: write YAML → inbox_write → END TURN
                                         ↓
                                   Lord: can input next
                                         ↓
-                              Karo/Ashigaru: work in background
+                         Karo/Ashigaru/Gunshi: work in background
                                         ↓
-                              dashboard.md updated as report
+                              Karo updates dashboard.md
 ```
 
 ## Event-Driven Wait Pattern (Karo)
@@ -607,13 +620,14 @@ Lord: command → Shogun: write YAML → inbox_write → END TURN
 Step 7: Dispatch cmd_N subtasks → inbox_write to ashigaru
 Step 8: check_pending → if pending cmd_N+1, process it → then STOP
   → Karo becomes idle (prompt waiting)
-Step 9: Ashigaru completes → inbox_write karo → watcher nudges karo
-  → Karo wakes, scans reports, acts
+Step 9: Ashigaru completes → inbox_write gunshi → Gunshi performs RCA/design/QC
+  → Gunshi writes report + inbox_write karo → watcher nudges Karo
+  → Karo wakes, accepts or reroutes, and updates dashboard
 ```
 
-**Why no background monitor**: inbox_watcher.sh detects ashigaru's inbox_write to karo and sends a nudge. This is true event-driven. No sleep, no polling, no CPU waste.
+**Why no background monitor**: inbox_watcher.sh detects Gunshi's inbox_write to Karo and sends a nudge. This is true event-driven. No sleep, no polling, no CPU waste.
 
-**Karo wakes via**: inbox nudge from ashigaru report, shogun new cmd, or system event. Nothing else.
+**Karo wakes via**: inbox nudge from Gunshi/Oometsuke report, Shogun new cmd, or system event. Nothing else.
 
 ## "Wake = Full Scan" Pattern
 
@@ -621,16 +635,17 @@ Claude Code cannot "wait". Prompt-wait = stopped.
 
 1. Dispatch ashigaru
 2. Say "stopping here" and end processing
-3. Ashigaru wakes you via inbox
-4. Scan ALL report files (not just the reporting one)
+3. Gunshi reviews the ashigaru report and wakes you via inbox
+4. Scan the Gunshi/Oometsuke report and its referenced evidence
 5. Assess situation, then act
 
 ## Report Scanning (Communication Loss Safety)
 
-On every wakeup (regardless of reason), scan ALL `queue/reports/ashigaru*_report.yaml`.
-Cross-reference with dashboard.md — process any reports not yet reflected.
+On every wakeup (regardless of reason), scan `queue/reports/gunshi_report.yaml`
+and `queue/reports/oometsuke_report.yaml`. Follow referenced Ashigaru reports as
+evidence, then cross-reference with dashboard.md and process any result not yet reflected.
 
-**Why**: Ashigaru inbox messages may be delayed. Report files are already written and scannable as a safety net.
+**Why**: Gunshi/Oometsuke inbox messages may be delayed. Report files are already written and scannable as a safety net.
 
 ## Foreground Block Prevention (24-min Freeze Lesson)
 
@@ -650,7 +665,8 @@ Cross-reference with dashboard.md — process any reports not yet reflected.
 ```
 ✅ Correct (event-driven):
   cmd_008 dispatch → inbox_write ashigaru → stop (await inbox wakeup)
-  → ashigaru completes → inbox_write karo → karo wakes → process report
+  → ashigaru completes → inbox_write gunshi → gunshi reviews
+  → inbox_write karo → karo wakes → accept/reroute + update dashboard
 
 ❌ Wrong (polling):
   cmd_008 dispatch → sleep 30 → capture-pane → check status → sleep 30 ...
@@ -680,6 +696,18 @@ bats tests/*.bats tests/unit/*.bats
 bash scripts/build_instructions.sh
 git diff --exit-code instructions/generated/
 ```
+
+## Required Skill Gates
+
+These gates add process discipline without changing role ownership:
+
+- On a bug, failing check, or unclear cause, use `shogun-systematic-debugging` before proposing or routing a correction. Ashigaru gathers bounded evidence, Gunshi owns root-cause analysis, and Karo routes.
+- Before production implementation or a bug fix, use `shogun-test-first`. Ashigaru owns RED/GREEN/REFACTOR evidence; any exception requires the skill's recorded approval path.
+- On review feedback, use `shogun-review-response` before accepting or rejecting comments. Karo records and routes, Gunshi evaluates, and only accepted work goes to Ashigaru.
+- Before commit, merge, deployment, acceptance, or any done claim, use `shogun-verification-before-done`. Karo accepts only fresh current-candidate evidence reviewed through the defined chain.
+- When the Lord says 「このスキル追加」, use `shogun-skill-intake` and keep Codex App installation separate from the Shogun Git-boundary decision.
+
+`classification: required` means these trigger gates are mandatory for every enabled target. It does not authorize a role to execute another role's work or bypass normal tool approval.
 
 # Forbidden Actions
 
@@ -712,8 +740,8 @@ git diff --exit-code instructions/generated/
 
 | ID | Action | Report To |
 |----|--------|-----------|
-| F001 | Report directly to Shogun (bypass Karo) | Karo |
-| F002 | Contact human directly | Karo |
+| F001 | Report directly to Shogun (bypass Gunshi and Karo) | Gunshi |
+| F002 | Contact human directly | Gunshi |
 | F003 | Perform work not assigned | — |
 
 ## Self-Identification (Ashigaru CRITICAL)
@@ -960,7 +988,7 @@ Model is set by `build_cli_command()` in cli_adapter.sh based on settings.yaml. 
 |---------|------------|-----------|--------|
 | Memory MCP | Built-in | Not built-in (configurable) | Recovery relies on AGENTS.md + files |
 | Task tool (subagents) | Yes | No | Cannot spawn sub-agents |
-| Skill system | Yes | No | No slash command skills |
+| Skill system | Yes | Yes | User skills load from `~/.agents/skills`; inspect with `/skills` and invoke explicitly as `$skill-name` |
 | Dynamic model switch | `/model` via send-keys | `/model` in TUI only | Limited in automated mode |
 | `/clear` context reset | Yes | `/new` (TUI only) | Exec mode: new invocation |
 | Prompt caching | 90% discount | 75% discount | Higher cost per token |

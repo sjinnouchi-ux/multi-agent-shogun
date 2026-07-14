@@ -112,9 +112,7 @@ EOFYAML
             ;;
     esac
 
-    if [[ "$cli_type" == "opencode" ]]; then
-        normalize_generated_markdown "$output_path"
-    fi
+    normalize_generated_markdown "$output_path"
 
     echo "  ✅ Created: $output_filename"
 }
@@ -167,6 +165,13 @@ build_instruction_file "antigravity" "ashigaru" "antigravity-ashigaru.md"
 build_instruction_file "antigravity" "gunshi" "antigravity-gunshi.md"
 build_instruction_file "antigravity" "oometsuke" "antigravity-oometsuke.md"
 
+# Claude runtime paths are consumed directly by lib/cli_adapter.sh. Keep them
+# byte-identical to the canonical generated Claude outputs so legacy files
+# cannot retain an older role or dashboard contract.
+for role in shogun karo ashigaru gunshi oometsuke; do
+    cp "$OUTPUT_DIR/${role}.md" "$ROOT_DIR/instructions/${role}.md"
+done
+
 # ============================================================
 # AGENTS.md generation (Codex auto-load file)
 # ============================================================
@@ -191,6 +196,7 @@ generate_agents_md() {
         -e 's|instructions/karo\.md|instructions/generated/codex-karo.md|g' \
         -e 's|instructions/ashigaru\.md|instructions/generated/codex-ashigaru.md|g' \
         -e 's|instructions/gunshi\.md|instructions/generated/codex-gunshi.md|g' \
+        -e 's|instructions/oometsuke\.md|instructions/generated/codex-oometsuke.md|g' \
         -e 's|~/.claude/|~/.codex/|g' \
         -e 's|\.claude\.json|.codex/config.toml|g' \
         -e 's|\.mcp\.json|config.toml (mcp_servers section)|g' \
@@ -237,6 +243,7 @@ generate_copilot_instructions() {
         -e 's|instructions/karo\.md|instructions/generated/copilot-karo.md|g' \
         -e 's|instructions/ashigaru\.md|instructions/generated/copilot-ashigaru.md|g' \
         -e 's|instructions/gunshi\.md|instructions/generated/copilot-gunshi.md|g' \
+        -e 's|instructions/oometsuke\.md|instructions/generated/copilot-oometsuke.md|g' \
         -e 's|~/.claude/|~/.copilot/|g' \
         -e 's|\.claude\.json|.copilot/config.json|g' \
         -e 's|\.mcp\.json|.copilot/mcp-config.json|g' \
@@ -275,6 +282,7 @@ generate_kimi_instructions() {
         -e 's|instructions/karo\.md|instructions/generated/kimi-karo.md|g' \
         -e 's|instructions/ashigaru\.md|instructions/generated/kimi-ashigaru.md|g' \
         -e 's|instructions/gunshi\.md|instructions/generated/kimi-gunshi.md|g' \
+        -e 's|instructions/oometsuke\.md|instructions/generated/kimi-oometsuke.md|g' \
         -e 's|~/.claude/|~/.kimi/|g' \
         -e 's|\.claude\.json|.kimi/config.json|g' \
         -e 's|\.mcp\.json|.kimi/mcp.json|g' \

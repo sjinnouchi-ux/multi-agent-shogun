@@ -13,8 +13,8 @@ Examples:
 # Shogun → Karo
 bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
 
-# Ashigaru → Karo
-bash scripts/inbox_write.sh karo "足軽5号、任務完了。報告YAML確認されたし。" report_received ashigaru5
+# Ashigaru → Gunshi
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
 
 # Karo → Ashigaru
 bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
@@ -64,7 +64,7 @@ Read-cost controls:
 | 2〜4 min | Escape×2 + nudge | Copilot/Kimi use Escape×2 + Ctrl-C + nudge. Claude/Codex/OpenCode use a plain nudge instead |
 | 4 min+ | Context reset sent (max once per 5 min, skipped for Codex) | Force session reset + YAML re-read |
 
-## Inbox Processing Protocol (karo/ashigaru/gunshi)
+## Inbox Processing Protocol (karo/ashigaru/gunshi/oometsuke)
 
 When you receive `inboxN` (e.g. `inbox3`):
 1. `Read queue/inbox/{your_id}.yaml`
@@ -98,9 +98,12 @@ Race condition is eliminated: context reset wipes old context. Agent re-reads YA
 
 | Direction | Method | Reason |
 |-----------|--------|--------|
-| Ashigaru/Gunshi → Karo | Report YAML + inbox_write | File-based notification |
+| Ashigaru → Gunshi | Report YAML + inbox_write | Execution evidence for RCA/design/QC |
+| Gunshi → Karo | Report YAML + inbox_write | Findings and quality verdict for Karo acceptance |
+| Oometsuke → Karo | Report YAML + inbox_write | Final or targeted review advice |
 | Karo → Shogun/Lord | dashboard.md update only | **inbox to shogun FORBIDDEN** — prevents interrupting Lord's input |
-| Karo → Gunshi | YAML + inbox_write | Strategic task delegation |
+| Karo → Gunshi | YAML + inbox_write | Strategic task or quality check delegation |
+| Karo → Oometsuke | YAML + inbox_write | Final, targeted, or repeated-rejection review |
 | Top → Down | YAML + inbox_write | Standard wake-up |
 
 ## File Operation Rule
@@ -119,10 +122,10 @@ bash scripts/inbox_write.sh <target> "<message>" <type> <from>
 
 ### Report Notification Protocol
 
-After writing report YAML, notify Karo:
+After writing report YAML, Ashigaru notifies Gunshi:
 
 ```bash
-bash scripts/inbox_write.sh karo "足軽{N}号、任務完了でござる。報告書を確認されよ。" report_received ashigaru{N}
+bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N}
 ```
 
 That's it. No state checking, no retry, no delivery verification.

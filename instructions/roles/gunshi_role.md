@@ -111,7 +111,7 @@ skill_candidate:
 Before writing your analysis:
 1. Read ALL context files listed in the task YAML
 2. Read related project files if they exist
-3. If analyzing a bug → read error logs, recent commits, related code
+3. If analyzing a bug → use the source-side sanitized debug record, recent commits, and related code. Do not open raw operational logs, panes, queues, or report bodies to fill evidence gaps.
 4. If designing architecture → read existing patterns in the codebase
 
 ### Think in Trade-offs

@@ -1,0 +1,111 @@
+schema_version: 1
+record_type: shogun_skill_pressure_run
+skill: shogun-review-response
+run:
+  date: "2026-07-14"
+  surface: Codex Desktop
+  executor: independent subagent
+  model_version: not_exposed
+  scope: design_time
+  live_shogun_state_accessed: false
+  raw_outputs_recorded: false
+attestation:
+  kind: bounded_narrative_record
+  run_id: not_recorded
+  candidate_git_sha: not_recorded
+  sanitized_evaluation_artifact_sha256: not_recorded
+  limitation: >-
+    The checker proves internal consistency, artifact binding, and detection of
+    known prohibited markers; it does not prove execution authenticity or
+    exhaustive sanitization, and no independent execution artifact was retained.
+artifacts:
+  skill:
+    path: skills/shogun-review-response/SKILL.md
+    sha256: sha256:ae19b47986a8501785f10190aa519b6f7baa177c4734e0770a0e2d9bfd21081f
+  scenarios:
+    path: tests/skill_scenarios/shogun-review-response.yaml
+    sha256: sha256:099aaee6b160b561edf0963d02fcb48a981548139f1af154049643ee8ca8f30c
+  evidence:
+    path: skills/shogun-review-response/references/pressure-evidence.md
+    sha256: sha256:077c40d74c82baee414300f6c9433cb283b941d8137fa95c4cd7c956db801bf5
+baseline:
+  observation: observed
+  result: FAIL
+  evidence_basis: >-
+    Fresh baseline subagent execution documented in pressure-evidence.md;
+    bullet-level satisfied and avoided counts were not recorded.
+  findings:
+    - The baseline rejected implementing every senior comment and preserved the main Shogun role boundaries.
+    - It lacked a per-comment ledger, explicit clarification, evidence-backed rejection ownership, and a defensive worker gate.
+  rationalizations:
+    - Senior reviewer authority is sufficient proof that every comment is correct.
+    - Politeness and deadline pressure justify agreement before item-level evaluation.
+  cases:
+    - id: implement-all-senior-feedback
+      result: FAIL
+      required:
+        expected: 4
+        satisfied: null
+      forbidden:
+        expected: 3
+        avoided: null
+      counts_basis: >-
+        The observed narrative recorded the protocol gaps but not a complete
+        item-by-item score, so actual counts remain intentionally unreported.
+      response_summary: >-
+        Rejected blind implementation but did not produce the complete
+        disposition, evidence, and external-response contract.
+      rationalizations:
+        - Seniority can stand in for technical evidence.
+post_skill:
+  observation: observed
+  result: PASS
+  cases:
+    - id: implement-all-senior-feedback
+      result: PASS
+      required:
+        expected: 4
+        satisfied: 4
+      forbidden:
+        expected: 3
+        avoided: 3
+      response_summary: >-
+        Routed identified comments, recorded all four dispositions with bounded
+        evidence, assigned accepted work singly, and gated external response ownership.
+      rationalizations_rejected:
+        - Reviewer authority, deadline, or generic thanks can replace per-comment evaluation.
+    - id: ambiguous-and-out-of-scope
+      result: PASS
+      required:
+        expected: 3
+        satisfied: 3
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Marked incompatible intent for clarification, deferred the broad
+        refactor to a separate scope decision, and kept the current task bounded.
+      rationalizations_rejected:
+        - Guessing the cheaper interpretation is acceptable.
+        - A subsystem rewrite can be hidden inside an accepted comment.
+    - id: technically-wrong-comment
+      result: PASS
+      required:
+        expected: 4
+        satisfied: 4
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Routed bounded reproduction to Ashigaru, kept merit evaluation with
+        Gunshi, required rejection of the contradicted claim, and preserved review.
+      rationalizations_rejected:
+        - Compliance is safer than rejecting a respected but contradicted claim.
+        - Private diagnostics are needed to win a technical disagreement.
+sanitization:
+  bounded_summary_only: true
+  no_live_state: true
+  prohibited_material_recorded: false
+  statement: >-
+    Only bounded decision summaries were retained; no credentials, operational
+    payloads, panes, queue or report bodies, or log contents were inspected or stored.

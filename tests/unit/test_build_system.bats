@@ -127,10 +127,13 @@ setup() {
     [ -f "$OUTPUT_DIR/antigravity-gunshi.md" ]
 }
 
-@test "opencode: generated markdown is LF-only and has no trailing whitespace [R6]" {
+@test "generated markdown is LF-only and has no trailing whitespace" {
     local file
 
-    for file in "$OUTPUT_DIR"/opencode-*.md "$PROJECT_ROOT"/.opencode/agents/*.md; do
+    for file in \
+        "$OUTPUT_DIR"/*.md \
+        "$PROJECT_ROOT"/instructions/{shogun,karo,ashigaru,gunshi,oometsuke}.md \
+        "$PROJECT_ROOT"/.opencode/agents/*.md; do
         [ -f "$file" ] || continue
 
         if LC_ALL=C grep -n $'\r' "$file"; then

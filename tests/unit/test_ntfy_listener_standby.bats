@@ -69,8 +69,10 @@ teardown() {
     rm -rf "$TEST_TMPDIR"
 }
 
-run_for_one_second() {
-    run timeout 1 bash "$MOCK_PROJECT/listener.sh"
+run_listener_briefly() {
+    # Loading PyYAML from an NTFS-backed WSL checkout can exceed one second.
+    # Keep the fixture bounded while allowing the first atomic write to finish.
+    run timeout 3 bash "$MOCK_PROJECT/listener.sh"
     [ "$status" -eq 124 ] || [ "$status" -eq 0 ]
 }
 
@@ -99,7 +101,7 @@ run_for_one_second() {
     cat > "$MOCK_CURL_OUTPUT" <<'JSON'
 {"event":"message","id":"outbound001","time":1700000001,"message":"redacted","tags":["outbound"]}
 JSON
-    run_for_one_second
+    run_listener_briefly
     run "$MOCK_PROJECT/.venv/bin/python3" -c \
         'import sys,yaml; i=yaml.safe_load(open(sys.argv[1])); s=yaml.safe_load(open(sys.argv[2])); assert not (i.get("inbox") or []); assert s["last_message_id"] == "outbound001"' \
         "$MOCK_PROJECT/queue/ntfy_inbox.yaml" "$NTFY_STATE_FILE"
@@ -110,7 +112,7 @@ JSON
     cat > "$MOCK_CURL_OUTPUT" <<'JSON'
 {"event":"message","id":"incoming001","time":1700000002,"message":"fixture body","tags":[]}
 JSON
-    run_for_one_second
+    run_listener_briefly
     run "$MOCK_PROJECT/.venv/bin/python3" -c \
         'import sys,yaml; d=yaml.safe_load(open(sys.argv[1])); items=d["inbox"]; assert len(items)==1; assert "id" in items[0]; assert items[0]["id"]=="incoming001"' \
         "$MOCK_PROJECT/queue/ntfy_inbox.yaml"
@@ -121,7 +123,7 @@ JSON
     export SCRIPT_DIR="$MOCK_PROJECT"
     source "$PROJECT_ROOT/lib/ntfy_state.sh"
     ntfy_state_write "$NTFY_STATE_FILE" 'standby-test-topic-12345' 'cursor001' 1700000003 standby
-    run_for_one_second
+    run_listener_briefly
     grep -q 'since=cursor001' "$MOCK_CURL_LOG"
 }
 

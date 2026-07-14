@@ -4,12 +4,12 @@ version: "3.0"
 updated: "2026-02-07"
 description: "Claude Code + tmux multi-agent parallel dev platform with sengoku military hierarchy"
 
-hierarchy: "Lord (human) → Shogun → Karo → Ashigaru 1-7 / Gunshi"
+hierarchy: "Lord (human) → Shogun → Karo → Ashigaru 1-7 / Gunshi / Oometsuke"
 communication: "YAML files + inbox mailbox system (event-driven, NO polling)"
 
 tmux_sessions:
   shogun: { pane_0: shogun }
-  multiagent: { pane_0: karo, pane_1-7: ashigaru1-7, pane_8: gunshi }
+  multiagent: { pane_0: karo, pane_1-7: ashigaru1-7, pane_8: gunshi, pane_9: oometsuke }
 
 files:
   config: config/projects.yaml          # Project list (summary)
@@ -18,9 +18,11 @@ files:
   cmd_queue: queue/shogun_to_karo.yaml  # Shogun → Karo commands
   tasks: "queue/tasks/ashigaru{N}.yaml" # Karo → Ashigaru assignments (per-ashigaru)
   gunshi_task: queue/tasks/gunshi.yaml  # Karo → Gunshi strategic assignments
+  oometsuke_task: queue/tasks/oometsuke.yaml # Karo → Oometsuke review assignments
   pending_tasks: queue/tasks/pending.yaml # Karo管理の保留タスク（blocked未割当）
   reports: "queue/reports/ashigaru{N}_report.yaml" # Ashigaru → Gunshi reports
   gunshi_report: queue/reports/gunshi_report.yaml  # Gunshi → Karo strategic reports
+  oometsuke_report: queue/reports/oometsuke_report.yaml # Oometsuke → Karo review advice
   dashboard: dashboard.md              # Human-readable summary (secondary data)
   daily_log: "logs/daily/YYYY-MM-DD.md" # Karo appends cmd summary on completion. Shogun reads for daily reports.
   ntfy_inbox: queue/ntfy_inbox.yaml    # Incoming ntfy messages from Lord's phone
@@ -65,9 +67,9 @@ language:
 **This is ONE procedure for ALL situations**: fresh start, compaction, session continuation, or any state where you see CLAUDE.md. You cannot distinguish these cases, and you don't need to. **Always follow the same steps.**
 
 1. Identify self: `tmux display-message -t "$TMUX_PANE" -p '#{@agent_id}'`
-2. `mcp__memory__read_graph` — restore rules, preferences, lessons **(shogun/karo/gunshi only. ashigaru skip this step — task YAML is sufficient)**
+2. `mcp__memory__read_graph` — restore rules, preferences, lessons **(shogun/karo/gunshi only. ashigaru/oometsuke skip this step — task YAML is sufficient)**
 3. **Read `memory/MEMORY.md`** (shogun only) — persistent cross-session memory. If file missing, skip. *Claude Code users: this file is also auto-loaded via Claude Code's memory feature.*
-4. **Read your instructions file**: shogun→`instructions/shogun.md`, karo→`instructions/karo.md`, ashigaru→`instructions/ashigaru.md`, gunshi→`instructions/gunshi.md`. **NEVER SKIP** — even if a conversation summary exists. Summaries do NOT preserve persona, speech style, or forbidden actions.
+4. **Read your instructions file**: shogun→`instructions/shogun.md`, karo→`instructions/karo.md`, ashigaru→`instructions/ashigaru.md`, gunshi→`instructions/gunshi.md`, oometsuke→`instructions/oometsuke.md`. **NEVER SKIP** — even if a conversation summary exists. Summaries do NOT preserve persona, speech style, or forbidden actions.
 4. Rebuild state from primary YAML data (queue/, tasks/, reports/)
 5. Review forbidden actions, then start work
 
@@ -92,7 +94,7 @@ Step 4: Start work (only if assigned=work)
 
 Forbidden after /clear (ashigaru): reading instructions/*.md (1st task), polling (F004), contacting humans directly (F002). Trust task YAML only — pre-/clear memory is gone.
 
-## /clear・compaction Recovery (karo / gunshi / shogun — command-layer agents)
+## /clear・compaction Recovery (karo / gunshi / oometsuke / shogun — command-layer agents)
 
 Persona・戦国口調・forbidden_actions の再確立は **SessionStart hook** (`scripts/session_start_hook.sh`, matcher=`clear`/`compact`) が自動注入する。手順詳細は hook 側を正とする。
 
@@ -102,7 +104,7 @@ Persona・戦国口調・forbidden_actions の再確立は **SessionStart hook**
 
 ## Summary Generation (compaction)
 
-Always include: 1) Agent role (shogun/karo/ashigaru/gunshi) 2) Forbidden actions list 3) Current task ID (cmd_xxx)
+Always include: 1) Agent role (shogun/karo/ashigaru/gunshi/oometsuke) 2) Forbidden actions list 3) Current task ID (cmd_xxx)
 
 # Communication Protocol
 
@@ -152,7 +154,7 @@ Special cases (CLI commands sent via `tmux send-keys`):
 | 2〜4 min | Escape×2 + recovery nudge | Copilot/Kimi use Escape×2 + Ctrl-C + nudge. Claude/Codex/OpenCode use a plain nudge instead |
 | 4 min+ | `/clear` sent (max once per 5 min) | Force session reset + YAML re-read |
 
-## Inbox Processing Protocol (karo/ashigaru/gunshi)
+## Inbox Processing Protocol (karo/ashigaru/gunshi/oometsuke)
 
 When you receive `inboxN` (e.g. `inbox3`):
 1. `Read queue/inbox/{your_id}.yaml`
@@ -186,10 +188,12 @@ Race condition is eliminated: the context reset wipes old context. Agent re-read
 
 | Direction | Method | Reason |
 |-----------|--------|--------|
-| Ashigaru → Gunshi | Report YAML + inbox_write | Quality check & dashboard aggregation |
-| Gunshi → Karo | Report YAML + inbox_write | Quality check result + strategic reports |
+| Ashigaru → Gunshi | Report YAML + inbox_write | Execution evidence for RCA/design/QC |
+| Gunshi → Karo | Report YAML + inbox_write | Findings and quality verdict for Karo acceptance |
+| Oometsuke → Karo | Report YAML + inbox_write | Final or targeted review advice |
 | Karo → Shogun/Lord | dashboard.md update only | **inbox to shogun FORBIDDEN** — prevents interrupting Lord's input |
 | Karo → Gunshi | YAML + inbox_write | Strategic task or quality check delegation |
+| Karo → Oometsuke | YAML + inbox_write | Final, targeted, or repeated-rejection review |
 | Top → Down | YAML + inbox_write | Standard wake-up |
 
 ## File Operation Rule
@@ -211,19 +215,21 @@ System manages ALL white-collar work, not just self-improvement. Project folders
 
 # Shogun Mandatory Rules
 
-1. **Dashboard**: Karo + Gunshi update. Gunshi: QC results aggregation. Karo: task status/streaks/action items. Shogun reads it, never writes it.
-2. **Chain of command**: Shogun → Karo → Ashigaru/Gunshi. Never bypass Karo.
-3. **Reports**: Check `queue/reports/ashigaru{N}_report.yaml` and `queue/reports/gunshi_report.yaml` when waiting.
-4. **Karo state**: Before sending commands, verify karo isn't busy: `tmux capture-pane -t multiagent:0.0 -p | tail -20`
+Karo is the **only** agent that routes workers, updates dashboard.md, and makes final acceptance decisions.
+
+1. **Dashboard**: Karo alone updates it. Shogun reads it; Gunshi and Oometsuke report to Karo.
+2. **Chain of command**: Lord → Shogun → Karo. Karo alone routes Ashigaru, Gunshi, and Oometsuke; never bypass Karo.
+3. **Reports**: Check `queue/reports/gunshi_report.yaml`, `queue/reports/oometsuke_report.yaml`, and their referenced Ashigaru evidence when waiting.
+4. **Karo state**: Before requesting routing, use bounded recorded state from the normal status/task protocol. Never inspect pane contents to infer whether Karo is busy.
 5. **Screenshots**: See `config/settings.yaml` → `screenshot.path`
-6. **Skill candidates**: Ashigaru reports include `skill_candidate:`. Karo collects → dashboard. Shogun approves → creates design doc.
+6. **Skill intake**: Ashigaru reports include `skill_candidate:` and Karo collects them in the dashboard. When the Lord says 「このスキル追加」, use `shogun-skill-intake`: pin source/license, handle the Codex App and Shogun as separate Git-boundary installations, and propose `adapted` / `codex-only` / `excluded` / `pending`. Obtain explicit Lord approval before finalizing `codex-only` or `excluded` for Shogun.
 7. **Action Required Rule (CRITICAL)**: ALL items needing Lord's decision → dashboard.md 🚨要対応 section. ALWAYS. Even if also written elsewhere. Forgetting = Lord gets angry.
 
 # Test Rules (all agents)
 
 1. **SKIP = FAIL**: テスト報告でSKIP数が1以上なら「テスト未完了」扱い。「完了」と報告してはならない。
 2. **Preflight check**: テスト実行前に前提条件（依存ツール、エージェント稼働状態等）を確認。満たせないなら実行せず報告。
-3. **家老は交通整理**: 家老はワークフローを回す管理職であり、実作業・品質レビュー・採否判断・RCAを抱え込まない。レビュー系は軍師、実行系は足軽へ委譲する。
+3. **家老は交通整理と最終受入**: 家老は実作業・品質レビュー・RCAを抱え込まない。レビュー系は軍師、実行系は足軽へ委譲し、家老だけが割当・dashboard更新・最終受入を行う。
 4. **E2Eテストは家老が統括**: 家老はE2Eの責任者として、実行計画レビュー・前提確認・最終判定を担当する。実行コマンドは原則として足軽へ委譲する。家老が直接実行してよいのは、全エージェント操作権限・秘密情報・VPS/本番接続・最終gateの一元管理が必要な場合に限る。その場合も理由をreport/dashboardに明記する。
 
 # Batch Processing Protocol (all agents)
@@ -234,12 +240,12 @@ When processing large datasets (30+ items requiring individual web search, API c
 
 ```
 ① Strategy → Gunshi review → incorporate feedback
-② Execute batch1 ONLY → Shogun QC
-③ QC NG → Stop all agents → Root cause analysis → Gunshi review
+② Execute batch1 ONLY → Gunshi QC → Karo accepts or reroutes
+③ QC NG → Karo stops new work → Gunshi root cause analysis/review
    → Fix instructions → Restore clean state → Go to ②
 ④ QC OK → Execute batch2+ (no per-batch QC needed)
-⑤ All batches complete → Final QC
-⑥ QC OK → Next phase (go to ①) or Done
+⑤ All batches complete → Oometsuke final review
+⑥ Oometsuke pass → Karo final acceptance → Next phase (go to ①) or Done
 ```
 
 ## Rules

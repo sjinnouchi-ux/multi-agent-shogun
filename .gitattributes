@@ -3,3 +3,16 @@
 
 # Shell scripts must use LF
 *.sh text eol=lf
+
+# Instruction inputs and generated runtime copies must remain reproducible on every host.
+instructions/**/*.md text eol=lf
+
+# Skill registry inputs and deterministic lock content must stay byte-stable.
+skills/**/*.md text eol=lf
+skills/**/*.yaml text eol=lf
+skills/**/*.yml text eol=lf
+skills/**/*.py text eol=lf
+skills/third_party/**/LICENSE text eol=lf
+skills/third_party/**/NOTICE text eol=lf
+scripts/skill_registry.py text eol=lf
+scripts/skill_registry.sh text eol=lf

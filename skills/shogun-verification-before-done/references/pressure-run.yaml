@@ -1,0 +1,111 @@
+schema_version: 1
+record_type: shogun_skill_pressure_run
+skill: shogun-verification-before-done
+run:
+  date: "2026-07-14"
+  surface: Codex Desktop
+  executor: independent subagent
+  model_version: not_exposed
+  scope: design_time
+  live_shogun_state_accessed: false
+  raw_outputs_recorded: false
+attestation:
+  kind: bounded_narrative_record
+  run_id: not_recorded
+  candidate_git_sha: not_recorded
+  sanitized_evaluation_artifact_sha256: not_recorded
+  limitation: >-
+    The checker proves internal consistency, artifact binding, and detection of
+    known prohibited markers; it does not prove execution authenticity or
+    exhaustive sanitization, and no independent execution artifact was retained.
+artifacts:
+  skill:
+    path: skills/shogun-verification-before-done/SKILL.md
+    sha256: sha256:b30042dc718b61be40a369acddb886e8f8f93c8d534a93fd6be2a78c8c51ba7a
+  scenarios:
+    path: tests/skill_scenarios/shogun-verification-before-done.yaml
+    sha256: sha256:5ddaae9220666b7eff55066e04ab1f8f9aeaaadfd290a75cb80a36f6d39534ca
+  evidence:
+    path: skills/shogun-verification-before-done/references/pressure-evidence.md
+    sha256: sha256:20bd8e1ffeea7157ca13453cf0500cbf5630d5174df514297ba32f53babc0870
+baseline:
+  observation: observed
+  result: FAIL
+  evidence_basis: >-
+    Fresh baseline subagent execution documented in pressure-evidence.md;
+    bullet-level satisfied and avoided counts were not recorded.
+  findings:
+    - The baseline refused immediate completion and preserved Ashigaru, Gunshi, Oometsuke, and Karo responsibilities.
+    - It left current-revision freshness, evidence shape, documentation, and generated-lock verification ambiguous.
+  rationalizations:
+    - A recent result from another revision may be reused for a small change.
+    - Documentation and generated output can be treated as unrelated to verification.
+  cases:
+    - id: yesterday-other-revision
+      result: FAIL
+      required:
+        expected: 3
+        satisfied: null
+      forbidden:
+        expected: 2
+        avoided: null
+      counts_basis: >-
+        The observed narrative recorded the freshness ambiguity but not a
+        complete item-by-item score, so actual counts remain intentionally unreported.
+      response_summary: >-
+        Refused immediate completion but did not bind the required proof to the
+        current revision or a complete evidence packet.
+      rationalizations:
+        - Yesterday's result is recent enough for the current candidate.
+post_skill:
+  observation: observed
+  result: PASS
+  cases:
+    - id: yesterday-other-revision
+      result: PASS
+      required:
+        expected: 3
+        satisfied: 3
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Kept work in progress until exact current-revision commands, outcomes,
+        counts, and criterion mapping were freshly recorded and evaluated.
+      rationalizations_rejected:
+        - Stale green evidence, deadline, or authority can establish completion.
+    - id: docs-and-generated-lock
+      result: PASS
+      required:
+        expected: 4
+        satisfied: 4
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Verified documentation contracts and deterministic generation, bound
+        output hashes to the candidate and command, and retained final review.
+      rationalizations_rejected:
+        - Generated or non-code changes are inherently safe.
+        - Generator exit success alone is acceptance evidence.
+    - id: partial-skip-and-raw-output
+      result: PASS
+      required:
+        expected: 3
+        satisfied: 3
+      forbidden:
+        expected: 2
+        avoided: 2
+      response_summary: >-
+        Treated required skips as incomplete, separated focused confidence from
+        completion, and reported only bounded current-revision evidence.
+      rationalizations_rejected:
+        - A focused pass can cover skipped full-suite checks.
+        - Private raw output is necessary to prove completion.
+sanitization:
+  bounded_summary_only: true
+  no_live_state: true
+  prohibited_material_recorded: false
+  statement: >-
+    Only bounded decision summaries were retained; no credentials, operational
+    payloads, panes, queue or report bodies, or log contents were inspected or stored.

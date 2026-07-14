@@ -577,38 +577,28 @@ RESULTS+=("ディレクトリ構造: OK (作成:$CREATED_COUNT, 既存:$EXISTED_
 # ============================================================
 log_step "STEP 6.5: OSSスキルインストール"
 
-CLAUDE_SKILLS_DIR="$HOME/.claude/skills"
-mkdir -p "$CLAUDE_SKILLS_DIR"
+SKILL_REGISTRY="$SCRIPT_DIR/scripts/skill_registry.sh"
 
-INSTALLED_SKILLS=0
-SKIPPED_SKILLS=0
-FOUND_SKILLS=0
-
-shopt -s nullglob
-for skill_dir in "$SCRIPT_DIR/skills"/*/; do
-    [ -d "$skill_dir" ] || continue
-
-    FOUND_SKILLS=$((FOUND_SKILLS + 1))
-    skill_name=$(basename "$skill_dir")
-    target="$CLAUDE_SKILLS_DIR/$skill_name"
-
-    if [ -d "$target" ]; then
-        log_info "スキル $skill_name は既に存在します（スキップ）"
-        SKIPPED_SKILLS=$((SKIPPED_SKILLS + 1))
-    else
-        cp -r "$skill_dir" "$target"
-        log_success "スキルをインストールしました: $skill_name"
-        INSTALLED_SKILLS=$((INSTALLED_SKILLS + 1))
-    fi
-done
-shopt -u nullglob
-
-if [ "$FOUND_SKILLS" -eq 0 ]; then
-    log_warn "インストール可能なスキルが見つかりませんでした"
-    RESULTS+=("OSSスキル: スキップ (skills/ 未検出)")
+if [ ! -x "$SKILL_REGISTRY" ]; then
+    log_error "スキルRegistry実行ファイルが見つからないか、実行できません"
+    RESULTS+=("Skill Registry: 実行ファイル不在")
+    HAS_ERROR=true
+elif ! "$SCRIPT_DIR/scripts/skill_registry.sh" validate; then
+    log_error "スキルRegistryの検証に失敗しました"
+    RESULTS+=("Skill Registry: validate失敗")
+    HAS_ERROR=true
+elif ! "$SCRIPT_DIR/scripts/skill_registry.sh" check; then
+    log_error "スキルRegistryのlock検証に失敗しました（lockは自動生成しません）"
+    RESULTS+=("Skill Registry: check失敗")
+    HAS_ERROR=true
+elif "$SCRIPT_DIR/scripts/skill_registry.sh" apply --targets all; then
+    log_success "検証済みスキルをClaude/Codexの両方へ反映しました"
+    log_info "新しいCLIセッションから反映されます。起動中セッションは再起動しません"
+    RESULTS+=("Skill Registry: OK (Claude + Codex)")
 else
-    log_info "/shogun-model-switch などのスキルが使用可能になりました"
-    RESULTS+=("OSSスキル: OK (新規:$INSTALLED_SKILLS, 既存:$SKIPPED_SKILLS)")
+    log_error "スキルRegistryの反映に失敗しました。transactionの案内に従って復旧してください"
+    RESULTS+=("Skill Registry: apply失敗")
+    HAS_ERROR=true
 fi
 
 # ============================================================
@@ -633,13 +623,8 @@ language: ja
 # zsh: zsh用プロンプト
 shell: bash
 
-# スキル設定
-skill:
-  # スキル保存先（スキル名に shogun- プレフィックスを付けて保存）
-  save_path: "~/.claude/skills/"
-
-  # ローカルスキル保存先（このプロジェクト専用）
-  local_path: "$SCRIPT_DIR/skills/"
+# スキル配備先は STEP 6.5 のSkill Registryがtransactionalに管理する。
+# settings.yamlには単一CLI向けの保存先を持たせない。
 
 # ログ設定
 logging:

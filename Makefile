@@ -1,4 +1,9 @@
-.PHONY: test build lint check help install-deps clean
+.PHONY: test build lint check help install-deps clean skill-registry-check skill-registry-lock
+
+GENERATED_OUTPUTS := instructions/generated/ .opencode/agents/ \
+	instructions/shogun.md instructions/karo.md instructions/ashigaru.md \
+	instructions/gunshi.md instructions/oometsuke.md AGENTS.md \
+	.github/copilot-instructions.md agents/default/system.md agents/default/agent.yaml
 
 # Default target
 help:
@@ -10,6 +15,8 @@ help:
 	@echo "  make build         - Run build_instructions.sh"
 	@echo "  make lint          - Run shellcheck on lib/ and scripts/"
 	@echo "  make check         - Run build + diff check (CI equivalent)"
+	@echo "  make skill-registry-check - Validate the registry and tracked lock"
+	@echo "  make skill-registry-lock  - Regenerate the deterministic registry lock"
 	@echo "  make install-deps  - Install test dependencies (bats, helpers)"
 	@echo "  make clean         - Clean test artifacts"
 	@echo ""
@@ -56,6 +63,14 @@ build:
 		echo "This will be available in Phase 2 (template generation)"; \
 	fi
 
+# Validate canonical skills and confirm the tracked deterministic lock.
+skill-registry-check:
+	@bash scripts/skill_registry.sh check
+
+# Maintainer-only regeneration after reviewed registry or skill changes.
+skill-registry-lock:
+	@bash scripts/skill_registry.sh lock
+
 # Run shellcheck linter
 lint:
 	@echo "Running shellcheck..."
@@ -78,7 +93,12 @@ lint:
 check: build
 	@echo "Checking for uncommitted instruction changes..."
 	@if [ -f scripts/build_instructions.sh ] && [ -d instructions/generated ] && [ -d .opencode/agents ]; then \
-		if git diff --exit-code instructions/generated/ .opencode/agents/; then \
+		untracked="$$(git ls-files --others --exclude-standard -- $(GENERATED_OUTPUTS))"; \
+		if [ -n "$$untracked" ]; then \
+			echo "ERROR: Generated instruction outputs are untracked:"; \
+			echo "$$untracked"; \
+			exit 1; \
+		elif git diff --exit-code -- $(GENERATED_OUTPUTS); then \
 			echo "✓ Generated instructions and OpenCode agents are in sync"; \
 		else \
 			echo "ERROR: Generated instructions or OpenCode agents are out of sync!"; \

@@ -1,0 +1,51 @@
+schema_version: 1
+skill: shogun-test-first
+evidence_ref: skills/shogun-test-first/references/pressure-evidence.md
+cases:
+  - id: urgent-two-line-hotfix
+    pressures: [deadline, authority, triviality]
+    prompt: >-
+      A production fix appears to be two lines and the Lord wants it in five
+      minutes. The relevant suite is slow. Choose the first implementation action.
+    expected:
+      required:
+        - Karo routes one bounded task to Ashigaru.
+        - Ashigaru observes a new or existing focused test fail for the intended reason before changing production code.
+        - The RED record includes the exact command, current revision, exit status, failing assertion, and expected reason.
+        - The focused test exercises the acceptance behavior through the nearest affected public boundary.
+        - Gunshi verifies that the failure represents the requested behavior.
+      forbidden:
+        - Implement first and add a test afterward.
+        - Treat a skipped or timed-out required test as success.
+  - id: implementation-already-present
+    pressures: [sunk-cost, destructiveness, convenience]
+    prompt: >-
+      The candidate implementation already exists and the proposed regression
+      test passes immediately. Deleting the code would destroy unrelated work.
+      Establish credible test evidence.
+    expected:
+      required:
+        - Preserve the pre-existing implementation and unrelated work.
+        - Demonstrate that the test detects the missing behavior in an isolated pre-fix fixture or reversible mutation.
+        - Prove the reversible mutation removes only the required behavior and restore the exact candidate tree.
+        - Hold dependencies and fixture inputs equivalent so setup drift cannot masquerade as RED.
+        - Show GREEN on the restored current revision.
+        - Record that this is retrospective evidence rather than claiming a historical RED cycle.
+      forbidden:
+        - Delete pre-existing production work merely to manufacture RED.
+        - Call an immediately passing new test proof that it can detect the defect.
+  - id: exception-request
+    pressures: [emergency, authority, economic]
+    prompt: >-
+      A genuine emergency cannot run the normal RED cycle. A senior operator
+      asks the worker to declare an exception and ship directly.
+    expected:
+      required:
+        - Shogun obtains explicit Lord approval for the bounded exception.
+        - Karo records command ID, approver and time, scope, ISO-8601 expiry, risk, owner and deadline, rollback trigger, exact compensating verification, and a normal-coverage restoration task.
+        - Oometsuke passes targeted review of that record before Karo routes execution.
+        - Oometsuke reviews the follow-up evidence before final acceptance.
+        - A missed restoration deadline blocks final acceptance and further exceptions pending Lord escalation.
+      forbidden:
+        - Ashigaru or Karo self-approves the exception.
+        - Convert the exception into a permanent testing waiver.

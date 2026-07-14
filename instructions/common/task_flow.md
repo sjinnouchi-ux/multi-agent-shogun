@@ -1,10 +1,13 @@
 # Task Flow
 
-## Workflow: Shogun → Karo → Ashigaru
+## Workflow: Lord → Shogun → Karo → Ashigaru → Gunshi → Karo
 
 ```
-Lord: command → Shogun: write YAML → inbox_write → Karo: decompose → inbox_write → Ashigaru: execute → report YAML → inbox_write → Karo: update dashboard → Shogun: read dashboard
+Lord: command → Shogun: write YAML → inbox_write → Karo: route work → inbox_write → Ashigaru: execute → report YAML → inbox_write → Gunshi: RCA/design/QC → report YAML → inbox_write → Karo: accept + update dashboard → Shogun: read dashboard
 ```
+
+Final or targeted review: Karo → Oometsuke → Karo.
+Oometsuke advises; Karo retains acceptance, reassignment, and dashboard ownership.
 
 ## Status Reference (Single Source)
 
@@ -119,9 +122,9 @@ Lord: command → Shogun: write YAML → inbox_write → END TURN
                                         ↓
                                   Lord: can input next
                                         ↓
-                              Karo/Ashigaru: work in background
+                         Karo/Ashigaru/Gunshi: work in background
                                         ↓
-                              dashboard.md updated as report
+                              Karo updates dashboard.md
 ```
 
 ## Event-Driven Wait Pattern (Karo)
@@ -132,13 +135,14 @@ Lord: command → Shogun: write YAML → inbox_write → END TURN
 Step 7: Dispatch cmd_N subtasks → inbox_write to ashigaru
 Step 8: check_pending → if pending cmd_N+1, process it → then STOP
   → Karo becomes idle (prompt waiting)
-Step 9: Ashigaru completes → inbox_write karo → watcher nudges karo
-  → Karo wakes, scans reports, acts
+Step 9: Ashigaru completes → inbox_write gunshi → Gunshi performs RCA/design/QC
+  → Gunshi writes report + inbox_write karo → watcher nudges Karo
+  → Karo wakes, accepts or reroutes, and updates dashboard
 ```
 
-**Why no background monitor**: inbox_watcher.sh detects ashigaru's inbox_write to karo and sends a nudge. This is true event-driven. No sleep, no polling, no CPU waste.
+**Why no background monitor**: inbox_watcher.sh detects Gunshi's inbox_write to Karo and sends a nudge. This is true event-driven. No sleep, no polling, no CPU waste.
 
-**Karo wakes via**: inbox nudge from ashigaru report, shogun new cmd, or system event. Nothing else.
+**Karo wakes via**: inbox nudge from Gunshi/Oometsuke report, Shogun new cmd, or system event. Nothing else.
 
 ## "Wake = Full Scan" Pattern
 
@@ -146,16 +150,17 @@ Claude Code cannot "wait". Prompt-wait = stopped.
 
 1. Dispatch ashigaru
 2. Say "stopping here" and end processing
-3. Ashigaru wakes you via inbox
-4. Scan ALL report files (not just the reporting one)
+3. Gunshi reviews the ashigaru report and wakes you via inbox
+4. Scan the Gunshi/Oometsuke report and its referenced evidence
 5. Assess situation, then act
 
 ## Report Scanning (Communication Loss Safety)
 
-On every wakeup (regardless of reason), scan ALL `queue/reports/ashigaru*_report.yaml`.
-Cross-reference with dashboard.md — process any reports not yet reflected.
+On every wakeup (regardless of reason), scan `queue/reports/gunshi_report.yaml`
+and `queue/reports/oometsuke_report.yaml`. Follow referenced Ashigaru reports as
+evidence, then cross-reference with dashboard.md and process any result not yet reflected.
 
-**Why**: Ashigaru inbox messages may be delayed. Report files are already written and scannable as a safety net.
+**Why**: Gunshi/Oometsuke inbox messages may be delayed. Report files are already written and scannable as a safety net.
 
 ## Foreground Block Prevention (24-min Freeze Lesson)
 
@@ -175,7 +180,8 @@ Cross-reference with dashboard.md — process any reports not yet reflected.
 ```
 ✅ Correct (event-driven):
   cmd_008 dispatch → inbox_write ashigaru → stop (await inbox wakeup)
-  → ashigaru completes → inbox_write karo → karo wakes → process report
+  → ashigaru completes → inbox_write gunshi → gunshi reviews
+  → inbox_write karo → karo wakes → accept/reroute + update dashboard
 
 ❌ Wrong (polling):
   cmd_008 dispatch → sleep 30 → capture-pane → check status → sleep 30 ...
@@ -205,3 +211,15 @@ bats tests/*.bats tests/unit/*.bats
 bash scripts/build_instructions.sh
 git diff --exit-code instructions/generated/
 ```
+
+## Required Skill Gates
+
+These gates add process discipline without changing role ownership:
+
+- On a bug, failing check, or unclear cause, use `shogun-systematic-debugging` before proposing or routing a correction. Ashigaru gathers bounded evidence, Gunshi owns root-cause analysis, and Karo routes.
+- Before production implementation or a bug fix, use `shogun-test-first`. Ashigaru owns RED/GREEN/REFACTOR evidence; any exception requires the skill's recorded approval path.
+- On review feedback, use `shogun-review-response` before accepting or rejecting comments. Karo records and routes, Gunshi evaluates, and only accepted work goes to Ashigaru.
+- Before commit, merge, deployment, acceptance, or any done claim, use `shogun-verification-before-done`. Karo accepts only fresh current-candidate evidence reviewed through the defined chain.
+- When the Lord says 「このスキル追加」, use `shogun-skill-intake` and keep Codex App installation separate from the Shogun Git-boundary decision.
+
+`classification: required` means these trigger gates are mandatory for every enabled target. It does not authorize a role to execute another role's work or bypass normal tool approval.

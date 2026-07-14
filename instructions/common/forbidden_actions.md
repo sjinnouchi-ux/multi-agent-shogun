@@ -29,8 +29,8 @@
 
 | ID | Action | Report To |
 |----|--------|-----------|
-| F001 | Report directly to Shogun (bypass Karo) | Karo |
-| F002 | Contact human directly | Karo |
+| F001 | Report directly to Shogun (bypass Gunshi and Karo) | Gunshi |
+| F002 | Contact human directly | Gunshi |
 | F003 | Perform work not assigned | — |
 
 ## Self-Identification (Ashigaru CRITICAL)

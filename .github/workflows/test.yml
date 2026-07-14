@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Install bats-core (Linux)
         if: runner.os == 'Linux'
@@ -53,6 +55,18 @@ jobs:
         run: |
           python3 -m venv .venv
           .venv/bin/pip install --quiet pyyaml
+
+      - name: Validate and check skill registry
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          bash scripts/skill_registry.sh validate
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            bash scripts/skill_registry.sh check --base-ref "$PR_BASE_SHA"
+          else
+            bash scripts/skill_registry.sh check
+          fi
 
       - name: Run root-level tests (except agent_selfwatch)
         run: |
@@ -145,10 +159,29 @@ jobs:
             exit 0
           fi
 
-          git diff --exit-code instructions/generated/ .opencode/agents/ || {
-            echo "::error::Generated instructions or OpenCode agent files are out of sync!"
+          generated_paths=(
+            instructions/generated/
+            .opencode/agents/
+            instructions/shogun.md
+            instructions/karo.md
+            instructions/ashigaru.md
+            instructions/gunshi.md
+            instructions/oometsuke.md
+            AGENTS.md
+            .github/copilot-instructions.md
+            agents/default/system.md
+            agents/default/agent.yaml
+          )
+          untracked="$(git ls-files --others --exclude-standard -- "${generated_paths[@]}")"
+          if [ -n "$untracked" ]; then
+            echo "::error::Generated instruction outputs are untracked:"
+            printf '%s\n' "$untracked"
+            exit 1
+          fi
+          git diff --exit-code -- "${generated_paths[@]}" || {
+            echo "::error::Generated instruction outputs are out of sync!"
             echo "::error::Run 'bash scripts/build_instructions.sh' and commit the changes."
-            git diff instructions/generated/ .opencode/agents/
+            git diff -- "${generated_paths[@]}"
             exit 1
           }
 
