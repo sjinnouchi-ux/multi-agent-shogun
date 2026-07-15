@@ -1179,19 +1179,255 @@ class SummaryAndSerializationTests(unittest.TestCase):
 
         with mock.patch.object(m.signal, "signal"), mock.patch.object(
             m.signal, "pthread_sigmask", side_effect=mask
+        ), mock.patch.object(
+            m.signal, "sigpending", return_value=frozenset()
         ), mock.patch.object(m, "emit_bytes", side_effect=emit):
             code = m.main(("unexpected",))
 
         self.assertEqual(code, 2)
-        self.assertEqual([event[0] for event in events], ["mask", "emit", "mask"])
+        self.assertEqual(
+            [event[0] for event in events],
+            ["mask", "mask", "mask", "emit", "mask"],
+        )
         self.assertEqual(events[0][1], m.signal.SIG_BLOCK)
         self.assertFalse(events[0][3])
-        self.assertTrue(events[1][2])
-        self.assertEqual(events[2][1], m.signal.SIG_SETMASK)
+        self.assertEqual(events[1][1], m.signal.SIG_SETMASK)
+        self.assertEqual(events[2][1], m.signal.SIG_BLOCK)
+        self.assertFalse(events[2][3])
+        self.assertTrue(events[3][2])
+        self.assertEqual(events[4][1], m.signal.SIG_SETMASK)
+
+    def test_signal_fallback_ignores_cross_signal_reentry(self) -> None:
+        m = self.module
+        emitted = []
+        events = []
+
+        def emit(payload):
+            events.append("outer-emit-started")
+            emitted.append(payload)
+            m._signal_before_output(m.signal.SIGTERM, None)
+            events.append("nested-handler-returned")
+            events.append("outer-emit-completed")
+
+        def exit_process(code):
+            events.append(f"exit-{code}")
+            raise SystemExit(code)
+
+        with mock.patch.object(
+            m.signal, "pthread_sigmask", return_value=frozenset()
+        ), mock.patch.object(m, "emit_bytes", side_effect=emit), mock.patch.object(
+            m.os, "_exit", side_effect=exit_process
+        ):
+            with self.assertRaisesRegex(SystemExit, "3"):
+                m._signal_before_output(m.signal.SIGINT, None)
+        self.assertEqual(emitted, [m.FALLBACK_INTERNAL_ERROR])
+        self.assertEqual(
+            events,
+            [
+                "outer-emit-started",
+                "nested-handler-returned",
+                "outer-emit-completed",
+                "exit-3",
+            ],
+        )
+
+    def test_main_blocks_handler_installation_with_a_pending_signal(self) -> None:
+        m = self.module
+        termination_signals = frozenset((m.signal.SIGINT, m.signal.SIGTERM))
+        previous_mask = frozenset((m.signal.SIGHUP,))
+        blocked = set(previous_mask)
+        handlers = {}
+        pending = set()
+        events = []
+
+        def mask(how, signals):
+            requested = frozenset(signals)
+            if how == m.signal.SIG_BLOCK:
+                previous = frozenset(blocked)
+                blocked.update(requested)
+                events.append(("block", requested, previous))
+                return previous
+            self.assertEqual(how, m.signal.SIG_SETMASK)
+            self.assertEqual(requested, previous_mask)
+            self.assertEqual(frozenset(handlers), termination_signals)
+            self.assertIn(m.signal.SIGTERM, pending)
+            blocked.clear()
+            blocked.update(requested)
+            events.append(("restore", requested))
+            signum = pending.pop()
+            events.append(("deliver", signum))
+            handlers[signum](signum, None)
+            self.fail("pending termination handler returned past os._exit")
+
+        def install(signum, handler):
+            self.assertTrue(termination_signals.issubset(blocked))
+            self.assertIs(handler, m._signal_before_output)
+            handlers[signum] = handler
+            events.append(("install", signum))
+            if len(handlers) == 1:
+                pending.add(m.signal.SIGTERM)
+                events.append(("pending", m.signal.SIGTERM))
+
+        def emit(payload):
+            events.append(("emit", payload))
+
+        def exit_process(code):
+            events.append(("exit", code))
+            raise SystemExit(code)
+
+        with mock.patch.object(
+            m.signal, "pthread_sigmask", side_effect=mask
+        ), mock.patch.object(m.signal, "signal", side_effect=install), mock.patch.object(
+            m, "emit_bytes", side_effect=emit
+        ), mock.patch.object(
+            m.os, "_exit", side_effect=exit_process
+        ):
+            with self.assertRaisesRegex(SystemExit, "3"):
+                m._install_signal_handlers()
+
+        self.assertEqual(
+            events,
+            [
+                ("block", termination_signals, previous_mask),
+                ("install", m.signal.SIGINT),
+                ("pending", m.signal.SIGTERM),
+                ("install", m.signal.SIGTERM),
+                ("restore", previous_mask),
+                ("deliver", m.signal.SIGTERM),
+                ("block", termination_signals, previous_mask),
+                ("emit", m.FALLBACK_INTERNAL_ERROR),
+                ("exit", 3),
+            ],
+        )
+
+    def test_handler_installation_failure_exits_with_fallback_while_blocked(
+        self,
+    ) -> None:
+        m = self.module
+        termination_signals = frozenset((m.signal.SIGINT, m.signal.SIGTERM))
+        previous_mask = frozenset((m.signal.SIGHUP,))
+        blocked = set(previous_mask)
+        events = []
+
+        def mask(how, signals):
+            self.assertEqual(how, m.signal.SIG_BLOCK)
+            requested = frozenset(signals)
+            prior = frozenset(blocked)
+            blocked.update(requested)
+            events.append(("block", requested, prior))
+            return prior
+
+        def install(signum, handler):
+            self.assertTrue(termination_signals.issubset(blocked))
+            self.assertIs(handler, m._signal_before_output)
+            events.append(("install", signum))
+            if signum == m.signal.SIGTERM:
+                raise RuntimeError("second handler install failed")
+
+        def exit_process(code):
+            events.append(("exit", code))
+            raise SystemExit(code)
+
+        with mock.patch.object(
+            m.signal, "pthread_sigmask", side_effect=mask
+        ), mock.patch.object(m.signal, "signal", side_effect=install), mock.patch.object(
+            m, "emit_bytes", side_effect=lambda payload: events.append(("emit", payload))
+        ), mock.patch.object(m.os, "_exit", side_effect=exit_process):
+            with self.assertRaisesRegex(SystemExit, "3"):
+                m._install_signal_handlers()
+
+        self.assertEqual(
+            events,
+            [
+                ("block", termination_signals, previous_mask),
+                ("install", m.signal.SIGINT),
+                ("install", m.signal.SIGTERM),
+                ("block", termination_signals, termination_signals | previous_mask),
+                ("emit", m.FALLBACK_INTERNAL_ERROR),
+                ("exit", 3),
+            ],
+        )
+
+    def test_pending_signal_selects_fallback_at_first_output(self) -> None:
+        m = self.module
+        termination_signals = frozenset((m.signal.SIGINT, m.signal.SIGTERM))
+        blocked = set()
+        handlers = {}
+        pending = set()
+        events = []
+
+        def mask(how, signals):
+            requested = frozenset(signals)
+            if how == m.signal.SIG_BLOCK:
+                prior = frozenset(blocked)
+                blocked.update(requested)
+                events.append(("block", m._OUTPUT_STARTED))
+                return prior
+            self.assertEqual(how, m.signal.SIG_SETMASK)
+            blocked.clear()
+            blocked.update(requested)
+            events.append(("restore", m._OUTPUT_STARTED))
+            if m._OUTPUT_STARTED and pending:
+                signum = pending.pop()
+                events.append(("deliver", signum))
+                handlers[signum](signum, None)
+            return frozenset()
+
+        def install(signum, handler):
+            self.assertTrue(termination_signals.issubset(blocked))
+            self.assertIs(handler, m._signal_before_output)
+            handlers[signum] = handler
+
+        def sample_pending():
+            self.assertTrue(m._OUTPUT_STARTED)
+            pending.add(m.signal.SIGTERM)
+            events.append(("pending", m._OUTPUT_STARTED))
+            return frozenset(pending)
+
+        def emit(payload):
+            events.append(("emit", payload, m._OUTPUT_STARTED))
+
+        def exit_process(code):
+            events.append(("exit", code))
+            raise SystemExit(code)
+
+        with mock.patch.object(m.signal, "signal", side_effect=install), mock.patch.object(
+            m.signal, "pthread_sigmask", side_effect=mask
+        ), mock.patch.object(
+            m.signal, "sigpending", side_effect=sample_pending
+        ) as sigpending, mock.patch.object(
+            m, "emit_bytes", side_effect=emit
+        ), mock.patch.object(
+            m.os, "_exit", side_effect=exit_process
+        ):
+            code = m.main(("unexpected",))
+
+        self.assertEqual(code, 3)
+        sigpending.assert_called_once_with()
+        emit_events = [event for event in events if event[0] == "emit"]
+        self.assertEqual(len(emit_events), 1)
+        self.assertIs(emit_events[0][1], m.FALLBACK_INTERNAL_ERROR)
+        self.assertTrue(emit_events[0][2])
+        self.assertEqual(
+            [event[0] for event in events],
+            [
+                "block",
+                "restore",
+                "block",
+                "pending",
+                "emit",
+                "restore",
+                "deliver",
+                "block",
+                "exit",
+            ],
+        )
 
     def test_signal_before_output_emits_exact_literal_and_exits_three(self) -> None:
         m = self.module
-        with mock.patch.object(m, "emit_bytes") as emit, mock.patch.object(
+        with mock.patch.object(
+            m.signal, "pthread_sigmask", return_value=frozenset()
+        ), mock.patch.object(m, "emit_bytes") as emit, mock.patch.object(
             m.os, "_exit", side_effect=SystemExit(3)
         ):
             with self.assertRaisesRegex(SystemExit, "3"):

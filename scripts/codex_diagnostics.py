@@ -1453,35 +1453,59 @@ def safe_render_document(
         return FALLBACK_INTERNAL_ERROR, 3
 
 
+TERMINATION_SIGNALS = (signal.SIGINT, signal.SIGTERM)
 _OUTPUT_STARTED = False
+_FALLBACK_EMITTING = False
 
 
 def _signal_before_output(_signum, _frame) -> None:
-    if not _OUTPUT_STARTED:
-        try:
-            emit_bytes(FALLBACK_INTERNAL_ERROR)
-        finally:
-            os._exit(3)
-    os._exit(3)
+    global _FALLBACK_EMITTING
+    try:
+        signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    except BaseException:
+        os._exit(3)
+    if _OUTPUT_STARTED:
+        os._exit(3)
+    if _FALLBACK_EMITTING:
+        return
+    _FALLBACK_EMITTING = True
+    try:
+        emit_bytes(FALLBACK_INTERNAL_ERROR)
+    finally:
+        os._exit(3)
 
 
-def _emit_final(payload: bytes) -> None:
+def _install_signal_handlers() -> None:
+    global _FALLBACK_EMITTING, _OUTPUT_STARTED
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    try:
+        _OUTPUT_STARTED = False
+        _FALLBACK_EMITTING = False
+        for signum in TERMINATION_SIGNALS:
+            signal.signal(signum, _signal_before_output)
+    except BaseException:
+        _signal_before_output(0, None)
+        os._exit(3)
+    signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _emit_final(payload: bytes) -> bool:
     global _OUTPUT_STARTED
-    termination_signals = (signal.SIGINT, signal.SIGTERM)
-    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, termination_signals)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, TERMINATION_SIGNALS)
+    pending = False
     try:
         _OUTPUT_STARTED = True
-        emit_bytes(payload)
+        pending_signals = signal.sigpending()
+        pending = any(signum in pending_signals for signum in TERMINATION_SIGNALS)
+        emit_bytes(FALLBACK_INTERNAL_ERROR if pending else payload)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    return pending
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    global _OUTPUT_STARTED
-    _OUTPUT_STARTED = False
     try:
-        for signum in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(signum, _signal_before_output)
+        _install_signal_handlers()
         runner = CommandRunner()
         code, document = run_cli(
             tuple(sys.argv[1:] if argv is None else argv),
@@ -1491,7 +1515,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except BaseException:
         payload, code = FALLBACK_INTERNAL_ERROR, 3
     try:
-        _emit_final(payload)
+        if _emit_final(payload):
+            code = 3
     except BaseException:
         return 3
     return code
