@@ -734,7 +734,7 @@ session検出とpane件数を先にassertし、その後に秘密文字列非漏
 - `make test-no-skip`
 - `make lint`
 - `make build`後のgenerated instruction diff 0
-- gitleaks実行。CIに標準commandがない場合はversion固定した実行方法を実装計画で確定する
+- §9.8のpinned Gitleaks delta gateを実行する。既存baselineを広いpath allowlistで隠さず、branchが新たに導入したfindingだけを0件に固定する
 - `git check-ignore`で新規source、test、docsだけが追跡可能であることを確認する
 - 近接した秘密path、log、status、project fileが新規に追跡可能にならないnegative test
 - 診断作業ログのmarker pair各1件、一行JSON、固定field、active最大1件を静的testし、post-deployment gateではactive exactly 1件とdiagnostic hash一致を要求する
@@ -754,6 +754,18 @@ session検出とpane件数を先にassertし、その後に秘密文字列非漏
 - replace直前にcurrent hashを再検証し、同一directory・mode `0555` temporary fileだけをatomic replaceへ渡す。
 - replace後のdirectory fsync/post-read失敗、またはreplace前後を問わずexact temporary cleanup/durabilityを証明できない失敗はexit 4となり、外部snapshot/artifact reconciliationと停止を要求する。
 - lifecycle helperを診断snapshot、恒常許可prefix、通常consumer pathへ含めない。`install-initial`はTask 9限定で、rollbackはlegacy flagsだけを使う。
+
+### 9.8 pinned Gitleaks delta gate
+
+`origin/main`のfull historyとtracked treeには、custom policy自身や既存文書・public metadata・binary assetに由来する非credential findingが既に存在する。このbaselineを理由にfeature branchを常時失敗させず、同時に新しい漏洩を見逃さないため、absolute zeroではなく「実行時に取得したtrusted baseから新規findingを1件も増やさない」ことをgateとする。
+
+- toolはofficial Gitleaks v8.30.1 Linux x64とし、archive SHA-256を`551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`へ固定する。download、report、比較用archiveは`/tmp`だけに置き、終了時に削除する。
+- baseは各実行時にonline Canonical Entryとremote URLを確認してからfetchした`origin/main`の40文字commitへ固定する。stale local branch、同名folder、既存remote feature branchをbaseにしない。
+- history gateは`origin/main..HEAD`だけを`--redact=100`でscanし、finding 0件を要求する。過去にfixtureを含む既存remote feature branchはrewrite/force-pushせず保持し、publication branchは最新`origin/main`から新しいclean branchとして再構成する。
+- branchは`.gitleaks.toml`を変更してはならず、`git diff --quiet origin/main...HEAD -- .gitleaks.toml`を要求する。tree gateはbaseから抽出した同一config bytesを使い、`git archive`で作ったbaseとHEADのtracked treeを同じpinned tool・`--redact=100`でscanする。比較identityはsecret値を含まないdetector rule ID、正規化repo-relative path、start/end line・columnの組とし、HEAD側にだけ存在するidentity 0件を要求する。line移動は安全側に倒して新規扱いとする。
+- branch history gateが、同じpath・rule・位置で値だけを置き換える変更も検出する。tree gateのidentity比較だけでbranch history gateを代用しない。
+- worktree/index/untrackedは0件を要求する。raw finding、match、secret、fingerprint、entropy文字列をstdout、chat、Git、reportへ出さない。保存する証跡はtool version、archive checksum、base/HEAD commit、各surfaceの件数、introduced count、exitだけとする。
+- baseline findingを抑止するためのdocs/assets全体allowlist、rule全体allowlist、既存remote branchへのforce pushは採用しない。`.gitleaks.toml`自身のself-detection整理が必要なら、別owner-reviewed security taskとする。
 
 GitHub CIはClaude CLIを持たず、既存`test_cli_adapter.bats`に既知の条件付きskipがあるため、v1では`test-no-skip`をCIへ追加しない。CIの`make test`は通常回帰gateとして使うが、完了根拠のskip 0判定には使わない。完了判定はClaude導入済みの実WSL deployment hostで`make test-no-skip`が通ったことを必須とする。
 
@@ -806,6 +818,7 @@ rollbackはこの通常導入順序の自動分岐ではない。必要時は、
 11. 各診断実行の直前にGitHub mainの唯一のactive deployment recordを確認し、`tool.source_sha256`不一致時は診断fieldを信頼しない。
 12. consumerが完全nested schema、ASCII、exit 0、stderr空、10秒未満を検証し、全parse/schema/process失敗でraw fallbackしない。
 13. rollback testが検証済みpre-commit refusalのexit 3とcommitまたはcleanup/durability不確定のexit 4を区別し、helperが通常診断・恒常許可へ入らない。
+14. pinned Gitleaks delta gateが、trusted `origin/main`に対するbranch history finding 0件、tracked-tree introduced identity 0件、raw finding非出力を確認し、既存remote feature branchをforce-pushしない。
 
 ## 13. v2候補
 
