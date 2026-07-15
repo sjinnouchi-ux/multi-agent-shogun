@@ -6,7 +6,9 @@ import hashlib
 import importlib.util
 import io
 import os
+import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1273,6 +1275,379 @@ class AtomicRollbackTests(unittest.TestCase):
         self.assertIn("Never use", task12)
         self.assertIn("Task 9's first-install helper", task12)
         self.assertIn("Never invoke `install-initial`", task12)
+
+    def test_plan_task11_host_agents_write_is_exclusive_same_handle_cas(
+        self,
+    ) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        task11_step7 = plan.split(
+            "- [ ] **Step 7: Perform the one-time host marker insertion without replacing the file**",
+            1,
+        )[1].split(
+            "- [ ] **Step 8: Request only the complete persistent argv prefix**",
+            1,
+        )[0]
+        required = (
+            "function Invoke-HostAgentsSameHandleCas",
+            "explicit single-file elevation",
+            "[IO.FileMode]::Open",
+            "[IO.FileAccess]::ReadWrite",
+            "[IO.FileShare]::None",
+            "[IO.FileOptions]::WriteThrough",
+            "$Current = Read-StreamBytes $HostStream",
+            "host changed since candidate review; no write performed",
+            "[IO.FileMode]::CreateNew",
+            "$BackupStream.Flush($true)",
+            "$BackupReadback = Read-StreamBytes $BackupStream",
+            "$BackupStream.Dispose()",
+            "$HostStream.Write($Candidate",
+            "$HostStream.SetLength($Candidate.Length)",
+            "$HostStream.Flush($true)",
+            "$Installed = Read-StreamBytes $HostStream",
+            "$HostStream.Write($BackupReadback",
+            "$HostStream.SetLength($BackupReadback.Length)",
+            "$Restored = Read-StreamBytes $HostStream",
+            "host write failed; exact same-handle restore verified; durable backup retained; stop before command approval",
+            "durable backup retained; stop before command approval",
+            "Assert-MarkerState $Installed",
+            "Assert-MarkerState $Restored",
+            "Remove-Item -LiteralPath $CandidatePath",
+            "host committed but candidate cleanup failed; stop before command approval",
+        )
+        for fragment in required:
+            self.assertIn(fragment, task11_step7)
+        self.assertGreaterEqual(task11_step7.count("[IO.FileShare]::None"), 2)
+        self.assertGreaterEqual(task11_step7.count("[IO.FileOptions]::WriteThrough"), 2)
+        self.assertGreaterEqual(task11_step7.count("$HostStream.Flush($true)"), 2)
+        self.assertGreaterEqual(
+            task11_step7.count("Read-StreamBytes $HostStream"), 3
+        )
+        self.assertEqual(task11_step7.count("[IO.FileMode]::Open"), 1)
+        self.assertEqual(task11_step7.count("[IO.FileStream]::new("), 2)
+        self.assertEqual(task11_step7.count("ReadAllBytes($HostPath)"), 1)
+        stale_check = task11_step7.index(
+            "host changed since candidate review; no write performed"
+        )
+        backup_create = task11_step7.index("[IO.FileMode]::CreateNew")
+        backup_readback = task11_step7.index(
+            "$BackupReadback = Read-StreamBytes $BackupStream"
+        )
+        candidate_write = task11_step7.index("$HostStream.Write($Candidate")
+        self.assertLess(stale_check, backup_create)
+        self.assertLess(backup_create, backup_readback)
+        self.assertLess(backup_readback, candidate_write)
+        candidate_length = task11_step7.index(
+            "$HostStream.SetLength($Candidate.Length)", candidate_write
+        )
+        candidate_flush = task11_step7.index(
+            "$HostStream.Flush($true)", candidate_length
+        )
+        installed_read = task11_step7.index(
+            "$Installed = Read-StreamBytes $HostStream", candidate_flush
+        )
+        installed_marker = task11_step7.index(
+            "Assert-MarkerState $Installed", installed_read
+        )
+        restore_write = task11_step7.index(
+            "$HostStream.Write($BackupReadback", installed_marker
+        )
+        restore_length = task11_step7.index(
+            "$HostStream.SetLength($BackupReadback.Length)", restore_write
+        )
+        restore_flush = task11_step7.index(
+            "$HostStream.Flush($true)", restore_length
+        )
+        restored_read = task11_step7.index(
+            "$Restored = Read-StreamBytes $HostStream", restore_flush
+        )
+        restored_marker = task11_step7.index(
+            "Assert-MarkerState $Restored", restored_read
+        )
+        backup_dispose = task11_step7.index(
+            "$BackupStream.Dispose()", restored_marker
+        )
+        committed_guard = task11_step7.index(
+            "if (-not $Committed)", backup_dispose
+        )
+        backup_remove = task11_step7.index(
+            "Remove-Item -LiteralPath $BackupPath", committed_guard
+        )
+        self.assertLess(candidate_write, candidate_length)
+        self.assertLess(candidate_length, candidate_flush)
+        self.assertLess(candidate_flush, installed_read)
+        self.assertLess(installed_read, installed_marker)
+        self.assertLess(installed_marker, restore_write)
+        self.assertLess(restore_write, restore_length)
+        self.assertLess(restore_length, restore_flush)
+        self.assertLess(restore_flush, restored_read)
+        self.assertLess(restored_read, restored_marker)
+        self.assertLess(restored_marker, backup_dispose)
+        self.assertLess(backup_dispose, committed_guard)
+        self.assertLess(committed_guard, backup_remove)
+        self.assertNotIn("[IO.File]::WriteAllBytes", task11_step7)
+        self.assertNotIn("Copy-Item", task11_step7)
+
+    def test_plan_task12_host_marker_removal_reuses_same_handle_cas(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        task12 = plan.split(
+            "### Task 12: Smoke-Test Both Codex Task Boundaries, Record Completion, and Clean Up",
+            1,
+        )[1].split("## Spec Coverage Map", 1)[0]
+        removal = task12.split(
+            "2. Copy host `AGENTS.md` to a task candidate", 1
+        )[1].split(
+            "3. In a clean Workspace branch", 1
+        )[0]
+        required = (
+            "Invoke-HostAgentsSameHandleCas",
+            "reproduced verbatim below",
+            "# BEGIN HOST_AGENTS_SAME_HANDLE_CAS_V1",
+            "function Test-BytesEqual",
+            "function Read-StreamBytes",
+            "function Find-ByteOffsets",
+            "function Assert-MarkerState",
+            "function Invoke-HostAgentsSameHandleCas",
+            "[IO.FileMode]::Open",
+            "[IO.FileAccess]::ReadWrite",
+            "[IO.FileShare]::None",
+            "[IO.FileOptions]::WriteThrough",
+            "[IO.FileMode]::CreateNew",
+            "Flush($true)",
+            "Read-StreamBytes $HostStream",
+            "-ExpectedBeforeBeginCount 1",
+            "-ExpectedBeforeEndCount 1",
+            "-ExpectedCandidateBeginCount 0",
+            "-ExpectedCandidateEndCount 0",
+            "Assert-MarkerState $Before 1 1",
+            "Assert-MarkerState $Candidate 0 0",
+            "$WithoutBlock = [byte[]]::new($Before.Length - ($Finish - $Start))",
+            "Test-BytesEqual $WithoutBlock $Candidate",
+            "Remove-Item -LiteralPath $CandidatePath",
+            "same handle",
+            "durable backup retained",
+            "command approval remains revoked",
+        )
+        for fragment in required:
+            self.assertIn(fragment, removal)
+        self.assertNotIn("[IO.File]::WriteAllBytes", removal)
+        self.assertNotIn("Copy-Item", removal)
+
+        block_begin = "# BEGIN HOST_AGENTS_SAME_HANDLE_CAS_V1"
+        block_end = "# END HOST_AGENTS_SAME_HANDLE_CAS_V1"
+        self.assertEqual(plan.count(block_begin), 2)
+        self.assertEqual(plan.count(block_end), 2)
+        first = plan.split(block_begin, 1)[1].split(block_end, 1)[0]
+        second = plan.split(block_begin, 2)[2].split(block_end, 1)[0]
+        self.assertEqual(first, second)
+
+    def test_plan_host_agents_byte_contract_preserves_bom_and_eol_fixtures(
+        self,
+    ) -> None:
+        begin = b"<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+        end = b"<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+        for bom in (b"", b"\xef\xbb\xbf"):
+            for eol in (b"\n", b"\r\n"):
+                before = bom + b"strict host rule" + eol + b"tail" + eol
+                block = begin + eol + b"fixed policy" + eol + end + eol
+                insertion = len(bom + b"strict host rule" + eol)
+                candidate = before[:insertion] + block + before[insertion:]
+                start = candidate.index(begin)
+                finish = candidate.index(end) + len(end)
+                if candidate[finish:finish + 2] == b"\r\n":
+                    finish += 2
+                elif candidate[finish:finish + 1] == b"\n":
+                    finish += 1
+                restored = candidate[:start] + candidate[finish:]
+                self.assertEqual(restored, before)
+                self.assertEqual(candidate[:len(bom)], bom)
+        plan = PLAN.read_text(encoding="utf-8")
+        task11_and_12 = plan.split(
+            "### Task 11: Enable the Workspace Policy and Preserve Host-Specific Rules",
+            1,
+        )[1].split("## Spec Coverage Map", 1)[0]
+        self.assertIn("including BOM and line endings", task11_and_12)
+        self.assertIn("byte-identical", task11_and_12)
+        self.assertNotIn("[IO.File]::ReadAllText", task11_and_12)
+
+    def test_plan_host_agents_actual_powershell_remove_stale_restore_fixtures(
+        self,
+    ) -> None:
+        powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+        if powershell is None:
+            self.skipTest("PowerShell is unavailable outside the WSL host gate")
+        plan = PLAN.read_text(encoding="utf-8")
+        removal = plan.split(
+            "2. Copy host `AGENTS.md` to a task candidate", 1
+        )[1].split("3. In a clean Workspace branch", 1)[0]
+        task12_block = removal.split("```powershell\n", 1)[1].split(
+            "\n```", 1
+        )[0]
+        fixed_host = "$HostPath = 'C:\\Users\\jinnouchi\\.codex\\AGENTS.md'"
+        fixed_candidate = (
+            "$CandidatePath = "
+            "(Resolve-Path '.\\AGENTS.host.rollback.candidate.md').Path"
+        )
+        self.assertEqual(task12_block.count(fixed_host), 1)
+        self.assertEqual(task12_block.count(fixed_candidate), 1)
+        task12_block = task12_block.replace(
+            fixed_host, "$HostPath = $SyntheticHostPath"
+        ).replace(
+            fixed_candidate, "$CandidatePath = $SyntheticCandidatePath"
+        )
+        harness = r'''
+$ErrorActionPreference = 'Stop'
+$Root = Join-Path ([IO.Path]::GetTempPath()) (
+    'shogun-host-cas-test-' + [Guid]::NewGuid().ToString('N')
+)
+[void][IO.Directory]::CreateDirectory($Root)
+$FixtureError = $null
+try {
+    $FixtureUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $Bom = [byte[]](0xef, 0xbb, 0xbf)
+    $BeforeText = "strict host rule`r`n" +
+        "<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->`r`n" +
+        "fixed policy`r`n" +
+        "<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->`r`n" +
+        "tail`r`n"
+    $CandidateText = "strict host rule`r`ntail`r`n"
+    $FixtureBefore = [byte[]]($Bom + $FixtureUtf8.GetBytes($BeforeText))
+    $FixtureCandidate = [byte[]]($Bom + $FixtureUtf8.GetBytes($CandidateText))
+    $SyntheticHostPath = Join-Path $Root 'AGENTS.md'
+    $SyntheticCandidatePath = Join-Path $Root 'candidate.md'
+    [IO.File]::WriteAllBytes($SyntheticHostPath, $FixtureBefore)
+    [IO.File]::WriteAllBytes($SyntheticCandidatePath, $FixtureCandidate)
+__TASK12_BLOCK__
+    if (-not $Committed -or
+        -not (Test-BytesEqual `
+            ([IO.File]::ReadAllBytes($SyntheticHostPath)) $FixtureCandidate)) {
+        throw 'synthetic removal failed'
+    }
+    if ([IO.File]::Exists($SyntheticCandidatePath)) {
+        throw 'successful removal did not clean candidate'
+    }
+    if ([IO.Directory]::GetFiles(
+        $Root, 'AGENTS.host.backup.*.bin'
+    ).Count -ne 0) { throw 'success backup was not removed' }
+
+    [IO.File]::WriteAllBytes($SyntheticHostPath, $FixtureBefore)
+    $Stale = $Utf8.GetBytes('stale reviewed bytes')
+    $Caught = $false
+    try {
+        $Ignored = Invoke-HostAgentsSameHandleCas `
+            -HostPath $SyntheticHostPath `
+            -ExpectedBefore $Stale `
+            -Candidate $FixtureCandidate `
+            -BackupDirectory $Root `
+            -ExpectedBeforeBeginCount 1 `
+            -ExpectedBeforeEndCount 1 `
+            -ExpectedCandidateBeginCount 0 `
+            -ExpectedCandidateEndCount 0
+    } catch {
+        if ($_.Exception.Message -notlike
+            '*host changed since candidate review; no write performed*') { throw }
+        $Caught = $true
+    }
+    if (-not $Caught -or
+        -not (Test-BytesEqual `
+            ([IO.File]::ReadAllBytes($SyntheticHostPath)) $FixtureBefore)) {
+        throw 'synthetic stale no-op failed'
+    }
+    if ([IO.Directory]::GetFiles(
+        $Root, 'AGENTS.host.backup.*.bin'
+    ).Count -ne 0) { throw 'stale path created a backup' }
+
+    [IO.File]::WriteAllBytes($SyntheticHostPath, $FixtureBefore)
+    $Caught = $false
+    try {
+        $Ignored = Invoke-HostAgentsSameHandleCas `
+            -HostPath $SyntheticHostPath `
+            -ExpectedBefore $FixtureBefore `
+            -Candidate $FixtureCandidate `
+            -BackupDirectory $Root `
+            -ExpectedBeforeBeginCount 1 `
+            -ExpectedBeforeEndCount 1 `
+            -ExpectedCandidateBeginCount 1 `
+            -ExpectedCandidateEndCount 1
+    } catch {
+        if ($_.Exception.Message -notlike
+            '*exact same-handle restore verified*') { throw }
+        $Caught = $true
+    }
+    if (-not $Caught -or
+        -not (Test-BytesEqual `
+            ([IO.File]::ReadAllBytes($SyntheticHostPath)) $FixtureBefore)) {
+        throw 'synthetic verified restore failed'
+    }
+    $Backups = [IO.Directory]::GetFiles(
+        $Root, 'AGENTS.host.backup.*.bin'
+    )
+    if ($Backups.Count -ne 1 -or
+        -not (Test-BytesEqual `
+            ([IO.File]::ReadAllBytes($Backups[0])) $FixtureBefore)) {
+        throw 'verified restore backup was not retained'
+    }
+} catch {
+    $FixtureError = $_
+} finally {
+    [IO.Directory]::Delete($Root, $true)
+}
+if ($null -ne $FixtureError) { exit 23 }
+Write-Output 'HOST_CAS_SYNTHETIC_PASS'
+exit 0
+'''.replace("__TASK12_BLOCK__", task12_block)
+        script_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="ascii",
+                newline="\r\n",
+                suffix=".ps1",
+                prefix=".host-cas-fixture-",
+                dir=ROOT,
+                delete=False,
+            ) as script_file:
+                script_file.write(harness)
+                script_path = Path(script_file.name)
+            script_argument = str(script_path)
+            if powershell.lower().endswith(".exe"):
+                converted = subprocess.run(
+                    ["wslpath", "-w", script_argument],
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                    check=False,
+                )
+                if converted.returncode != 0:
+                    self.fail("PowerShell fixture path conversion failed")
+                script_argument = converted.stdout.strip()
+            completed = subprocess.run(
+                [
+                    powershell,
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    script_argument,
+                ],
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        finally:
+            if script_path is not None:
+                script_path.unlink(missing_ok=True)
+        normalized_stdout = completed.stdout.replace("\x00", "")
+        if (
+            completed.returncode != 0
+            or normalized_stdout.count("HOST_CAS_SYNTHETIC_PASS") != 1
+        ):
+            self.fail(
+                "PowerShell synthetic host CAS fixture failed "
+                f"(exit={completed.returncode})"
+            )
 
 
 if __name__ == "__main__":

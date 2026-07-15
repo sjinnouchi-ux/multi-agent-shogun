@@ -58,6 +58,16 @@ idempotent; different or unsafe entries are never overwritten. The lifecycle
 helper revalidates both the fixed parent binding and published leaf inode after
 final readback; uncertainty is exit 4. The helper itself is not installed or
 persistently approved.
+Host `AGENTS.md` marker insertion and removal use one exclusive read/write
+`FileStream` for compare, write, truncation, durable flush, readback, and any
+restore. A byte-stale reviewed candidate is never written. Before host mutation,
+a `CreateNew`/`WriteThrough` backup is durably flushed and read back. An
+exclusive handle keeps that backup identity pinned through host write and any
+restore; only a verified commit closes and removes it. A failed transaction
+closes but retains the verified backup and stops before command approval or any
+later rollback step. Task 12 reuses the verbatim helper block plus executable
+reverse byte-delta validation. All comparisons preserve BOM, line endings, and
+every byte outside the marker block.
 Record each deployment through a separate Shogun work-log PR. Roll back by
 revoking the full-command permission first, byte-safely removing the host marker,
 and reverting the Workspace policy through a PR. Select an explicit superseded

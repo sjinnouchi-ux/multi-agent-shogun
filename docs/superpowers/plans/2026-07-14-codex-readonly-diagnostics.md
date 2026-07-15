@@ -4728,15 +4728,45 @@ After approval, merge through the PR. Fetch raw GitHub main copies of all three 
 
 - [ ] **Step 7: Perform the one-time host marker insertion without replacing the file**
 
-Read `C:\Users\jinnouchi\.codex\AGENTS.md` at the correct Codex host/credential boundary. Require marker count zero and exactly one copy of the existing Shogun raw-state prohibition anchor. Copy it to the task workspace, use `apply_patch` to insert the exact merged marker block after that anchor, then validate before requesting the single-file elevated copy:
+Read `C:\Users\jinnouchi\.codex\AGENTS.md` at the correct Codex
+host/credential boundary. Require marker count zero and exactly one copy of the
+existing Shogun raw-state prohibition anchor. Copy its bytes to the task
+workspace, use `apply_patch` to insert the exact merged marker block after that
+anchor, and review the candidate. Obtain explicit single-file elevation
+approval for the exact transaction before running it. The following byte
+validation and same-handle compare-and-swap transaction are normative; do not
+substitute a file copy, move, second host open, or stale preflight read:
 
 ```powershell
-$Before = [IO.File]::ReadAllBytes('C:\Users\jinnouchi\.codex\AGENTS.md')
-$CandidatePath = (Resolve-Path '.\AGENTS.host.candidate.md')
+$HostPath = 'C:\Users\jinnouchi\.codex\AGENTS.md'
+$Before = [IO.File]::ReadAllBytes($HostPath)
+$CandidatePath = (Resolve-Path '.\AGENTS.host.candidate.md').Path
 $Candidate = [IO.File]::ReadAllBytes($CandidatePath)
 $Utf8 = [Text.UTF8Encoding]::new($false, $true)
 $Begin = $Utf8.GetBytes('<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->')
 $End = $Utf8.GetBytes('<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->')
+
+# BEGIN HOST_AGENTS_SAME_HANDLE_CAS_V1
+function Test-BytesEqual([byte[]]$Left, [byte[]]$Right) {
+    if ($Left.Length -ne $Right.Length) { return $false }
+    for ($i = 0; $i -lt $Left.Length; $i++) {
+        if ($Left[$i] -ne $Right[$i]) { return $false }
+    }
+    return $true
+}
+
+function Read-StreamBytes([IO.FileStream]$Stream) {
+    if ($Stream.Length -gt [int]::MaxValue) { throw 'host file too large' }
+    $Stream.Position = 0
+    $Data = [byte[]]::new([int]$Stream.Length)
+    $Offset = 0
+    while ($Offset -lt $Data.Length) {
+        $Read = $Stream.Read($Data, $Offset, $Data.Length - $Offset)
+        if ($Read -le 0) { throw 'short stream read' }
+        $Offset += $Read
+    }
+    return ,$Data
+}
 
 function Find-ByteOffsets([byte[]]$Data, [byte[]]$Pattern) {
     $Offsets = @()
@@ -4750,18 +4780,138 @@ function Find-ByteOffsets([byte[]]$Data, [byte[]]$Pattern) {
     return $Offsets
 }
 
-$BeforeBegin = @(Find-ByteOffsets $Before $Begin)
+function Assert-MarkerState(
+    [byte[]]$Data,
+    [int]$ExpectedBeginCount,
+    [int]$ExpectedEndCount
+) {
+    $ObservedBegin = @(Find-ByteOffsets $Data $Begin)
+    $ObservedEnd = @(Find-ByteOffsets $Data $End)
+    if ($ObservedBegin.Count -ne $ExpectedBeginCount -or
+        $ObservedEnd.Count -ne $ExpectedEndCount) {
+        throw 'host marker cardinality invalid'
+    }
+    if ($ExpectedBeginCount -eq 1 -and
+        $ObservedEnd[0] -le $ObservedBegin[0]) {
+        throw 'host marker order invalid'
+    }
+}
+
+function Invoke-HostAgentsSameHandleCas {
+    param(
+        [string]$HostPath,
+        [byte[]]$ExpectedBefore,
+        [byte[]]$Candidate,
+        [string]$BackupDirectory,
+        [int]$ExpectedBeforeBeginCount,
+        [int]$ExpectedBeforeEndCount,
+        [int]$ExpectedCandidateBeginCount,
+        [int]$ExpectedCandidateEndCount
+    )
+
+    $HostStream = $null
+    $BackupStream = $null
+    $BackupPath = $null
+    $Committed = $false
+    try {
+        $HostStream = [IO.FileStream]::new(
+            $HostPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None,
+            4096,
+            [IO.FileOptions]::WriteThrough
+        )
+        $Current = Read-StreamBytes $HostStream
+        if (-not (Test-BytesEqual $Current $ExpectedBefore)) {
+            throw 'host changed since candidate review; no write performed'
+        }
+        Assert-MarkerState $Current `
+            $ExpectedBeforeBeginCount $ExpectedBeforeEndCount
+
+        $BackupPath = Join-Path $BackupDirectory (
+            'AGENTS.host.backup.' + [Guid]::NewGuid().ToString('N') + '.bin'
+        )
+        try {
+            $BackupStream = [IO.FileStream]::new(
+                $BackupPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None,
+                4096,
+                [IO.FileOptions]::WriteThrough
+            )
+            $BackupStream.Write($Current, 0, $Current.Length)
+            $BackupStream.SetLength($Current.Length)
+            $BackupStream.Flush($true)
+            $BackupReadback = Read-StreamBytes $BackupStream
+            if (-not (Test-BytesEqual $BackupReadback $Current)) {
+                throw 'durable backup readback mismatch; host not written'
+            }
+        } catch {
+            throw [IO.IOException]::new(
+                'durable backup preparation failed; host not written; stop before command approval',
+                $_.Exception
+            )
+        }
+
+        try {
+            $HostStream.Position = 0
+            $HostStream.Write($Candidate, 0, $Candidate.Length)
+            $HostStream.SetLength($Candidate.Length)
+            $HostStream.Flush($true)
+            $Installed = Read-StreamBytes $HostStream
+            if (-not (Test-BytesEqual $Installed $Candidate)) {
+                throw 'installed host bytes differ from reviewed candidate'
+            }
+            Assert-MarkerState $Installed `
+                $ExpectedCandidateBeginCount $ExpectedCandidateEndCount
+            $Committed = $true
+        } catch {
+            $WriteFailure = $_
+            try {
+                $HostStream.Position = 0
+                $HostStream.Write($BackupReadback, 0, $BackupReadback.Length)
+                $HostStream.SetLength($BackupReadback.Length)
+                $HostStream.Flush($true)
+                $Restored = Read-StreamBytes $HostStream
+                if (-not (Test-BytesEqual $Restored $BackupReadback)) {
+                    throw 'same-handle restore readback mismatch'
+                }
+                Assert-MarkerState $Restored `
+                    $ExpectedBeforeBeginCount $ExpectedBeforeEndCount
+            } catch {
+                throw [IO.IOException]::new(
+                    'host update/restore indeterminate; durable backup retained; stop before command approval',
+                    $_.Exception
+                )
+            }
+            throw [IO.IOException]::new(
+                'host write failed; exact same-handle restore verified; durable backup retained; stop before command approval',
+                $WriteFailure.Exception
+            )
+        }
+    } finally {
+        if ($null -ne $HostStream) { $HostStream.Dispose() }
+        if ($null -ne $BackupStream) { $BackupStream.Dispose() }
+    }
+
+    if (-not $Committed) { throw 'host transaction did not commit' }
+    try {
+        Remove-Item -LiteralPath $BackupPath -ErrorAction Stop
+    } catch {
+        throw 'host committed but backup cleanup failed; stop before command approval'
+    }
+    return $true
+}
+# END HOST_AGENTS_SAME_HANDLE_CAS_V1
+
+Assert-MarkerState $Before 0 0
+Assert-MarkerState $Candidate 1 1
 $CandidateBegin = @(Find-ByteOffsets $Candidate $Begin)
 $CandidateEnd = @(Find-ByteOffsets $Candidate $End)
-if ($BeforeBegin.Count -ne 0) {
-    throw 'host marker already exists; use reviewed block update flow'
-}
-if ($CandidateBegin.Count -ne 1 -or $CandidateEnd.Count -ne 1) {
-    throw 'candidate marker count invalid'
-}
 $Start = [int]$CandidateBegin[0]
 $EndStart = [int]$CandidateEnd[0]
-if ($EndStart -le $Start) { throw 'candidate marker order invalid' }
 $Finish = $EndStart + $End.Length
 if ($Finish + 1 -lt $Candidate.Length -and
     $Candidate[$Finish] -eq 13 -and $Candidate[$Finish + 1] -eq 10) {
@@ -4774,29 +4924,42 @@ $WithoutBlock = [byte[]]::new($Candidate.Length - ($Finish - $Start))
 [Array]::Copy(
     $Candidate, $Finish, $WithoutBlock, $Start, $Candidate.Length - $Finish
 )
-if ([Convert]::ToBase64String($WithoutBlock) -ne
-    [Convert]::ToBase64String($Before)) {
+if (-not (Test-BytesEqual $WithoutBlock $Before)) {
     throw 'bytes outside inserted block changed'
 }
+
+$BackupDirectory = [IO.Path]::GetDirectoryName($CandidatePath)
+$Committed = Invoke-HostAgentsSameHandleCas `
+    -HostPath $HostPath `
+    -ExpectedBefore $Before `
+    -Candidate $Candidate `
+    -BackupDirectory $BackupDirectory `
+    -ExpectedBeforeBeginCount 0 `
+    -ExpectedBeforeEndCount 0 `
+    -ExpectedCandidateBeginCount 1 `
+    -ExpectedCandidateEndCount 1
+if (-not $Committed) { throw 'host marker insertion did not commit' }
+try {
+    Remove-Item -LiteralPath $CandidatePath -ErrorAction Stop
+} catch {
+    throw 'host committed but candidate cleanup failed; stop before command approval'
+}
 ```
 
-Expected: candidate minus the marker block is byte-identical to the original, including BOM and line endings. Request approval to copy the candidate to the host path, re-read it with `ReadAllBytes`, require exact byte equality with `$Candidate`, rerun the marker count, then delete the candidate. Do not replace the whole host file with `Paste This Text`; preserve stricter host-only authentication/surface rules.
-
-After the approved copy, require this exact post-check before deleting the candidate:
-
-```powershell
-$Installed = [IO.File]::ReadAllBytes('C:\Users\jinnouchi\.codex\AGENTS.md')
-if ([Convert]::ToBase64String($Installed) -ne
-    [Convert]::ToBase64String($Candidate)) {
-    throw 'installed host bytes differ from reviewed candidate'
-}
-$InstalledBegin = @(Find-ByteOffsets $Installed $Begin)
-$InstalledEnd = @(Find-ByteOffsets $Installed $End)
-if ($InstalledBegin.Count -ne 1 -or $InstalledEnd.Count -ne 1 -or
-    $InstalledEnd[0] -le $InstalledBegin[0]) {
-    throw 'installed host marker pair invalid'
-}
-```
+Expected: candidate minus the marker block is byte-identical to the original,
+including BOM and line endings. The elevated transaction opens the host file
+once with exclusive `FileShare.None`; it re-reads and compares `Before` through
+that same handle before creating a durable `CreateNew` backup. The backup is
+written with `WriteThrough`, `Flush(true)`, and same-stream readback before the
+host handle is written. Its `FileShare.None` stream remains open through
+candidate verification and any restore decision. Candidate write, truncation,
+durable flush, readback, and marker validation all use the original host handle. A stale `Before` is a
+verified no-op. Any candidate-write or validation failure restores and verifies
+the backup through the same handle, retains both backup and candidate for an
+explicit cleanup task, and stops before Step 8 even when restoration succeeds.
+If restore is not provable, report only the fixed indeterminate state and retain
+both artifacts. On verified commit, remove the backup and candidate. Do not
+paste the whole file or change stricter host-only authentication/surface rules.
 
 - [ ] **Step 8: Request only the complete persistent argv prefix**
 
@@ -4871,7 +5034,234 @@ Expected: same-directory mode-`0555` atomic replacement passes; wrong current ha
 Do not roll back during a healthy deployment. If a later failure requires rollback, stop Shogun and obtain explicit user approval for the exact failing active record and exact superseded target record. Then execute this fixed order; a failure at any gate stops the flow:
 
 1. Revoke the persistent full-command approval before any file change and verify a fresh task no longer has that approval. Do not substitute a shorter prefix.
-2. Copy host `AGENTS.md` to a task candidate, remove only the one marker block with `apply_patch`, and run the Task 11 raw-byte comparison in reverse: candidate bytes plus the removed marker/newline must equal the original bytes exactly, including BOM and line endings. After elevated replacement, `ReadAllBytes` must equal the candidate.
+2. Copy host `AGENTS.md` to a task candidate, remove only the one marker block
+   with `apply_patch`, and run the Task 11 raw-byte comparison in reverse:
+   candidate bytes plus the removed marker/newline must equal the original bytes
+   exactly, including BOM and line endings. Use the complete marker-delimited
+   Task 11 helper block reproduced verbatim below; do not use a cached local
+   helper or hand-written subset. The removal transaction must retain the same
+   `[IO.FileMode]::Open`, `[IO.FileAccess]::ReadWrite`,
+   `[IO.FileShare]::None`, and `[IO.FileOptions]::WriteThrough` host stream,
+   the `[IO.FileMode]::CreateNew` backup, every required `Flush($true)`, and
+   `Read-StreamBytes $HostStream` verification. Invoke it only as follows:
+
+```powershell
+$HostPath = 'C:\Users\jinnouchi\.codex\AGENTS.md'
+$Before = [IO.File]::ReadAllBytes($HostPath)
+$CandidatePath = (Resolve-Path '.\AGENTS.host.rollback.candidate.md').Path
+$Candidate = [IO.File]::ReadAllBytes($CandidatePath)
+$Utf8 = [Text.UTF8Encoding]::new($false, $true)
+$Begin = $Utf8.GetBytes('<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->')
+$End = $Utf8.GetBytes('<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->')
+
+# BEGIN HOST_AGENTS_SAME_HANDLE_CAS_V1
+function Test-BytesEqual([byte[]]$Left, [byte[]]$Right) {
+    if ($Left.Length -ne $Right.Length) { return $false }
+    for ($i = 0; $i -lt $Left.Length; $i++) {
+        if ($Left[$i] -ne $Right[$i]) { return $false }
+    }
+    return $true
+}
+
+function Read-StreamBytes([IO.FileStream]$Stream) {
+    if ($Stream.Length -gt [int]::MaxValue) { throw 'host file too large' }
+    $Stream.Position = 0
+    $Data = [byte[]]::new([int]$Stream.Length)
+    $Offset = 0
+    while ($Offset -lt $Data.Length) {
+        $Read = $Stream.Read($Data, $Offset, $Data.Length - $Offset)
+        if ($Read -le 0) { throw 'short stream read' }
+        $Offset += $Read
+    }
+    return ,$Data
+}
+
+function Find-ByteOffsets([byte[]]$Data, [byte[]]$Pattern) {
+    $Offsets = @()
+    for ($i = 0; $i -le $Data.Length - $Pattern.Length; $i++) {
+        $Match = $true
+        for ($j = 0; $j -lt $Pattern.Length; $j++) {
+            if ($Data[$i + $j] -ne $Pattern[$j]) { $Match = $false; break }
+        }
+        if ($Match) { $Offsets += $i }
+    }
+    return $Offsets
+}
+
+function Assert-MarkerState(
+    [byte[]]$Data,
+    [int]$ExpectedBeginCount,
+    [int]$ExpectedEndCount
+) {
+    $ObservedBegin = @(Find-ByteOffsets $Data $Begin)
+    $ObservedEnd = @(Find-ByteOffsets $Data $End)
+    if ($ObservedBegin.Count -ne $ExpectedBeginCount -or
+        $ObservedEnd.Count -ne $ExpectedEndCount) {
+        throw 'host marker cardinality invalid'
+    }
+    if ($ExpectedBeginCount -eq 1 -and
+        $ObservedEnd[0] -le $ObservedBegin[0]) {
+        throw 'host marker order invalid'
+    }
+}
+
+function Invoke-HostAgentsSameHandleCas {
+    param(
+        [string]$HostPath,
+        [byte[]]$ExpectedBefore,
+        [byte[]]$Candidate,
+        [string]$BackupDirectory,
+        [int]$ExpectedBeforeBeginCount,
+        [int]$ExpectedBeforeEndCount,
+        [int]$ExpectedCandidateBeginCount,
+        [int]$ExpectedCandidateEndCount
+    )
+
+    $HostStream = $null
+    $BackupStream = $null
+    $BackupPath = $null
+    $Committed = $false
+    try {
+        $HostStream = [IO.FileStream]::new(
+            $HostPath,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None,
+            4096,
+            [IO.FileOptions]::WriteThrough
+        )
+        $Current = Read-StreamBytes $HostStream
+        if (-not (Test-BytesEqual $Current $ExpectedBefore)) {
+            throw 'host changed since candidate review; no write performed'
+        }
+        Assert-MarkerState $Current `
+            $ExpectedBeforeBeginCount $ExpectedBeforeEndCount
+
+        $BackupPath = Join-Path $BackupDirectory (
+            'AGENTS.host.backup.' + [Guid]::NewGuid().ToString('N') + '.bin'
+        )
+        try {
+            $BackupStream = [IO.FileStream]::new(
+                $BackupPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::ReadWrite,
+                [IO.FileShare]::None,
+                4096,
+                [IO.FileOptions]::WriteThrough
+            )
+            $BackupStream.Write($Current, 0, $Current.Length)
+            $BackupStream.SetLength($Current.Length)
+            $BackupStream.Flush($true)
+            $BackupReadback = Read-StreamBytes $BackupStream
+            if (-not (Test-BytesEqual $BackupReadback $Current)) {
+                throw 'durable backup readback mismatch; host not written'
+            }
+        } catch {
+            throw [IO.IOException]::new(
+                'durable backup preparation failed; host not written; stop before command approval',
+                $_.Exception
+            )
+        }
+
+        try {
+            $HostStream.Position = 0
+            $HostStream.Write($Candidate, 0, $Candidate.Length)
+            $HostStream.SetLength($Candidate.Length)
+            $HostStream.Flush($true)
+            $Installed = Read-StreamBytes $HostStream
+            if (-not (Test-BytesEqual $Installed $Candidate)) {
+                throw 'installed host bytes differ from reviewed candidate'
+            }
+            Assert-MarkerState $Installed `
+                $ExpectedCandidateBeginCount $ExpectedCandidateEndCount
+            $Committed = $true
+        } catch {
+            $WriteFailure = $_
+            try {
+                $HostStream.Position = 0
+                $HostStream.Write($BackupReadback, 0, $BackupReadback.Length)
+                $HostStream.SetLength($BackupReadback.Length)
+                $HostStream.Flush($true)
+                $Restored = Read-StreamBytes $HostStream
+                if (-not (Test-BytesEqual $Restored $BackupReadback)) {
+                    throw 'same-handle restore readback mismatch'
+                }
+                Assert-MarkerState $Restored `
+                    $ExpectedBeforeBeginCount $ExpectedBeforeEndCount
+            } catch {
+                throw [IO.IOException]::new(
+                    'host update/restore indeterminate; durable backup retained; stop before command approval',
+                    $_.Exception
+                )
+            }
+            throw [IO.IOException]::new(
+                'host write failed; exact same-handle restore verified; durable backup retained; stop before command approval',
+                $WriteFailure.Exception
+            )
+        }
+    } finally {
+        if ($null -ne $HostStream) { $HostStream.Dispose() }
+        if ($null -ne $BackupStream) { $BackupStream.Dispose() }
+    }
+
+    if (-not $Committed) { throw 'host transaction did not commit' }
+    try {
+        Remove-Item -LiteralPath $BackupPath -ErrorAction Stop
+    } catch {
+        throw 'host committed but backup cleanup failed; stop before command approval'
+    }
+    return $true
+}
+# END HOST_AGENTS_SAME_HANDLE_CAS_V1
+
+Assert-MarkerState $Before 1 1
+Assert-MarkerState $Candidate 0 0
+$BeforeBegin = @(Find-ByteOffsets $Before $Begin)
+$BeforeEnd = @(Find-ByteOffsets $Before $End)
+$Start = [int]$BeforeBegin[0]
+$EndStart = [int]$BeforeEnd[0]
+$Finish = $EndStart + $End.Length
+if ($Finish + 1 -lt $Before.Length -and
+    $Before[$Finish] -eq 13 -and $Before[$Finish + 1] -eq 10) {
+    $Finish += 2
+} elseif ($Finish -lt $Before.Length -and $Before[$Finish] -eq 10) {
+    $Finish += 1
+}
+$WithoutBlock = [byte[]]::new($Before.Length - ($Finish - $Start))
+[Array]::Copy($Before, 0, $WithoutBlock, 0, $Start)
+[Array]::Copy(
+    $Before, $Finish, $WithoutBlock, $Start, $Before.Length - $Finish
+)
+if (-not (Test-BytesEqual $WithoutBlock $Candidate)) {
+    throw 'rollback candidate changed bytes outside removed block'
+}
+
+$BackupDirectory = [IO.Path]::GetDirectoryName($CandidatePath)
+$Committed = Invoke-HostAgentsSameHandleCas `
+    -HostPath $HostPath `
+    -ExpectedBefore $Before `
+    -Candidate $Candidate `
+    -BackupDirectory $BackupDirectory `
+    -ExpectedBeforeBeginCount 1 `
+    -ExpectedBeforeEndCount 1 `
+    -ExpectedCandidateBeginCount 0 `
+    -ExpectedCandidateEndCount 0
+if (-not $Committed) { throw 'host marker removal did not commit' }
+try {
+    Remove-Item -LiteralPath $CandidatePath -ErrorAction Stop
+} catch {
+    throw 'host removal committed but candidate cleanup failed; command approval remains revoked'
+}
+```
+
+   A stale `Before` must be a no-op. The reverse comparison above is mandatory.
+   Write, `SetLength`, durable flush, readback, marker-zero validation, and any
+   restore must use the same handle; the backup handle remains exclusive until
+   that decision finishes.
+   If same-handle restore cannot be verified, the durable backup retained state
+   is indeterminate and the command approval remains revoked; do not continue to
+   Workspace or snapshot changes. Delete the candidate/backup only after a
+   verified removal transaction.
 3. In a clean Workspace branch from current `origin/main`, revert only the diagnostics-policy merge commit, verify the three-file scope, open a PR, obtain review and user approval, merge it, and verify raw GitHub main before proceeding.
 4. In a fresh clean Shogun worktree at current `origin/main`, fetch and validate the raw deployment registry with the Task 10 validator. The user selects one exact `superseded` record by its 40-character `source_commit` and UTC `deployed_at`; require exactly one matching record. Derive `FAILING_SHA256` from the sole active record and `TARGET_SHA256` from that selected record without printing either value.
 5. Extract and verify the target Git blob, then run the tested primitive:
