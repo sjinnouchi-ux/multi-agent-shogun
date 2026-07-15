@@ -348,6 +348,12 @@ def drain_process(
         return CommandResult("failed", None, b"")
     finally:
         selector.close()
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 class CommandRunner:

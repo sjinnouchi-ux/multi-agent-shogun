@@ -296,6 +296,26 @@ class CommandRunnerTests(unittest.TestCase):
         self.assertFalse(hasattr(failure, "stderr"))
         self.assertNotIn(b"usage:", failure.stdout.lower())
 
+    def test_real_runner_closes_stdout_and_stderr_pipe_readers(self) -> None:
+        processes = []
+
+        def retain_process(*args, **kwargs):
+            process = subprocess.Popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        runner = self.module.CommandRunner(popen_factory=retain_process)
+        result = runner(("/usr/bin/git", "--version"))
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(len(processes), 1)
+        stdout = processes[0].stdout
+        stderr = processes[0].stderr
+        if stdout is None or stderr is None:
+            self.fail("runner did not create both pipe readers")
+        self.addCleanup(stdout.close)
+        self.addCleanup(stderr.close)
+        self.assertEqual((stdout.closed, stderr.closed), (True, True))
+
 
 if __name__ == "__main__":
     unittest.main()
