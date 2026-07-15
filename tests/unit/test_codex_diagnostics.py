@@ -432,5 +432,266 @@ class SafePathAndLogTests(unittest.TestCase):
         self.assertNotIn("customer-name", rendered)
 
 
+class TmuxAndProcessCollectorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def test_fixed_argv_projects_tmux_fields_and_supervisor_pattern_is_exact(self) -> None:
+        m = self.module
+
+        def projection(variable, values):
+            return "".join(
+                f"#{{?#{{==:#{{{variable}}},{value}}},{value},}}"
+                for value in values
+            )
+
+        self.assertEqual(
+            m.TMUX_SESSIONS_ARGV,
+            ("/usr/bin/tmux", "list-sessions", "-F", "#{session_name}"),
+        )
+        self.assertEqual(
+            m.TMUX_PANES_ARGV,
+            (
+                "/usr/bin/tmux",
+                "list-panes",
+                "-a",
+                "-F",
+                "\t".join((
+                    projection("session_name", m.SESSION_NAMES),
+                    "#{pane_dead}",
+                    projection("@agent_id", m.AGENT_IDS),
+                    projection("@agent_cli", m.CLI_NAMES),
+                )),
+            ),
+        )
+        self.assertEqual(
+            m.PGREP_SUPERVISOR_ARGV,
+            (
+                "/usr/bin/pgrep",
+                "-f",
+                "--",
+                r"(^|/)scripts/watcher_supervisor\.sh([[:space:]]|$)",
+            ),
+        )
+
+    def test_one_ashigaru_formation_keeps_other_agents_not_observed(self) -> None:
+        m = self.module
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\nmultiagent\n"),
+            m.TMUX_PANES_ARGV: m.CommandResult(
+                "ok", 0,
+                b"shogun\t0\tshogun\tclaude\n"
+                b"multiagent\t0\tkaro\tcodex\n"
+                b"multiagent\t0\tashigaru1\tclaude\n",
+            ),
+        })
+        collection = m.collect_tmux(runner)
+        self.assertEqual(collection.observed_agents, frozenset(("shogun", "karo", "ashigaru1")))
+        self.assertEqual(collection.observations["ashigaru2"].pane_state, "not_observed")
+        self.assertNotIn("ashigaru2", {issue.agent for issue in collection.errors})
+        self.assertEqual(len(collection.sessions), 2)
+        self.assertNotIn("capture-pane", SOURCE.read_text(encoding="utf-8"))
+
+    def test_unknown_duplicate_wrong_session_dead_and_hostile_cli_are_sanitized(self) -> None:
+        m = self.module
+        secret = "oauth-secret-customer"
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\nmultiagent\n"),
+            m.TMUX_PANES_ARGV: m.CommandResult(
+                "ok", 0,
+                b"shogun\t0\tunknown-" + secret.encode() + b"\tclaude\n"
+                b"multiagent\t0\tshogun\tbad-cli\n"
+                b"multiagent\t1\tashigaru1\tclaude\n"
+                b"multiagent\t0\tashigaru1\tclaude\n",
+            ),
+        })
+        collection = m.collect_tmux(runner)
+        codes = {issue.code for issue in collection.errors}
+        self.assertIn("agent_session_mismatch", codes)
+        self.assertIn("duplicate_agent_pane", codes)
+        self.assertEqual(collection.sessions[0]["unknown_agent_count"], 1)
+        self.assertEqual(collection.observations["shogun"].cli, "unknown")
+        self.assertNotIn(secret, repr(collection))
+
+    def test_all_lines_valid_option_injection_has_no_raw_output_path(self) -> None:
+        m = self.module
+        injection = "unknown\tclaude\nmultiagent\t0\tashigaru2"
+        session_field, dead_field, agent_field, cli_field = m.TMUX_PANES_ARGV[-1].split(
+            "\t"
+        )
+        self.assertEqual(dead_field, "#{pane_dead}")
+        self.assertNotIn("#{q:", m.TMUX_PANES_ARGV[-1])
+        self.assertNotIn(injection, m.TMUX_PANES_ARGV[-1])
+        for variable, values, field in (
+            ("session_name", m.SESSION_NAMES, session_field),
+            ("@agent_id", m.AGENT_IDS, agent_field),
+            ("@agent_cli", m.CLI_NAMES, cli_field),
+        ):
+            self.assertEqual(
+                field,
+                "".join(
+                    f"#{{?#{{==:#{{{variable}}},{value}}},{value},}}"
+                    for value in values
+                ),
+            )
+
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\n"),
+            m.TMUX_PANES_ARGV: m.CommandResult(
+                "ok",
+                0,
+                b"shogun\t0\t\tclaude\n",
+            ),
+        })
+        collection = m.collect_tmux(runner)
+        self.assertEqual(collection.sessions[0]["unknown_agent_count"], 1)
+        self.assertEqual(collection.observed_agents, frozenset())
+        self.assertEqual(collection.observations["ashigaru2"].pane_state, "not_observed")
+        self.assertNotIn("ashigaru2", repr(collection.errors))
+
+    def test_raw_newline_or_tab_injection_discards_all_pane_rows(self) -> None:
+        m = self.module
+        secret = b"oauth-secret-customer"
+        pane_outputs = (
+            (
+                b"shogun\t0\tunknown-" + secret + b"\n"
+                b"multiagent\t0\tashigaru2\tclaude\n"
+            ),
+            (
+                b"shogun\t0\tunknown-" + secret
+                + b"\tmultiagent\t0\tashigaru2\tclaude\n"
+            ),
+        )
+        for pane_output in pane_outputs:
+            with self.subTest(pane_output=pane_output):
+                runner = ScriptedRunner({
+                    m.TMUX_SESSIONS_ARGV: m.CommandResult(
+                        "ok", 0, b"shogun\nmultiagent\n"
+                    ),
+                    m.TMUX_PANES_ARGV: m.CommandResult("ok", 0, pane_output),
+                })
+                collection = m.collect_tmux(runner)
+                self.assertEqual(collection.observed_agents, frozenset())
+                self.assertEqual(
+                    [item["state"] for item in collection.sessions],
+                    ["error", "error"],
+                )
+                self.assertIn("command_failed", {issue.code for issue in collection.errors})
+                self.assertNotIn(secret.decode(), repr(collection))
+
+    def test_missing_sessions_have_fixed_shape_without_polling_absent_agents(self) -> None:
+        m = self.module
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult("nonzero", 1, b""),
+            m.TMUX_PANES_ARGV: m.CommandResult("nonzero", 1, b""),
+        })
+        collection = m.collect_tmux(runner)
+        self.assertEqual([item["state"] for item in collection.sessions], ["missing", "missing"])
+        self.assertEqual(collection.observed_agents, frozenset())
+        self.assertEqual({item.pane_state for item in collection.observations.values()}, {"not_observed"})
+
+    def test_present_sessions_fail_closed_when_pane_result_is_missing_or_empty(self) -> None:
+        m = self.module
+        pane_results = (
+            m.CommandResult("nonzero", 1, b""),
+            m.CommandResult("ok", 0, b""),
+        )
+        for pane_result in pane_results:
+            with self.subTest(pane_result=pane_result):
+                runner = ScriptedRunner({
+                    m.TMUX_SESSIONS_ARGV: m.CommandResult(
+                        "ok", 0, b"shogun\nmultiagent\n"
+                    ),
+                    m.TMUX_PANES_ARGV: pane_result,
+                })
+                collection = m.collect_tmux(runner)
+                self.assertEqual(
+                    [item["state"] for item in collection.sessions],
+                    ["error", "error"],
+                )
+                self.assertEqual(collection.observed_agents, frozenset())
+                self.assertIn("command_failed", {issue.code for issue in collection.errors})
+
+    def test_unique_dead_pane_has_fixed_state_and_error(self) -> None:
+        m = self.module
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult(
+                "ok", 0, b"shogun\nmultiagent\n"
+            ),
+            m.TMUX_PANES_ARGV: m.CommandResult(
+                "ok",
+                0,
+                b"shogun\t0\tshogun\tclaude\n"
+                b"multiagent\t1\tashigaru1\tcodex\n",
+            ),
+        })
+        collection = m.collect_tmux(runner)
+        self.assertEqual(collection.observations["ashigaru1"].pane_state, "dead")
+        self.assertIn(
+            ("pane_dead", "ashigaru1"),
+            {(issue.code, issue.agent) for issue in collection.errors},
+        )
+
+    def test_process_queries_only_observed_agents_and_never_returns_pids(self) -> None:
+        m = self.module
+        results = {
+            m.PGREP_SUPERVISOR_ARGV: m.CommandResult("ok", 0, b"101\n"),
+            m.PGREP_AGENT_ARGV["shogun"]: m.CommandResult("ok", 0, b"201\n"),
+            m.PGREP_AGENT_ARGV["ashigaru1"]: m.CommandResult("nonzero", 1, b""),
+        }
+        runner = ScriptedRunner(results)
+        collection = m.collect_processes(frozenset(("shogun", "ashigaru1")), runner)
+        self.assertEqual(collection.processes["watcher_supervisor_state"], "healthy")
+        self.assertEqual(collection.agent_watchers["shogun"], (1, "healthy"))
+        self.assertEqual(collection.agent_watchers["ashigaru1"], (0, "missing"))
+        self.assertEqual(collection.agent_watchers["ashigaru2"], (None, "not_observed"))
+        self.assertNotIn(m.PGREP_AGENT_ARGV["ashigaru2"], runner.calls)
+        self.assertNotIn("101", json.dumps(collection.processes))
+        self.assertIn("watcher_missing", {issue.code for issue in collection.errors})
+
+    def test_duplicate_and_timeout_process_results_have_fixed_states_and_issues(self) -> None:
+        m = self.module
+        runner = ScriptedRunner({
+            m.PGREP_SUPERVISOR_ARGV: m.CommandResult("ok", 0, b"101\n102\n"),
+            m.PGREP_AGENT_ARGV["shogun"]: m.CommandResult("timeout", None, b""),
+            m.PGREP_AGENT_ARGV["ashigaru1"]: m.CommandResult(
+                "ok", 0, b"201\n202\n"
+            ),
+        })
+        collection = m.collect_processes(
+            frozenset(("shogun", "ashigaru1")), runner
+        )
+        self.assertEqual(
+            collection.processes,
+            {
+                "watcher_supervisor_count": 2,
+                "watcher_supervisor_state": "duplicate",
+            },
+        )
+        self.assertEqual(collection.agent_watchers["shogun"], (None, "unknown"))
+        self.assertEqual(collection.agent_watchers["ashigaru1"], (2, "duplicate"))
+        self.assertIn(
+            ("duplicate_process", None),
+            {(issue.code, issue.agent) for issue in collection.errors},
+        )
+        self.assertIn(
+            ("command_timeout", "shogun"),
+            {(issue.code, issue.agent) for issue in collection.errors},
+        )
+        self.assertIn(
+            ("duplicate_process", "ashigaru1"),
+            {(issue.code, issue.agent) for issue in collection.errors},
+        )
+
+    def test_pgrep_invalid_pid_timeout_and_duplicates_map_to_fixed_states(self) -> None:
+        m = self.module
+        self.assertEqual(m.count_pgrep(m.CommandResult("nonzero", 1, b"")), 0)
+        self.assertEqual(m.count_pgrep(m.CommandResult("ok", 0, b"1\n2\n")), 2)
+        self.assertIsNone(m.count_pgrep(m.CommandResult("ok", 0, b"1\nsecret\n")))
+        self.assertIsNone(m.count_pgrep(m.CommandResult("timeout", None, b"")))
+        for argv in m.PGREP_AGENT_ARGV.values():
+            self.assertEqual(argv[:3], ("/usr/bin/pgrep", "-f", "--"))
+
+
 if __name__ == "__main__":
     unittest.main()

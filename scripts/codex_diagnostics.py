@@ -703,3 +703,279 @@ def collect_log_aggregates(
             issue = Issue("command_failed", "log", agent)
             (errors if agent in observed_agents else warnings).append(issue)
     return LogCollection(events, tuple(errors), tuple(warnings))
+
+
+def _tmux_enum_projection(variable: str, values: tuple[str, ...]) -> str:
+    return "".join(
+        f"#{{?#{{==:#{{{variable}}},{value}}},{value},}}"
+        for value in values
+    )
+
+
+TMUX_SESSIONS_ARGV = ("/usr/bin/tmux", "list-sessions", "-F", "#{session_name}")
+TMUX_PANES_ARGV = (
+    "/usr/bin/tmux", "list-panes", "-a", "-F",
+    "\t".join((
+        _tmux_enum_projection("session_name", SESSION_NAMES),
+        "#{pane_dead}",
+        _tmux_enum_projection("@agent_id", AGENT_IDS),
+        _tmux_enum_projection("@agent_cli", CLI_NAMES),
+    )),
+)
+EXPECTED_SESSION = {
+    agent: ("shogun" if agent == "shogun" else "multiagent")
+    for agent in AGENT_IDS
+}
+
+
+@dataclass(frozen=True, slots=True)
+class PaneObservation:
+    observed: bool
+    session: str | None
+    pane_state: str
+    cli: str
+
+
+@dataclass(frozen=True, slots=True)
+class TmuxCollection:
+    sessions: tuple[dict[str, object], dict[str, object]]
+    observations: dict[str, PaneObservation]
+    observed_agents: frozenset[str]
+    errors: tuple[Issue, ...]
+    warnings: tuple[Issue, ...]
+
+
+def _empty_observations() -> dict[str, PaneObservation]:
+    return {
+        agent: PaneObservation(False, None, "not_observed", "unknown")
+        for agent in AGENT_IDS
+    }
+
+
+def _session_json(
+    name: str,
+    state: str,
+    panes: int | None,
+    dead: int | None,
+    unknown: int | None,
+) -> dict[str, object]:
+    return {
+        "name": name,
+        "state": state,
+        "pane_count": panes,
+        "dead_pane_count": dead,
+        "unknown_agent_count": unknown,
+    }
+
+
+def collect_tmux(run) -> TmuxCollection:
+    errors: list[Issue] = []
+    warnings: list[Issue] = []
+    sessions_result = run(TMUX_SESSIONS_ARGV)
+    present: set[str] = set()
+    session_error = False
+    if sessions_result.status == "ok":
+        present = {
+            line.decode("ascii")
+            for line in sessions_result.stdout.splitlines()
+            if line in {b"shogun", b"multiagent"}
+        }
+    elif sessions_result.status == "nonzero" and sessions_result.returncode == 1:
+        present = set()
+    else:
+        session_error = True
+        errors.append(_command_issue(sessions_result, "tmux"))
+
+    panes_result = run(TMUX_PANES_ARGV)
+    rows: dict[str, list[tuple[str, str, str]]] = {
+        name: [] for name in SESSION_NAMES
+    }
+    pane_counts = {name: 0 for name in SESSION_NAMES}
+    dead_counts = {name: 0 for name in SESSION_NAMES}
+    unknown_counts = {name: 0 for name in SESSION_NAMES}
+    pane_error_sessions: set[str] = set()
+    if panes_result.status == "ok":
+        malformed = False
+        for raw_line in panes_result.stdout.splitlines():
+            fields = raw_line.split(b"\t")
+            if len(fields) != 4:
+                malformed = True
+                continue
+            if fields[0] not in {b"shogun", b"multiagent"}:
+                continue
+            session = fields[0].decode("ascii")
+            if fields[1] not in {b"0", b"1"} or session not in present:
+                malformed = True
+                pane_error_sessions.add(session)
+                continue
+            pane_counts[session] += 1
+            dead = fields[1] == b"1"
+            if dead:
+                dead_counts[session] += 1
+            if fields[2] not in {item.encode() for item in AGENT_IDS}:
+                unknown_counts[session] += 1
+                warnings.append(Issue("unknown_agent_observed", "tmux", None))
+                continue
+            agent = fields[2].decode("ascii")
+            cli = (
+                fields[3].decode("ascii")
+                if fields[3] in {item.encode() for item in CLI_NAMES}
+                else "unknown"
+            )
+            if cli == "unknown":
+                warnings.append(Issue("unknown_cli_observed", "tmux", agent))
+            rows[session].append((agent, "dead" if dead else "alive", cli))
+        if malformed:
+            pane_error_sessions.update(present)
+            errors.append(Issue("command_failed", "tmux", None))
+            rows = {name: [] for name in SESSION_NAMES}
+            pane_counts = {name: 0 for name in SESSION_NAMES}
+            dead_counts = {name: 0 for name in SESSION_NAMES}
+            unknown_counts = {name: 0 for name in SESSION_NAMES}
+        else:
+            empty_present = {name for name in present if pane_counts[name] == 0}
+            if empty_present:
+                pane_error_sessions.update(empty_present)
+                errors.append(Issue("command_failed", "tmux", None))
+    elif panes_result.status == "nonzero" and panes_result.returncode == 1:
+        if present:
+            pane_error_sessions.update(present)
+            errors.append(_command_issue(panes_result, "tmux"))
+    else:
+        pane_error_sessions.update(present)
+        errors.append(_command_issue(panes_result, "tmux"))
+
+    sessions: list[dict[str, object]] = []
+    for name in SESSION_NAMES:
+        if session_error:
+            sessions.append(_session_json(name, "error", None, None, None))
+        elif name in pane_error_sessions:
+            sessions.append(_session_json(name, "error", None, None, None))
+        elif name not in present:
+            sessions.append(_session_json(name, "missing", 0, 0, 0))
+            errors.append(Issue("session_missing", "tmux", None))
+        elif pane_counts[name] > 64:
+            sessions.append(_session_json(name, "error", None, None, None))
+            errors.append(Issue("result_truncated", "tmux", None))
+        else:
+            sessions.append(_session_json(
+                name,
+                "present",
+                pane_counts[name],
+                dead_counts[name],
+                unknown_counts[name],
+            ))
+
+    by_agent: dict[str, list[tuple[str, str, str]]] = {
+        agent: [] for agent in AGENT_IDS
+    }
+    for session, values in rows.items():
+        for agent, pane_state, cli in values:
+            by_agent[agent].append((session, pane_state, cli))
+
+    observations = _empty_observations()
+    for agent in AGENT_IDS:
+        values = by_agent[agent]
+        if not values:
+            continue
+        if len(values) != 1:
+            observations[agent] = PaneObservation(True, None, "error", "unknown")
+            errors.append(Issue("duplicate_agent_pane", "tmux", agent))
+            continue
+        session, pane_state, cli = values[0]
+        if session != EXPECTED_SESSION[agent]:
+            observations[agent] = PaneObservation(True, session, "error", cli)
+            errors.append(Issue("agent_session_mismatch", "tmux", agent))
+        else:
+            observations[agent] = PaneObservation(True, session, pane_state, cli)
+            if pane_state == "dead":
+                errors.append(Issue("pane_dead", "tmux", agent))
+    observed = frozenset(
+        agent for agent, value in observations.items() if value.observed
+    )
+    return TmuxCollection(
+        tuple(sessions), observations, observed, tuple(errors), tuple(warnings)
+    )
+
+
+PGREP_SUPERVISOR_ARGV = (
+    "/usr/bin/pgrep", "-f", "--",
+    r"(^|/)scripts/watcher_supervisor\.sh([[:space:]]|$)",
+)
+PGREP_AGENT_ARGV = {
+    agent: (
+        "/usr/bin/pgrep", "-f", "--",
+        rf"(^|/)scripts/inbox_watcher\.sh[[:space:]]+{agent}[[:space:]]",
+    )
+    for agent in AGENT_IDS
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessCollection:
+    processes: dict[str, object]
+    agent_watchers: dict[str, tuple[int | None, str]]
+    errors: tuple[Issue, ...]
+    warnings: tuple[Issue, ...]
+
+
+def count_pgrep(result: CommandResult) -> int | None:
+    if result.status == "nonzero" and result.returncode == 1:
+        return 0
+    if result.status != "ok":
+        return None
+    lines = result.stdout.splitlines()
+    if any(not line.isdigit() for line in lines):
+        return None
+    return len(lines)
+
+
+def _watcher_state(count: int | None) -> str:
+    if count is None:
+        return "unknown"
+    if count == 0:
+        return "missing"
+    if count == 1:
+        return "healthy"
+    return "duplicate"
+
+
+def collect_processes(
+    observed_agents: frozenset[str], run
+) -> ProcessCollection:
+    errors: list[Issue] = []
+    supervisor_result = run(PGREP_SUPERVISOR_ARGV)
+    supervisor_count = count_pgrep(supervisor_result)
+    supervisor_state = _watcher_state(supervisor_count)
+    if supervisor_state == "missing":
+        errors.append(Issue("watcher_missing", "process", None))
+    elif supervisor_state == "duplicate":
+        errors.append(Issue("duplicate_process", "process", None))
+    elif supervisor_state == "unknown":
+        errors.append(_command_issue(supervisor_result, "process"))
+
+    agent_watchers: dict[str, tuple[int | None, str]] = {}
+    for agent in AGENT_IDS:
+        if agent not in observed_agents:
+            agent_watchers[agent] = (None, "not_observed")
+            continue
+        result = run(PGREP_AGENT_ARGV[agent])
+        count = count_pgrep(result)
+        state = _watcher_state(count)
+        agent_watchers[agent] = (count, state)
+        if state == "missing":
+            errors.append(Issue("watcher_missing", "process", agent))
+        elif state == "duplicate":
+            errors.append(Issue("duplicate_process", "process", agent))
+        elif state == "unknown":
+            issue = _command_issue(result, "process")
+            errors.append(Issue(issue.code, issue.component, agent))
+    return ProcessCollection(
+        {
+            "watcher_supervisor_count": supervisor_count,
+            "watcher_supervisor_state": supervisor_state,
+        },
+        agent_watchers,
+        tuple(errors),
+        (),
+    )
