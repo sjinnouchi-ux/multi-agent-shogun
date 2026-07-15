@@ -13,6 +13,13 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "scripts" / "rollback_codex_diagnostics_snapshot.py"
+PLAN = (
+    ROOT
+    / "docs"
+    / "superpowers"
+    / "plans"
+    / "2026-07-14-codex-readonly-diagnostics.md"
+)
 
 
 def load_module():
@@ -65,17 +72,17 @@ class AtomicRollbackTests(unittest.TestCase):
             target_sha256=sha(replacement),
         )
 
-    def assert_committed_indeterminate(self, action) -> None:
+    def assert_commit_or_cleanup_indeterminate(self, action) -> None:
         try:
             action()
-        except self.module.RollbackCommittedIndeterminate:
+        except self.module.RollbackCommitOrCleanupIndeterminate:
             return
         except Exception as exc:  # pragma: no cover - regression assertion
             self.fail(
-                "expected RollbackCommittedIndeterminate, got "
+                "expected RollbackCommitOrCleanupIndeterminate, got "
                 f"{type(exc).__name__}"
             )
-        self.fail("RollbackCommittedIndeterminate not raised")
+        self.fail("RollbackCommitOrCleanupIndeterminate not raised")
 
     def make_parent_swap_fixture(self):
         container = self.root / "parent-swap"
@@ -300,7 +307,9 @@ class AtomicRollbackTests(unittest.TestCase):
             list(parent.glob(".shogun-codex-diagnostics.rollback.*")), []
         )
 
-    def test_parent_swap_during_replace_is_committed_indeterminate(self) -> None:
+    def test_parent_swap_during_replace_is_commit_or_cleanup_indeterminate(
+        self,
+    ) -> None:
         parent, moved, snapshot, target = self.make_parent_swap_fixture()
         real_replace = os.replace
         decoy = self.current_bytes
@@ -316,7 +325,7 @@ class AtomicRollbackTests(unittest.TestCase):
         with mock.patch.object(
             self.module.os, "replace", side_effect=swap_then_replace
         ):
-            self.assert_committed_indeterminate(
+            self.assert_commit_or_cleanup_indeterminate(
                 lambda: self.rollback_paths(snapshot, target)
             )
         self.assertEqual((moved / snapshot.name).read_bytes(), self.target_bytes)
@@ -373,11 +382,13 @@ class AtomicRollbackTests(unittest.TestCase):
             list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
         )
 
-    def test_cleanup_failure_is_committed_indeterminate_not_exit_three(self) -> None:
+    def test_cleanup_failure_is_commit_or_cleanup_indeterminate_not_exit_three(
+        self,
+    ) -> None:
         with mock.patch.object(self.module.os, "replace", side_effect=OSError), (
             mock.patch.object(self.module.os, "unlink", side_effect=OSError)
         ):
-            self.assert_committed_indeterminate(self.rollback)
+            self.assert_commit_or_cleanup_indeterminate(self.rollback)
         self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
 
     def test_temp_name_inode_swap_is_not_blindly_unlinked(self) -> None:
@@ -415,7 +426,7 @@ class AtomicRollbackTests(unittest.TestCase):
         with mock.patch.object(
             self.module.os, "replace", side_effect=replace_temp_name_then_fail
         ):
-            self.assert_committed_indeterminate(self.rollback)
+            self.assert_commit_or_cleanup_indeterminate(self.rollback)
         self.assertIsNotNone(observed_path)
         self.assertEqual(observed_path.read_bytes(), sentinel)
         self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
@@ -432,7 +443,9 @@ class AtomicRollbackTests(unittest.TestCase):
             return real_fsync(fd)
 
         with mock.patch.object(self.module.os, "fsync", side_effect=fail_directory_fsync):
-            with self.assertRaises(self.module.RollbackCommittedIndeterminate):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
                 self.rollback()
         self.assertEqual(self.snapshot.read_bytes(), self.target_bytes)
         self.assertEqual(self.snapshot.stat().st_mode & 0o777, 0o555)
@@ -447,15 +460,17 @@ class AtomicRollbackTests(unittest.TestCase):
         with mock.patch.object(
             self.module.os, "replace", side_effect=replace_then_error
         ):
-            with self.assertRaises(self.module.RollbackCommittedIndeterminate):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
                 self.rollback()
         self.assertEqual(self.snapshot.read_bytes(), self.target_bytes)
 
-    def test_cli_maps_committed_indeterminate_to_exit_four(self) -> None:
+    def test_cli_maps_commit_or_cleanup_indeterminate_to_exit_four(self) -> None:
         with mock.patch.object(
             self.module,
             "atomic_rollback",
-            side_effect=self.module.RollbackCommittedIndeterminate,
+            side_effect=self.module.RollbackCommitOrCleanupIndeterminate,
         ):
             result = self.module.main((
                 "--failing-sha256", sha(self.current_bytes),
@@ -463,6 +478,49 @@ class AtomicRollbackTests(unittest.TestCase):
                 "--target-blob", str(self.target),
             ))
         self.assertEqual(result, 4)
+
+    def test_plan_marks_obsolete_rollback_listings_non_executable(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        rollback_step = plan.split(
+            "- [ ] **Step 5: Implement and test the atomic snapshot rollback primitive**",
+            1,
+        )[1]
+        rollback_preamble = rollback_step.split(
+            "#### SUPERSEDED NON-EXECUTABLE ROLLBACK LISTINGS", 1
+        )[0]
+        self.assertIn(
+            "scripts/rollback_codex_diagnostics_snapshot.py",
+            rollback_preamble,
+        )
+        self.assertIn(
+            "tests/unit/test_rollback_codex_diagnostics_snapshot.py",
+            rollback_preamble,
+        )
+        self.assertNotIn("from the second listing", rollback_preamble)
+        self.assertIn("cleanup failure", rollback_preamble)
+        self.assertIn("temporary-name inode substitution", rollback_preamble)
+        consumer_preamble = plan.split(
+            "Use this mandatory TDD execution order", 1
+        )[1].split(
+            "GREEN implementation listing for "
+            "`tests/contract/codex_diagnostics_consumer.py`",
+            1,
+        )[0]
+        self.assertNotIn("rollback_codex_diagnostics_snapshot", consumer_preamble)
+        self.assertIn("SUPERSEDED NON-EXECUTABLE ROLLBACK LISTINGS", plan)
+        self.assertNotIn(
+            "GREEN implementation listing for "
+            "`scripts/rollback_codex_diagnostics_snapshot.py`",
+            plan,
+        )
+        self.assertNotIn(
+            "RED-first listing for "
+            "`tests/unit/test_rollback_codex_diagnostics_snapshot.py`",
+            plan,
+        )
+        self.assertIn("RollbackCommitOrCleanupIndeterminate", plan)
+        self.assertNotIn("RollbackCommittedIndeterminate", plan)
+        self.assertIn("cleanup/durability", plan)
 
 
 if __name__ == "__main__":

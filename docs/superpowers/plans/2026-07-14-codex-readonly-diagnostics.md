@@ -2684,7 +2684,7 @@ PY
 }
 ```
 
-Use this mandatory TDD execution order for the next two listings:
+Use this mandatory TDD execution order for the next two consumer listings:
 
 1. Create `tests/contract/__init__.py` as an empty package marker.
 2. Create `tests/contract/test_codex_diagnostics_consumer.py` from the second listing below while `codex_diagnostics_consumer.py` is still absent.
@@ -3467,16 +3467,26 @@ Expected: dry-run shows the four command preflights and integration path; existi
 
 - [ ] **Step 5: Implement and test the atomic snapshot rollback primitive**
 
-Use this mandatory TDD execution order for the next two listings:
+Use this mandatory TDD execution order with the final tracked files. The actual
+contents of `scripts/rollback_codex_diagnostics_snapshot.py` and
+`tests/unit/test_rollback_codex_diagnostics_snapshot.py` are normative:
 
-1. Create `tests/unit/test_rollback_codex_diagnostics_snapshot.py` from the second listing while the rollback script is absent.
+1. Create the final normative `tests/unit/test_rollback_codex_diagnostics_snapshot.py` while the rollback script is absent, including cleanup failure and temporary-name inode substitution hostile cases.
 2. Run `python3 -m unittest -v tests.unit.test_rollback_codex_diagnostics_snapshot` and require RED with `FileNotFoundError` for only the absent rollback script. Any syntax/collection failure is not the expected RED.
-3. Only after that RED, create `scripts/rollback_codex_diagnostics_snapshot.py` from the following GREEN listing and set mode `0755`.
+3. Only after that RED, create the final dir-FD/exact-cleanup implementation and set mode `0755`.
 4. Rerun the same test command and require all tests PASS with zero skips.
 
-GREEN implementation listing for `scripts/rollback_codex_diagnostics_snapshot.py` (do not create it before the RED run):
+#### SUPERSEDED NON-EXECUTABLE ROLLBACK LISTINGS
 
-```python
+The two historical sketches below are retained only for decision traceability.
+They are not implementation instructions and must not be copied or executed.
+They predate the final dir-FD identity checks, exact temporary cleanup, directory
+fsync durability, and cleanup-indeterminate hostile cases. Use only the final
+tracked files named above.
+
+Superseded historical implementation sketch:
+
+```text
 #!/usr/bin/env python3
 from __future__ import annotations
 
@@ -3498,7 +3508,7 @@ class RollbackRefused(Exception):
     pass
 
 
-class RollbackCommittedIndeterminate(Exception):
+class RollbackCommitOrCleanupIndeterminate(Exception):
     pass
 
 
@@ -3605,9 +3615,9 @@ def atomic_rollback(
             try:
                 observed = _digest(_read_regular(snapshot, 0o555))
             except (OSError, RollbackRefused) as verify_exc:
-                raise RollbackCommittedIndeterminate from verify_exc
+                raise RollbackCommitOrCleanupIndeterminate from verify_exc
             if observed != failing_sha256:
-                raise RollbackCommittedIndeterminate from exc
+                raise RollbackCommitOrCleanupIndeterminate from exc
             raise
         temp_path = None
         try:
@@ -3622,7 +3632,7 @@ def atomic_rollback(
             if _digest(_read_regular(snapshot, 0o555)) != target_sha256:
                 raise RollbackRefused
         except (OSError, RollbackRefused) as exc:
-            raise RollbackCommittedIndeterminate from exc
+            raise RollbackCommitOrCleanupIndeterminate from exc
     finally:
         if fd >= 0:
             os.close(fd)
@@ -3631,6 +3641,8 @@ def atomic_rollback(
                 temp_path.unlink()
             except FileNotFoundError:
                 pass
+            except OSError as exc:
+                raise RollbackCommitOrCleanupIndeterminate from exc
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -3646,7 +3658,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             failing_sha256=args.failing_sha256,
             target_sha256=args.target_sha256,
         )
-    except RollbackCommittedIndeterminate:
+    except RollbackCommitOrCleanupIndeterminate:
         return 4
     except (OSError, RollbackRefused):
         return 3
@@ -3657,9 +3669,9 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-RED-first listing for `tests/unit/test_rollback_codex_diagnostics_snapshot.py` (create this before the preceding implementation listing):
+Superseded historical test sketch:
 
-```python
+```text
 from __future__ import annotations
 
 import hashlib
@@ -3841,7 +3853,9 @@ class AtomicRollbackTests(unittest.TestCase):
             return real_fsync(fd)
 
         with mock.patch.object(self.module.os, "fsync", side_effect=fail_directory_fsync):
-            with self.assertRaises(self.module.RollbackCommittedIndeterminate):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
                 self.rollback()
         self.assertEqual(self.snapshot.read_bytes(), self.target_bytes)
         self.assertEqual(self.snapshot.stat().st_mode & 0o777, 0o555)
@@ -3856,15 +3870,17 @@ class AtomicRollbackTests(unittest.TestCase):
         with mock.patch.object(
             self.module.os, "replace", side_effect=replace_then_error
         ):
-            with self.assertRaises(self.module.RollbackCommittedIndeterminate):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
                 self.rollback()
         self.assertEqual(self.snapshot.read_bytes(), self.target_bytes)
 
-    def test_cli_maps_committed_indeterminate_to_exit_four(self) -> None:
+    def test_cli_maps_commit_or_cleanup_indeterminate_to_exit_four(self) -> None:
         with mock.patch.object(
             self.module,
             "atomic_rollback",
-            side_effect=self.module.RollbackCommittedIndeterminate,
+            side_effect=self.module.RollbackCommitOrCleanupIndeterminate,
         ):
             result = self.module.main((
                 "--failing-sha256", sha(self.current_bytes),
@@ -3877,6 +3893,11 @@ class AtomicRollbackTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 ```
+
+The normative final suite additionally requires pre-commit replace plus unlink
+failure and temporary-name inode substitution cases. Both must raise
+`RollbackCommitOrCleanupIndeterminate`; the former preserves the failing
+snapshot and the latter preserves the unknown sentinel for explicit recovery.
 
 Only after the rollback suite is GREEN, extend `tests/unit/test_codex_diagnostics.bats`. Insert this test after the consumer-contract test:
 
@@ -3909,7 +3930,7 @@ bats tests/unit/test_codex_diagnostics.bats
 make test
 ```
 
-Expected: all rollback tests, the extended Bats wrapper, and `make test` PASS with no skip. Success replaces only through a same-directory mode-`0555` temporary file; every pre-commit rejection leaves the current snapshot unchanged; a post-`os.replace` fsync/verification failure is the distinct `RollbackCommittedIndeterminate` state and CLI exit 4.
+Expected: all rollback tests, the extended Bats wrapper, and `make test` PASS with no skip. Success replaces only through a same-directory mode-`0555` temporary file. Exit 3 proves both pre-commit refusal and exact cleanup; a post-`os.replace` fsync/verification failure or any unprovable temporary cleanup/durability state is the distinct `RollbackCommitOrCleanupIndeterminate` state and CLI exit 4.
 
 - [ ] **Step 6: Write the operator contract**
 
@@ -3970,9 +3991,10 @@ only when the current bytes equal the failing active hash and the blob equals th
 selected target hash. Record the restored deployment as the sole active record
 through a separate Shogun work-log PR before any later re-enablement. The
 rollback helper is never installed or persistently approved. Its exit 3 is a
-verified pre-commit refusal; exit 4 is committed-indeterminate and requires
-external hash reconciliation plus a new explicit recovery task, with no record
-update or automatic retry.
+verified pre-commit refusal only after exact cleanup succeeds. Exit 4 means
+commit or exact temporary-artifact cleanup/durability is indeterminate and
+requires external reconciliation plus a new explicit recovery task, with no
+record update or automatic retry.
 ```
 
 - [ ] **Step 7: Add the exact trusted-gate policy block to Shogun boundary docs**
@@ -4051,7 +4073,7 @@ assert "shell=True" not in source
 assert "send-keys" not in integration
 assert "kill-server" not in integration
 assert "O_NOFOLLOW" in rollback
-assert "RollbackCommittedIndeterminate" in rollback
+assert "RollbackCommitOrCleanupIndeterminate" in rollback
 assert "complete nested schema" in boundary
 assert boundary.count("<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->") == 1
 assert boundary.count("<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->") == 1
@@ -4842,7 +4864,7 @@ Run the atomic rollback tests again on the deployment host:
 python3 -m unittest -v tests.unit.test_rollback_codex_diagnostics_snapshot
 ```
 
-Expected: same-directory mode-`0555` atomic replacement passes; wrong current hash, wrong target hash, missing `O_NOFOLLOW`, symlink input, and pre-commit replacement failure all preserve the original bytes and remove the temporary file. A post-commit fsync/verification failure returns exit 4 and requires external hash reconciliation before any work-log update.
+Expected: same-directory mode-`0555` atomic replacement passes; wrong current hash, wrong target hash, missing `O_NOFOLLOW`, symlink input, and a verified pre-commit replacement failure preserve the original bytes and remove the temporary file with exit 3. A post-commit fsync/verification failure or unprovable exact temporary cleanup/durability state returns exit 4 and requires external snapshot/artifact reconciliation before any work-log update.
 
 Do not roll back during a healthy deployment. If a later failure requires rollback, stop Shogun and obtain explicit user approval for the exact failing active record and exact superseded target record. Then execute this fixed order; a failure at any gate stops the flow:
 
@@ -4897,7 +4919,7 @@ test "$(stat -c %a "$snapshot")" = 555
 test "$(sha256sum "$snapshot" | awk '{print $1}')" = "$TARGET_SHA256"
 ```
 
-Expected: the current hash is rechecked inside the primitive immediately before a same-directory `os.replace`; exit 0 means the installed bytes exactly match the selected Git blob at mode `0555`. Exit 3 proves the failing bytes remain and stops. Exit 4 means commit state is indeterminate; the wrapper safely classifies it as only `target|failing|other|unreadable`, never prints the hash, always exits 4, and stops before the work-log PR. Exit 4 requires a new explicit recovery task and must never be silently retried or recorded as active.
+Expected: the current hash is rechecked inside the primitive immediately before a same-directory `os.replace`; exit 0 means the installed bytes exactly match the selected Git blob at mode `0555`. Exit 3 proves the failing bytes remain and exact cleanup completed, then stops. Exit 4 means commit state or exact temporary-artifact cleanup/durability state is indeterminate; the wrapper safely classifies the snapshot as only `target|failing|other|unreadable`, never prints the hash, always exits 4, and also reconciles any preserved temporary artifact only in a new explicit recovery task. Exit 4 must never be silently retried or recorded as active.
 
 6. From a new Shogun work-log branch, change the failing record to `superseded` and append a new sole `active` record for the restored target commit/hash with the newly observed deployment timestamp. Run the Task 10 validator, commit only the work-log, open a PR, obtain independent review and explicit user approval, merge, and verify raw GitHub main.
 7. Leave the host marker, Workspace exception, and command approval disabled. Re-enablement is a new reviewed deployment task. Never use `git reset --hard`, force push, an unverified local backup, Task 9's first-install helper, or a direct runtime-data fallback.

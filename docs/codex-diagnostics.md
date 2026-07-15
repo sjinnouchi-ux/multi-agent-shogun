@@ -58,6 +58,7 @@ only when the current bytes equal the failing active hash and the blob equals th
 selected target hash. Record the restored deployment as the sole active record
 through a separate Shogun work-log PR before any later re-enablement. The
 rollback helper is never installed or persistently approved. Its exit 3 is a
-verified pre-commit refusal; exit 4 is committed-indeterminate and requires
-external hash reconciliation plus a new explicit recovery task, with no record
-update or automatic retry.
+verified pre-commit refusal only when exact temporary cleanup also succeeds.
+Exit 4 means snapshot commit state or exact temporary-artifact cleanup/durability
+state is indeterminate; it requires external reconciliation plus a new explicit
+recovery task, with no record update or automatic retry.

@@ -22,7 +22,7 @@ class RollbackRefused(Exception):
     pass
 
 
-class RollbackCommittedIndeterminate(Exception):
+class RollbackCommitOrCleanupIndeterminate(Exception):
     pass
 
 
@@ -245,21 +245,21 @@ def _cleanup_exact_temp_at(directory_fd: int, name: str, fd: int) -> None:
             or opened.st_nlink != 1
             or visible.st_nlink != 1
         ):
-            raise RollbackCommittedIndeterminate
+            raise RollbackCommitOrCleanupIndeterminate
         os.unlink(name, dir_fd=directory_fd)
         try:
             os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
         except FileNotFoundError:
             pass
         else:
-            raise RollbackCommittedIndeterminate
+            raise RollbackCommitOrCleanupIndeterminate
         if os.fstat(fd).st_nlink != 0:
-            raise RollbackCommittedIndeterminate
+            raise RollbackCommitOrCleanupIndeterminate
         os.fsync(directory_fd)
-    except RollbackCommittedIndeterminate:
+    except RollbackCommitOrCleanupIndeterminate:
         raise
     except (OSError, TypeError, NotImplementedError) as exc:
-        raise RollbackCommittedIndeterminate from exc
+        raise RollbackCommitOrCleanupIndeterminate from exc
 
 
 def _destination_state(
@@ -315,7 +315,7 @@ def atomic_rollback(
     snapshot_fd = -1
     temp_fd = -1
     temp_name: str | None = None
-    cleanup_error: RollbackCommittedIndeterminate | None = None
+    cleanup_indeterminate: RollbackCommitOrCleanupIndeterminate | None = None
     try:
         parent_fd, parent_identity = _open_parent(snapshot.parent)
         _parent_still_bound(snapshot.parent, parent_fd, parent_identity)
@@ -371,13 +371,13 @@ def atomic_rollback(
             )
             if destination == "new":
                 temp_name = None
-                raise RollbackCommittedIndeterminate from exc
+                raise RollbackCommitOrCleanupIndeterminate from exc
             try:
                 _parent_still_bound(snapshot.parent, parent_fd, parent_identity)
             except RollbackRefused as binding_exc:
-                raise RollbackCommittedIndeterminate from binding_exc
+                raise RollbackCommitOrCleanupIndeterminate from binding_exc
             if destination != "old":
-                raise RollbackCommittedIndeterminate from exc
+                raise RollbackCommitOrCleanupIndeterminate from exc
             if isinstance(exc, OSError):
                 raise
             raise RollbackRefused from exc
@@ -390,21 +390,21 @@ def atomic_rollback(
             if _digest(_read_regular_fd(temp_fd, 0o555)) != target_sha256:
                 raise RollbackRefused
         except (OSError, RollbackRefused) as exc:
-            raise RollbackCommittedIndeterminate from exc
+            raise RollbackCommitOrCleanupIndeterminate from exc
     finally:
         if temp_name is not None and temp_fd >= 0 and parent_fd >= 0:
             try:
                 _cleanup_exact_temp_at(parent_fd, temp_name, temp_fd)
-            except RollbackCommittedIndeterminate as exc:
-                cleanup_error = exc
+            except RollbackCommitOrCleanupIndeterminate as exc:
+                cleanup_indeterminate = exc
         for fd in (temp_fd, snapshot_fd, target_parent_fd, parent_fd):
             if fd >= 0:
                 try:
                     os.close(fd)
                 except OSError:
                     pass
-        if cleanup_error is not None:
-            raise cleanup_error
+        if cleanup_indeterminate is not None:
+            raise cleanup_indeterminate
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -420,7 +420,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             failing_sha256=args.failing_sha256,
             target_sha256=args.target_sha256,
         )
-    except RollbackCommittedIndeterminate:
+    except RollbackCommitOrCleanupIndeterminate:
         return 4
     except (OSError, RollbackRefused):
         return 3
