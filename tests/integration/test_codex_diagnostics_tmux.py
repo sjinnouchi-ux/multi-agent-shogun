@@ -8,9 +8,14 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "scripts" / "codex_diagnostics.py"
+
+
+def isolated_tmux_argv(socket_name: str, *args: str) -> tuple[str, ...]:
+    return ("/usr/bin/tmux", "-L", socket_name, "-f", "/dev/null", *args)
 
 
 def load_module():
@@ -31,7 +36,7 @@ class SocketRunner:
 
     def __call__(self, argv):
         if argv[0] == "/usr/bin/tmux":
-            argv = (argv[0], "-L", self.socket_name, *argv[1:])
+            argv = isolated_tmux_argv(self.socket_name, *argv[1:])
         return self.runner(argv)
 
 
@@ -51,7 +56,7 @@ class UniqueTmuxSocketTests(unittest.TestCase):
 
     def tmux(self, *args: str) -> None:
         subprocess.run(
-            ("/usr/bin/tmux", "-L", self.socket_name, *args),
+            isolated_tmux_argv(self.socket_name, *args),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -64,7 +69,7 @@ class UniqueTmuxSocketTests(unittest.TestCase):
         try:
             while time.monotonic() < deadline:
                 result = subprocess.run(
-                    ("/usr/bin/tmux", "-L", self.socket_name, "has-session"),
+                    isolated_tmux_argv(self.socket_name, "has-session"),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -77,6 +82,15 @@ class UniqueTmuxSocketTests(unittest.TestCase):
             self.fail("isolated tmux server did not exit after bounded fixtures")
         finally:
             self.fixture_dir.cleanup()
+
+    def test_every_isolated_tmux_client_disables_user_configuration(self) -> None:
+        with mock.patch.object(subprocess, "run") as run:
+            self.tmux("has-session")
+        argv = run.call_args.args[0]
+        self.assertEqual(
+            argv[:5],
+            ("/usr/bin/tmux", "-L", self.socket_name, "-f", "/dev/null"),
+        )
 
     def test_fixed_sessions_counts_and_pane_secrecy(self) -> None:
         self.tmux("new-session", "-d", "-s", "shogun", str(self.fixture))
@@ -93,6 +107,36 @@ class UniqueTmuxSocketTests(unittest.TestCase):
         self.assertEqual(value.observations["shogun"].pane_state, "alive")
         self.assertEqual(value.observations["ashigaru1"].cli, "codex")
         self.assertNotIn("harmless-pane-sentinel", repr(value))
+
+        hostile_agent = "ashigaru2|codex\nmultiagent|0|ashigaru3"
+        self.tmux(
+            "set-option", "-p", "-t", "multiagent:0.0",
+            "@agent_id", hostile_agent,
+        )
+        hostile_agent_value = self.module.collect_tmux(
+            SocketRunner(self.module, self.socket_name)
+        )
+        self.assertEqual(hostile_agent_value.sessions[1]["pane_count"], 1)
+        self.assertEqual(hostile_agent_value.sessions[1]["unknown_agent_count"], 1)
+        self.assertFalse(hostile_agent_value.observations["ashigaru2"].observed)
+        self.assertFalse(hostile_agent_value.observations["ashigaru3"].observed)
+        self.assertNotIn(hostile_agent, repr(hostile_agent_value))
+
+        hostile_cli = "codex|hostile-cli\nmultiagent|0|ashigaru2"
+        self.tmux(
+            "set-option", "-p", "-t", "multiagent:0.0",
+            "@agent_id", "ashigaru1",
+        )
+        self.tmux(
+            "set-option", "-p", "-t", "multiagent:0.0",
+            "@agent_cli", hostile_cli,
+        )
+        hostile_cli_value = self.module.collect_tmux(
+            SocketRunner(self.module, self.socket_name)
+        )
+        self.assertEqual(hostile_cli_value.observations["ashigaru1"].cli, "unknown")
+        self.assertFalse(hostile_cli_value.observations["ashigaru2"].observed)
+        self.assertNotIn(hostile_cli, repr(hostile_cli_value))
 
 
 if __name__ == "__main__":

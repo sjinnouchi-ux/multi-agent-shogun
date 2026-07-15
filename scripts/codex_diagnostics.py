@@ -1279,11 +1279,17 @@ def _nullable_count(value: object, maximum: int | None = None) -> None:
 
 
 def _nullable_timestamp(value: object) -> None:
-    if value is not None and (
+    if value is None:
+        return
+    if (
         not isinstance(value, str)
         or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value) is None
     ):
         raise InternalFailure
+    try:
+        dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise InternalFailure from exc
 
 
 def _validate_source_value(raw: object) -> None:

@@ -1113,6 +1113,35 @@ class SummaryAndSerializationTests(unittest.TestCase):
         with self.assertRaises(m.InternalFailure):
             m.validate_document(document)
 
+    def test_validator_rejects_nonexistent_rfc3339_utc_seconds(self) -> None:
+        m = self.module
+
+        def generated_at(document):
+            document["generated_at"] = "2026-02-30T12:00:00Z"
+
+        def source_modified_at(document):
+            document["global_sources"]["command_queue"]["modified_at"] = (
+                "2026-02-30T12:00:00Z"
+            )
+
+        def log_modified_at(document):
+            document["agents"][0]["log_events"]["modified_at"] = (
+                "2026-02-30T12:00:00Z"
+            )
+
+        for name, mutate in (
+            ("generated_at", generated_at),
+            ("source_modified_at", source_modified_at),
+            ("log_modified_at", log_modified_at),
+        ):
+            with self.subTest(name=name):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                mutate(document)
+                with self.assertRaises(m.InternalFailure):
+                    m.validate_document(document)
+
     def test_boundary_failure_occurs_before_runtime_root_open(self) -> None:
         m = self.module
         runner = ScriptedRunner(

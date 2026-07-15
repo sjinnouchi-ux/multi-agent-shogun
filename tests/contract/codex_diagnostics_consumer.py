@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 import math
 import re
@@ -144,10 +145,7 @@ def _active_record(raw: bytes) -> dict[str, object]:
             record["source_sha256"]
         ) is None:
             raise ContractRejected
-        if not isinstance(record["deployed_at"], str) or TIMESTAMP.fullmatch(
-            record["deployed_at"]
-        ) is None:
-            raise ContractRejected
+        _timestamp(record["deployed_at"], nullable=False)
         if record["snapshot_path"] != (
             "/home/jinnouchi/.local/libexec/shogun-codex-diagnostics"
         ):
@@ -185,6 +183,10 @@ def _timestamp(value: object, *, nullable: bool) -> None:
         return
     if not isinstance(value, str) or TIMESTAMP.fullmatch(value) is None:
         raise ContractRejected
+    try:
+        dt.datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError as exc:
+        raise ContractRejected from exc
 
 
 def _source_value(raw: object) -> None:
@@ -298,13 +300,31 @@ def _output_source_hash(raw: bytes) -> str:
         issues = top[array_name]
         if not isinstance(issues, list) or len(issues) > 64:
             raise ContractRejected
+        previous: tuple[str, str, str] | None = None
         for raw_issue in issues:
             issue = _exact_keys(raw_issue, ISSUE_KEYS)
             if issue["code"] not in ERROR_CODES or issue["component"] not in COMPONENTS:
                 raise ContractRejected
             if issue["agent"] not in (*AGENT_IDS, None):
                 raise ContractRejected
+            current = (
+                issue["code"],
+                issue["component"],
+                issue["agent"] or "",
+            )
+            if previous is not None and current <= previous:
+                raise ContractRejected
+            previous = current
     return source_hash
+
+
+def _valid_elapsed_seconds(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and 0 <= value < 10.0
+    except (OverflowError, TypeError, ValueError):
+        return False
 
 
 def evaluate_consumer(
@@ -316,7 +336,7 @@ def evaluate_consumer(
     exit_code: int,
     elapsed_seconds: float,
 ) -> ConsumerDecision:
-    if not fetch_ok:
+    if fetch_ok is not True:
         return _failure("diagnostic_provenance_untrusted")
     if not registry or len(registry) > MAX_CONSUMER_BYTES:
         return _failure("diagnostic_provenance_untrusted")
@@ -330,11 +350,7 @@ def evaluate_consumer(
         or len(stdout) > MAX_CONSUMER_BYTES
         or type(exit_code) is not int
         or exit_code != 0
-        or isinstance(elapsed_seconds, bool)
-        or not isinstance(elapsed_seconds, (int, float))
-        or not math.isfinite(elapsed_seconds)
-        or elapsed_seconds < 0
-        or elapsed_seconds >= 10.0
+        or not _valid_elapsed_seconds(elapsed_seconds)
     ):
         return _failure("diagnostic_process_failed")
     try:
