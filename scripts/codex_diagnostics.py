@@ -717,7 +717,7 @@ def _tmux_enum_projection(variable: str, values: tuple[str, ...]) -> str:
 TMUX_SESSIONS_ARGV = ("/usr/bin/tmux", "list-sessions", "-F", "#{session_name}")
 TMUX_PANES_ARGV = (
     "/usr/bin/tmux", "list-panes", "-a", "-F",
-    "\t".join((
+    "|".join((
         _tmux_enum_projection("session_name", SESSION_NAMES),
         "#{pane_dead}",
         _tmux_enum_projection("@agent_id", AGENT_IDS),
@@ -799,7 +799,7 @@ def collect_tmux(run) -> TmuxCollection:
     if panes_result.status == "ok":
         malformed = False
         for raw_line in panes_result.stdout.splitlines():
-            fields = raw_line.split(b"\t")
+            fields = raw_line.split(b"|")
             if len(fields) != 4:
                 malformed = True
                 continue

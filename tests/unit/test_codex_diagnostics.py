@@ -456,7 +456,7 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
                 "list-panes",
                 "-a",
                 "-F",
-                "\t".join((
+                "|".join((
                     projection("session_name", m.SESSION_NAMES),
                     "#{pane_dead}",
                     projection("@agent_id", m.AGENT_IDS),
@@ -480,9 +480,9 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
             m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\nmultiagent\n"),
             m.TMUX_PANES_ARGV: m.CommandResult(
                 "ok", 0,
-                b"shogun\t0\tshogun\tclaude\n"
-                b"multiagent\t0\tkaro\tcodex\n"
-                b"multiagent\t0\tashigaru1\tclaude\n",
+                b"shogun|0|shogun|claude\n"
+                b"multiagent|0|karo|codex\n"
+                b"multiagent|0|ashigaru1|claude\n",
             ),
         })
         collection = m.collect_tmux(runner)
@@ -499,10 +499,10 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
             m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\nmultiagent\n"),
             m.TMUX_PANES_ARGV: m.CommandResult(
                 "ok", 0,
-                b"shogun\t0\tunknown-" + secret.encode() + b"\tclaude\n"
-                b"multiagent\t0\tshogun\tbad-cli\n"
-                b"multiagent\t1\tashigaru1\tclaude\n"
-                b"multiagent\t0\tashigaru1\tclaude\n",
+                b"shogun|0|unknown-" + secret.encode() + b"|claude\n"
+                b"multiagent|0|shogun|bad-cli\n"
+                b"multiagent|1|ashigaru1|claude\n"
+                b"multiagent|0|ashigaru1|claude\n",
             ),
         })
         collection = m.collect_tmux(runner)
@@ -515,9 +515,9 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
 
     def test_all_lines_valid_option_injection_has_no_raw_output_path(self) -> None:
         m = self.module
-        injection = "unknown\tclaude\nmultiagent\t0\tashigaru2"
+        injection = "unknown|claude\nmultiagent|0|ashigaru2"
         session_field, dead_field, agent_field, cli_field = m.TMUX_PANES_ARGV[-1].split(
-            "\t"
+            "|"
         )
         self.assertEqual(dead_field, "#{pane_dead}")
         self.assertNotIn("#{q:", m.TMUX_PANES_ARGV[-1])
@@ -540,7 +540,7 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
             m.TMUX_PANES_ARGV: m.CommandResult(
                 "ok",
                 0,
-                b"shogun\t0\t\tclaude\n",
+                b"shogun|0||claude\n",
             ),
         })
         collection = m.collect_tmux(runner)
@@ -549,17 +549,17 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
         self.assertEqual(collection.observations["ashigaru2"].pane_state, "not_observed")
         self.assertNotIn("ashigaru2", repr(collection.errors))
 
-    def test_raw_newline_or_tab_injection_discards_all_pane_rows(self) -> None:
+    def test_raw_newline_or_separator_injection_discards_all_pane_rows(self) -> None:
         m = self.module
         secret = b"oauth-secret-customer"
         pane_outputs = (
             (
-                b"shogun\t0\tunknown-" + secret + b"\n"
-                b"multiagent\t0\tashigaru2\tclaude\n"
+                b"shogun|0|unknown-" + secret + b"\n"
+                b"multiagent|0|ashigaru2|claude\n"
             ),
             (
-                b"shogun\t0\tunknown-" + secret
-                + b"\tmultiagent\t0\tashigaru2\tclaude\n"
+                b"shogun|0|unknown-" + secret
+                + b"|multiagent|0|ashigaru2|claude\n"
             ),
         )
         for pane_output in pane_outputs:
@@ -621,8 +621,8 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
             m.TMUX_PANES_ARGV: m.CommandResult(
                 "ok",
                 0,
-                b"shogun\t0\tshogun\tclaude\n"
-                b"multiagent\t1\tashigaru1\tcodex\n",
+                b"shogun|0|shogun|claude\n"
+                b"multiagent|1|ashigaru1|codex\n",
             ),
         })
         collection = m.collect_tmux(runner)
