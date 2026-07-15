@@ -11,6 +11,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -1164,3 +1165,337 @@ def collect_repository(run) -> RepositoryCollection:
         errors=tuple(errors),
         warnings=(),
     )
+
+
+TOP_LEVEL_KEYS = (
+    "schema_version", "generated_at", "ok", "overall", "tool", "repository",
+    "sessions", "processes", "global_sources", "agents", "errors", "warnings",
+)
+TOOL_KEYS = ("version", "deployment", "source_sha256")
+REPOSITORY_KEYS = (
+    "branch_class", "head", "dirty", "tracked_changes",
+    "untracked_changes", "canonical_remote_present",
+)
+SESSION_KEYS = (
+    "name", "state", "pane_count", "dead_pane_count", "unknown_agent_count",
+)
+AGENT_KEYS = (
+    "id", "observed", "session", "pane_state", "cli", "watcher_count",
+    "watcher_state", "sources", "log_events",
+)
+SOURCE_VALUE_KEYS = ("applicability", "state", "modified_at", "size_class")
+LOG_EVENT_KEYS = (
+    "window", "modified_at", "send_keys_failed_attempt", "nudge_still_visible",
+    "wakeup_retry_exhausted", "wakeup_success_logged",
+    "unclassified_error_candidate",
+)
+ISSUE_KEYS = ("code", "component", "agent")
+
+
+def calculate_overall(
+    repository_available: bool,
+    sessions: Sequence[dict[str, object]],
+    errors: Sequence[dict[str, object]],
+) -> str:
+    states = [item["state"] for item in sessions]
+    if not repository_available or states == ["missing", "missing"]:
+        return "unavailable"
+    if errors or "missing" in states or "error" in states:
+        return "degraded"
+    return "healthy"
+
+
+def build_success_document(
+    source_hash: str,
+    repository: RepositoryCollection,
+    tmux: TmuxCollection,
+    processes: ProcessCollection,
+    sources: SourceCollection,
+    logs: LogCollection,
+) -> dict[str, object]:
+    errors, warnings = normalize_issues(
+        repository.errors
+        + tmux.errors
+        + processes.errors
+        + sources.errors
+        + logs.errors,
+        repository.warnings
+        + tmux.warnings
+        + processes.warnings
+        + sources.warnings
+        + logs.warnings,
+    )
+    agents: list[dict[str, object]] = []
+    for agent in AGENT_IDS:
+        observation = tmux.observations[agent]
+        watcher_count, watcher_state = processes.agent_watchers[agent]
+        agents.append(
+            {
+                "id": agent,
+                "observed": observation.observed,
+                "session": observation.session,
+                "pane_state": observation.pane_state,
+                "cli": observation.cli,
+                "watcher_count": watcher_count,
+                "watcher_state": watcher_state,
+                "sources": sources.agent_sources[agent],
+                "log_events": logs.events[agent],
+            }
+        )
+    document: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": _timestamp(),
+        "ok": True,
+        "overall": calculate_overall(repository.available, tmux.sessions, errors),
+        "tool": {
+            "version": TOOL_VERSION,
+            "deployment": DEPLOYMENT,
+            "source_sha256": source_hash,
+        },
+        "repository": repository.value,
+        "sessions": list(tmux.sessions),
+        "processes": processes.processes,
+        "global_sources": sources.global_sources,
+        "agents": agents,
+        "errors": errors,
+        "warnings": warnings,
+    }
+    return document
+
+
+def _exact_keys(value: object, keys: tuple[str, ...]) -> dict[str, object]:
+    if not isinstance(value, dict) or tuple(value) != keys:
+        raise InternalFailure
+    return value
+
+
+def _nullable_count(value: object, maximum: int | None = None) -> None:
+    if value is None:
+        return
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise InternalFailure
+    if maximum is not None and value > maximum:
+        raise InternalFailure
+
+
+def _nullable_timestamp(value: object) -> None:
+    if value is not None and (
+        not isinstance(value, str)
+        or re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value) is None
+    ):
+        raise InternalFailure
+
+
+def _validate_source_value(raw: object) -> None:
+    value = _exact_keys(raw, SOURCE_VALUE_KEYS)
+    if value["state"] not in (
+        "present", "missing", "rejected", "not_applicable", "error"
+    ):
+        raise InternalFailure
+    if value["applicability"] not in ("required", "optional", "not_applicable"):
+        raise InternalFailure
+    _nullable_timestamp(value["modified_at"])
+    if value["size_class"] not in ("empty", "small", "medium", "large", None):
+        raise InternalFailure
+    if value["state"] == "not_applicable" and (
+        value["applicability"] != "not_applicable"
+        or value["modified_at"] is not None
+        or value["size_class"] is not None
+    ):
+        raise InternalFailure
+
+
+def validate_document(document: dict[str, object]) -> None:
+    top = _exact_keys(document, TOP_LEVEL_KEYS)
+    if (
+        type(top["schema_version"]) is not int
+        or top["schema_version"] != SCHEMA_VERSION
+        or top["ok"] is not True
+    ):
+        raise InternalFailure
+    if not isinstance(top["generated_at"], str):
+        raise InternalFailure
+    _nullable_timestamp(top["generated_at"])
+    if top["overall"] not in ("healthy", "degraded", "unavailable"):
+        raise InternalFailure
+    tool = _exact_keys(top["tool"], TOOL_KEYS)
+    if tool["version"] != TOOL_VERSION or tool["deployment"] != DEPLOYMENT:
+        raise InternalFailure
+    if not isinstance(tool["source_sha256"], str) or re.fullmatch(
+        r"[0-9a-f]{64}", tool["source_sha256"]
+    ) is None:
+        raise InternalFailure
+    repository = _exact_keys(top["repository"], REPOSITORY_KEYS)
+    if repository["branch_class"] not in (
+        "main", "shogun_namespace", "codex_namespace", "other", "detached", "invalid"
+    ):
+        raise InternalFailure
+    if repository["head"] is not None and (
+        not isinstance(repository["head"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", repository["head"]) is None
+    ):
+        raise InternalFailure
+    if repository["dirty"] is not None and not isinstance(
+        repository["dirty"], bool
+    ):
+        raise InternalFailure
+    _nullable_count(repository["tracked_changes"], 10_000)
+    _nullable_count(repository["untracked_changes"], 10_000)
+    if repository["canonical_remote_present"] is not None and not isinstance(
+        repository["canonical_remote_present"], bool
+    ):
+        raise InternalFailure
+
+    sessions = top["sessions"]
+    agents = top["agents"]
+    if not isinstance(sessions, list) or len(sessions) != 2:
+        raise InternalFailure
+    if not isinstance(agents, list) or len(agents) != 11:
+        raise InternalFailure
+    for expected, raw in zip(SESSION_NAMES, sessions):
+        item = _exact_keys(raw, SESSION_KEYS)
+        if item["name"] != expected or item["state"] not in (
+            "present", "missing", "error"
+        ):
+            raise InternalFailure
+        for key in ("pane_count", "dead_pane_count", "unknown_agent_count"):
+            _nullable_count(item[key], 64)
+    processes_value = _exact_keys(
+        top["processes"],
+        ("watcher_supervisor_count", "watcher_supervisor_state"),
+    )
+    _nullable_count(processes_value["watcher_supervisor_count"])
+    if processes_value["watcher_supervisor_state"] not in (
+        "healthy", "missing", "duplicate", "unknown"
+    ):
+        raise InternalFailure
+
+    global_sources = _exact_keys(
+        top["global_sources"], ("command_queue", "dashboard")
+    )
+    for raw in global_sources.values():
+        _validate_source_value(raw)
+    for expected, raw in zip(AGENT_IDS, agents):
+        item = _exact_keys(raw, AGENT_KEYS)
+        if item["id"] != expected or not isinstance(item["observed"], bool):
+            raise InternalFailure
+        if item["session"] not in (*SESSION_NAMES, None):
+            raise InternalFailure
+        if item["pane_state"] not in ("alive", "dead", "not_observed", "error"):
+            raise InternalFailure
+        if item["cli"] not in CLI_NAMES:
+            raise InternalFailure
+        _nullable_count(item["watcher_count"])
+        if item["watcher_state"] not in (
+            "healthy", "missing", "duplicate", "unknown", "not_observed"
+        ):
+            raise InternalFailure
+        sources_value = _exact_keys(item["sources"], SOURCE_KEYS)
+        for raw_source in sources_value.values():
+            _validate_source_value(raw_source)
+        events = _exact_keys(item["log_events"], LOG_EVENT_KEYS)
+        if events["window"] != "tail_1048576_bytes":
+            raise InternalFailure
+        _nullable_timestamp(events["modified_at"])
+        for key in LOG_EVENT_KEYS[2:]:
+            _nullable_count(events[key])
+    for array_name in ("errors", "warnings"):
+        values = top[array_name]
+        if not isinstance(values, list) or len(values) > 64:
+            raise InternalFailure
+        previous: tuple[str, str, str] | None = None
+        for raw in values:
+            issue = _exact_keys(raw, ISSUE_KEYS)
+            if issue["code"] not in ERROR_CODES or issue["component"] not in COMPONENTS:
+                raise InternalFailure
+            if issue["agent"] not in (*AGENT_IDS, None):
+                raise InternalFailure
+            current = (
+                issue["code"],
+                issue["component"],
+                issue["agent"] or "",
+            )
+            if previous is not None and current <= previous:
+                raise InternalFailure
+            previous = current
+
+
+def collect_summary(
+    run,
+    *,
+    source_hash: str,
+    open_root: Callable[[], int] = open_runtime_root,
+) -> dict[str, object]:
+    repository = collect_repository(run)
+    tmux = collect_tmux(run)
+    processes = collect_processes(tmux.observed_agents, run)
+    root_fd = open_root()
+    try:
+        sources = collect_runtime_sources(root_fd, tmux.observed_agents)
+        logs = collect_log_aggregates(root_fd, tmux.observed_agents)
+    finally:
+        os.close(root_fd)
+    document = build_success_document(
+        source_hash, repository, tmux, processes, sources, logs
+    )
+    validate_document(document)
+    return document
+
+
+def safe_render_document(
+    document: dict[str, object], intended_code: int
+) -> tuple[bytes, int]:
+    try:
+        if document.get("ok") is True:
+            validate_document(document)
+        return render_document(document), intended_code
+    except BaseException:
+        return FALLBACK_INTERNAL_ERROR, 3
+
+
+_OUTPUT_STARTED = False
+
+
+def _signal_before_output(_signum, _frame) -> None:
+    if not _OUTPUT_STARTED:
+        try:
+            emit_bytes(FALLBACK_INTERNAL_ERROR)
+        finally:
+            os._exit(3)
+    os._exit(3)
+
+
+def _emit_final(payload: bytes) -> None:
+    global _OUTPUT_STARTED
+    termination_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, termination_signals)
+    try:
+        _OUTPUT_STARTED = True
+        emit_bytes(payload)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    global _OUTPUT_STARTED
+    _OUTPUT_STARTED = False
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(signum, _signal_before_output)
+        runner = CommandRunner()
+        code, document = run_cli(
+            tuple(sys.argv[1:] if argv is None else argv),
+            lambda source_hash: collect_summary(runner, source_hash=source_hash),
+        )
+        payload, code = safe_render_document(document, code)
+    except BaseException:
+        payload, code = FALLBACK_INTERNAL_ERROR, 3
+    try:
+        _emit_final(payload)
+    except BaseException:
+        return 3
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

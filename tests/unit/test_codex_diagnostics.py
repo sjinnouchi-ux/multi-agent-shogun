@@ -907,5 +907,309 @@ class RepositoryCollectorTests(unittest.TestCase):
         self.assertIn("command_output_limited", {item.code for item in collection.errors})
 
 
+def sample_collections(
+    module, *, both_sessions_missing=False, one_session_missing=False
+):
+    repository = module.RepositoryCollection(
+        {
+            "branch_class": "main",
+            "head": "0" * 40,
+            "dirty": False,
+            "tracked_changes": 0,
+            "untracked_changes": 0,
+            "canonical_remote_present": True,
+        },
+        True,
+        True,
+        (),
+        (),
+    )
+    if both_sessions_missing:
+        states = ("missing", "missing")
+    elif one_session_missing:
+        states = ("present", "missing")
+    else:
+        states = ("present", "present")
+    sessions = tuple(
+        {
+            "name": name,
+            "state": state,
+            "pane_count": 0 if state == "missing" else 1,
+            "dead_pane_count": 0,
+            "unknown_agent_count": 0,
+        }
+        for name, state in zip(module.SESSION_NAMES, states)
+    )
+    observations = {
+        agent: module.PaneObservation(
+            agent in ("shogun", "karo", "ashigaru1"),
+            "shogun"
+            if agent == "shogun"
+            else (
+                "multiagent" if agent in ("karo", "ashigaru1") else None
+            ),
+            "alive"
+            if agent in ("shogun", "karo", "ashigaru1")
+            else "not_observed",
+            "claude"
+            if agent in ("shogun", "karo", "ashigaru1")
+            else "unknown",
+        )
+        for agent in module.AGENT_IDS
+    }
+    tmux_errors = (
+        ()
+        if states == ("present", "present")
+        else (module.Issue("session_missing", "tmux", None),)
+    )
+    tmux = module.TmuxCollection(
+        sessions,
+        observations,
+        frozenset(("shogun", "karo", "ashigaru1")),
+        tmux_errors,
+        (),
+    )
+    watchers = {
+        agent: (
+            (1, "healthy")
+            if observations[agent].observed
+            else (None, "not_observed")
+        )
+        for agent in module.AGENT_IDS
+    }
+    processes = module.ProcessCollection(
+        {"watcher_supervisor_count": 1, "watcher_supervisor_state": "healthy"},
+        watchers,
+        (),
+        (),
+    )
+    present = {
+        "applicability": "optional",
+        "state": "present",
+        "modified_at": "2026-07-14T00:00:00Z",
+        "size_class": "small",
+    }
+    na = {
+        "applicability": "not_applicable",
+        "state": "not_applicable",
+        "modified_at": None,
+        "size_class": None,
+    }
+    agent_sources = {}
+    for agent in module.AGENT_IDS:
+        task_report = agent not in ("shogun", "karo")
+        agent_sources[agent] = {
+            "inbox": dict(present),
+            "task": dict(present if task_report else na),
+            "report": dict(present if task_report else na),
+            "handoff_status": dict(present),
+            "watcher_log": dict(present),
+        }
+    sources = module.SourceCollection(
+        {"command_queue": dict(present), "dashboard": dict(present)},
+        agent_sources,
+        (),
+        (),
+    )
+    event = {
+        "window": "tail_1048576_bytes",
+        "modified_at": "2026-07-14T00:00:00Z",
+        "send_keys_failed_attempt": 0,
+        "nudge_still_visible": 0,
+        "wakeup_retry_exhausted": 0,
+        "wakeup_success_logged": 0,
+        "unclassified_error_candidate": 0,
+    }
+    logs = module.LogCollection(
+        {agent: dict(event) for agent in module.AGENT_IDS}, (), ()
+    )
+    return repository, tmux, processes, sources, logs
+
+
+class SummaryAndSerializationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def test_success_document_has_exact_shape_order_and_cardinality(self) -> None:
+        m = self.module
+        document = m.build_success_document("a" * 64, *sample_collections(m))
+        m.validate_document(document)
+        self.assertTrue(document["ok"])
+        self.assertEqual(document["overall"], "healthy")
+        self.assertEqual(len(document["sessions"]), 2)
+        self.assertEqual(len(document["agents"]), 11)
+        self.assertEqual(
+            [item["id"] for item in document["agents"]], list(m.AGENT_IDS)
+        )
+        self.assertEqual(
+            tuple(document["global_sources"]), ("command_queue", "dashboard")
+        )
+        self.assertEqual(tuple(document["agents"][0]["sources"]), m.SOURCE_KEYS)
+
+    def test_overall_distinguishes_degraded_unavailable_and_optional_warning(
+        self,
+    ) -> None:
+        m = self.module
+        degraded = m.build_success_document(
+            "a" * 64, *sample_collections(m, one_session_missing=True)
+        )
+        unavailable = m.build_success_document(
+            "a" * 64, *sample_collections(m, both_sessions_missing=True)
+        )
+        healthy_parts = list(sample_collections(m))
+        healthy_parts[3] = m.SourceCollection(
+            healthy_parts[3].global_sources,
+            healthy_parts[3].agent_sources,
+            (),
+            (m.Issue("source_rejected", "source", "ashigaru2"),),
+        )
+        healthy_warning = m.build_success_document("a" * 64, *healthy_parts)
+        self.assertEqual(degraded["overall"], "degraded")
+        self.assertEqual(unavailable["overall"], "unavailable")
+        self.assertEqual(healthy_warning["overall"], "healthy")
+
+    def test_validator_rejects_unknown_keys_and_free_text(self) -> None:
+        m = self.module
+        document = m.build_success_document("a" * 64, *sample_collections(m))
+        document["raw_message"] = "secret"
+        with self.assertRaises(m.InternalFailure):
+            m.validate_document(document)
+
+    def test_validator_requires_integer_schema_version_not_boolean(self) -> None:
+        m = self.module
+        document = m.build_success_document("a" * 64, *sample_collections(m))
+        document["schema_version"] = True
+        with self.assertRaises(m.InternalFailure):
+            m.validate_document(document)
+
+    def test_validator_rejects_unsorted_or_duplicate_issue_arrays(self) -> None:
+        m = self.module
+        session_issue = {
+            "code": "session_missing",
+            "component": "tmux",
+            "agent": None,
+        }
+        watcher_issue = {
+            "code": "watcher_missing",
+            "component": "process",
+            "agent": "ashigaru1",
+        }
+        invalid_arrays = (
+            [watcher_issue, session_issue],
+            [session_issue, session_issue],
+        )
+        for errors in invalid_arrays:
+            with self.subTest(errors=errors):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                document["overall"] = "degraded"
+                document["errors"] = errors
+                with self.assertRaises(m.InternalFailure):
+                    m.validate_document(document)
+
+        document = m.build_success_document("a" * 64, *sample_collections(m))
+        document["generated_at"] = None
+        with self.assertRaises(m.InternalFailure):
+            m.validate_document(document)
+
+    def test_boundary_failure_occurs_before_runtime_root_open(self) -> None:
+        m = self.module
+        runner = ScriptedRunner(
+            {
+                m.git_argv("rev-parse", "--show-toplevel"): m.CommandResult(
+                    "ok", 0, (os.getcwd() + "\n").encode()
+                ),
+                m.git_argv("remote", "-v"): m.CommandResult(
+                    "ok", 0, b"origin\thttps://example.invalid/repo (fetch)\n"
+                ),
+            }
+        )
+        opened = mock.Mock(side_effect=AssertionError("runtime opened"))
+        with self.assertRaises(m.BoundaryRejected):
+            m.collect_summary(runner, source_hash="a" * 64, open_root=opened)
+        opened.assert_not_called()
+
+    def test_run_cli_hash_failure_and_argument_rejection_do_not_call_collector(
+        self,
+    ) -> None:
+        m = self.module
+        collector = mock.Mock()
+        with mock.patch.object(
+            m, "calculate_source_sha256", side_effect=m.InternalFailure
+        ):
+            code, document = m.run_cli(("summary",), collector)
+        self.assertEqual(code, 3)
+        self.assertEqual(document["tool"]["source_sha256"], None)
+        collector.assert_not_called()
+        code, document = m.run_cli(("summary", "extra"), collector)
+        self.assertEqual(code, 2)
+        self.assertEqual(document["errors"][0]["code"], "argument_rejected")
+        collector.assert_not_called()
+
+    def test_serialization_failure_uses_literal_without_exception_text(self) -> None:
+        m = self.module
+        document = m.build_success_document("a" * 64, *sample_collections(m))
+        with mock.patch.object(
+            m.json, "dumps", side_effect=ValueError("token-secret")
+        ):
+            payload, code = m.safe_render_document(document, 0)
+        self.assertEqual((payload, code), (m.FALLBACK_INTERNAL_ERROR, 3))
+        self.assertNotIn(b"token-secret", payload)
+
+    def test_main_uses_literal_when_failure_document_construction_fails(self) -> None:
+        m = self.module
+        with mock.patch.object(m.signal, "signal"), mock.patch.object(
+            m, "_timestamp", side_effect=RuntimeError("token-secret")
+        ), mock.patch.object(m, "emit_bytes") as emit:
+            code = m.main(("unexpected",))
+        self.assertEqual(code, 3)
+        emit.assert_called_once_with(m.FALLBACK_INTERNAL_ERROR)
+
+    def test_main_uses_signal_barrier_around_first_output(self) -> None:
+        m = self.module
+        events = []
+
+        def mask(how, signals):
+            events.append(("mask", how, frozenset(signals), m._OUTPUT_STARTED))
+            return frozenset()
+
+        def emit(payload):
+            events.append(("emit", payload, m._OUTPUT_STARTED))
+
+        with mock.patch.object(m.signal, "signal"), mock.patch.object(
+            m.signal, "pthread_sigmask", side_effect=mask
+        ), mock.patch.object(m, "emit_bytes", side_effect=emit):
+            code = m.main(("unexpected",))
+
+        self.assertEqual(code, 2)
+        self.assertEqual([event[0] for event in events], ["mask", "emit", "mask"])
+        self.assertEqual(events[0][1], m.signal.SIG_BLOCK)
+        self.assertFalse(events[0][3])
+        self.assertTrue(events[1][2])
+        self.assertEqual(events[2][1], m.signal.SIG_SETMASK)
+
+    def test_signal_before_output_emits_exact_literal_and_exits_three(self) -> None:
+        m = self.module
+        with mock.patch.object(m, "emit_bytes") as emit, mock.patch.object(
+            m.os, "_exit", side_effect=SystemExit(3)
+        ):
+            with self.assertRaisesRegex(SystemExit, "3"):
+                m._signal_before_output(15, None)
+        emit.assert_called_once_with(m.FALLBACK_INTERNAL_ERROR)
+
+    def test_agent_order_matches_tracked_status_helper(self) -> None:
+        helper = (
+            ROOT
+            / "skills"
+            / "shogun-agent-status"
+            / "scripts"
+            / "agent_status.sh"
+        )
+        text = helper.read_text(encoding="utf-8")
+        positions = [text.index(agent) for agent in self.module.AGENT_IDS]
+        self.assertEqual(positions, sorted(positions))
+
+
 if __name__ == "__main__":
     unittest.main()
