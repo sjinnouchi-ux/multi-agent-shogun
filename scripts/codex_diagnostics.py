@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import errno
 import hashlib
 import json
 import os
+import re
 import selectors
 import signal
 import stat
@@ -402,3 +404,302 @@ def _command_issue(result: CommandResult, component: str) -> Issue:
         "output_limited": "command_output_limited",
     }.get(result.status, "command_failed")
     return Issue(code, component, None)
+
+
+SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9_.-]+$")
+SOURCE_KEYS = ("inbox", "task", "report", "handoff_status", "watcher_log")
+
+
+class SourceMissing(Exception):
+    pass
+
+
+class SourceRejected(Exception):
+    pass
+
+
+class SourceIOError(Exception):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class SourceSpec:
+    key: str
+    parts: tuple[str, ...]
+    applicability: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCollection:
+    global_sources: dict[str, dict[str, object]]
+    agent_sources: dict[str, dict[str, dict[str, object]]]
+    errors: tuple[Issue, ...]
+    warnings: tuple[Issue, ...]
+
+
+def open_runtime_root() -> int:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise InternalFailure
+    try:
+        return os.open(".", flags | nofollow)
+    except OSError:
+        raise InternalFailure from None
+
+
+def _validate_parts(parts: tuple[str, ...]) -> None:
+    if not parts:
+        raise SourceRejected
+    for part in parts:
+        if part in ("", ".", "..") or "/" in part or "\\" in part:
+            raise SourceRejected
+        if SAFE_COMPONENT.fullmatch(part) is None:
+            raise SourceRejected
+
+
+def open_regular_beneath(
+    root_fd: int, parts: tuple[str, ...], *, readable: bool
+) -> tuple[int, os.stat_result]:
+    _validate_parts(parts)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    path_only = getattr(os, "O_PATH", None)
+    if nofollow is None or path_only is None:
+        raise SourceRejected
+    current = os.dup(root_fd)
+    try:
+        for part in parts[:-1]:
+            next_fd = os.open(
+                part,
+                path_only | os.O_DIRECTORY | os.O_CLOEXEC | nofollow,
+                dir_fd=current,
+            )
+            os.close(current)
+            current = next_fd
+        leaf_flags = os.O_CLOEXEC | nofollow
+        if readable:
+            leaf_flags |= os.O_RDONLY | os.O_NONBLOCK
+        else:
+            leaf_flags |= path_only
+        leaf = os.open(parts[-1], leaf_flags, dir_fd=current)
+        metadata = os.fstat(leaf)
+        if not stat.S_ISREG(metadata.st_mode):
+            os.close(leaf)
+            raise SourceRejected
+        return leaf, metadata
+    except FileNotFoundError:
+        raise SourceMissing from None
+    except SourceRejected:
+        raise
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.EINVAL):
+            raise SourceRejected from None
+        raise SourceIOError from None
+    finally:
+        os.close(current)
+
+
+def size_class(size: int) -> str:
+    if size == 0:
+        return "empty"
+    if size <= 65_536:
+        return "small"
+    if size <= 1_048_576:
+        return "medium"
+    return "large"
+
+
+def rfc3339_seconds(epoch: float) -> str:
+    return dt.datetime.fromtimestamp(epoch, dt.timezone.utc).replace(
+        microsecond=0
+    ).isoformat().replace("+00:00", "Z")
+
+
+def _source_value(applicability: str, state: str, metadata=None) -> dict[str, object]:
+    return {
+        "applicability": applicability,
+        "state": state,
+        "modified_at": rfc3339_seconds(metadata.st_mtime) if metadata is not None else None,
+        "size_class": size_class(metadata.st_size) if metadata is not None else None,
+    }
+
+
+def collect_source_metadata(
+    root_fd: int, spec: SourceSpec, *, agent: str | None
+) -> tuple[dict[str, object], tuple[Issue, ...], tuple[Issue, ...]]:
+    if spec.applicability == "not_applicable":
+        return _source_value("not_applicable", "not_applicable"), (), ()
+    try:
+        fd, metadata = open_regular_beneath(root_fd, spec.parts, readable=False)
+        os.close(fd)
+        return _source_value(spec.applicability, "present", metadata), (), ()
+    except SourceMissing:
+        value = _source_value(spec.applicability, "missing")
+        if spec.applicability == "required":
+            return value, (Issue("required_source_missing", "source", agent),), ()
+        return value, (), ()
+    except SourceRejected:
+        value = _source_value(spec.applicability, "rejected")
+        issue = Issue("source_rejected", "source", agent)
+        if spec.applicability == "required":
+            return value, (issue,), ()
+        return value, (), (issue,)
+    except SourceIOError:
+        value = _source_value(spec.applicability, "error")
+        issue = Issue("command_failed", "source", agent)
+        if spec.applicability == "required":
+            return value, (issue,), ()
+        return value, (), (issue,)
+
+
+def _agent_specs(agent: str, observed: bool) -> tuple[SourceSpec, ...]:
+    required_or_optional = "required" if observed else "optional"
+    task_agent = agent not in ("shogun", "karo")
+    report_path = ("queue", "reports", f"{agent}_report.yaml") if task_agent else ()
+    return (
+        SourceSpec("inbox", ("queue", "inbox", f"{agent}.yaml"), required_or_optional),
+        SourceSpec(
+            "task",
+            ("queue", "tasks", f"{agent}.yaml") if task_agent else (),
+            required_or_optional if task_agent else "not_applicable",
+        ),
+        SourceSpec("report", report_path, "optional" if task_agent else "not_applicable"),
+        SourceSpec(
+            "handoff_status",
+            ("status", "handoff_watchdog", f"{agent}.yaml"),
+            "optional",
+        ),
+        SourceSpec(
+            "watcher_log",
+            ("logs", f"inbox_watcher_{agent}.log"),
+            required_or_optional,
+        ),
+    )
+
+
+def collect_runtime_sources(
+    root_fd: int, observed_agents: frozenset[str]
+) -> SourceCollection:
+    errors: list[Issue] = []
+    warnings: list[Issue] = []
+    global_sources: dict[str, dict[str, object]] = {}
+    for spec in (
+        SourceSpec("command_queue", ("queue", "shogun_to_karo.yaml"), "required"),
+        SourceSpec("dashboard", ("dashboard.md",), "optional"),
+    ):
+        value, found_errors, found_warnings = collect_source_metadata(
+            root_fd, spec, agent=None
+        )
+        global_sources[spec.key] = value
+        errors.extend(found_errors)
+        warnings.extend(found_warnings)
+
+    agent_sources: dict[str, dict[str, dict[str, object]]] = {}
+    for agent in AGENT_IDS:
+        values: dict[str, dict[str, object]] = {}
+        for spec in _agent_specs(agent, agent in observed_agents):
+            value, found_errors, found_warnings = collect_source_metadata(
+                root_fd, spec, agent=agent
+            )
+            values[spec.key] = value
+            errors.extend(found_errors)
+            warnings.extend(found_warnings)
+        agent_sources[agent] = values
+    return SourceCollection(global_sources, agent_sources, tuple(errors), tuple(warnings))
+
+
+LOG_LIMIT = 1_048_576
+LOG_MARKERS = {
+    "send_keys_failed_attempt": b"send-keys nudge failed",
+    "nudge_still_visible": b"nudge text still visible in pane",
+    "wakeup_retry_exhausted": b"send-keys failed after",
+    "wakeup_success_logged": b"Wake-up sent to",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class LogCollection:
+    events: dict[str, dict[str, object]]
+    errors: tuple[Issue, ...]
+    warnings: tuple[Issue, ...]
+
+
+def _empty_log_events(modified_at: str | None = None) -> dict[str, object]:
+    value: dict[str, object] = {
+        "window": "tail_1048576_bytes",
+        "modified_at": modified_at,
+    }
+    value.update({key: None for key in LOG_MARKERS})
+    value["unclassified_error_candidate"] = None
+    return value
+
+
+def read_bounded_tail(fd: int, before: os.stat_result) -> bytes:
+    if not stat.S_ISREG(before.st_mode):
+        raise SourceRejected
+    offset = max(0, before.st_size - LOG_LIMIT)
+    os.lseek(fd, offset, os.SEEK_SET)
+    remaining = min(before.st_size, LOG_LIMIT)
+    chunks: list[bytes] = []
+    while remaining:
+        chunk = os.read(fd, min(65_536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    after = os.fstat(fd)
+    if _source_stat_key(before) != _source_stat_key(after):
+        raise SourceRejected
+    result = b"".join(chunks)
+    if len(result) != min(before.st_size, LOG_LIMIT):
+        raise SourceRejected
+    return result
+
+
+def aggregate_log_tail(tail: bytes, modified_at: str | None) -> dict[str, object]:
+    value: dict[str, object] = {
+        "window": "tail_1048576_bytes",
+        "modified_at": modified_at,
+    }
+    for code, marker in LOG_MARKERS.items():
+        value[code] = tail.count(marker)
+    unclassified = 0
+    for line in tail.splitlines():
+        candidate = b"WARNING:" in line or b"[ERROR]" in line
+        known = any(marker in line for marker in LOG_MARKERS.values())
+        if candidate and not known:
+            unclassified += 1
+    value["unclassified_error_candidate"] = unclassified
+    return value
+
+
+def collect_log_aggregates(
+    root_fd: int, observed_agents: frozenset[str]
+) -> LogCollection:
+    events: dict[str, dict[str, object]] = {}
+    errors: list[Issue] = []
+    warnings: list[Issue] = []
+    for agent in AGENT_IDS:
+        parts = ("logs", f"inbox_watcher_{agent}.log")
+        try:
+            fd, metadata = open_regular_beneath(root_fd, parts, readable=True)
+            try:
+                tail = read_bounded_tail(fd, metadata)
+            finally:
+                os.close(fd)
+            events[agent] = aggregate_log_tail(tail, rfc3339_seconds(metadata.st_mtime))
+        except SourceMissing:
+            events[agent] = _empty_log_events()
+        except SourceRejected:
+            events[agent] = _empty_log_events()
+            issue = Issue("source_rejected", "log", agent)
+            (errors if agent in observed_agents else warnings).append(issue)
+        except SourceIOError:
+            events[agent] = _empty_log_events()
+            issue = Issue("command_failed", "log", agent)
+            (errors if agent in observed_agents else warnings).append(issue)
+        except OSError:
+            events[agent] = _empty_log_events()
+            issue = Issue("command_failed", "log", agent)
+            (errors if agent in observed_agents else warnings).append(issue)
+    return LogCollection(events, tuple(errors), tuple(warnings))

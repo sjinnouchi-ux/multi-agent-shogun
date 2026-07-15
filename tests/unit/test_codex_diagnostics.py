@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import importlib.util
 import json
 import os
+import re
+import socket
 import stat
 import subprocess
 import sys
@@ -315,6 +318,118 @@ class CommandRunnerTests(unittest.TestCase):
         self.addCleanup(stdout.close)
         self.addCleanup(stderr.close)
         self.assertEqual((stdout.closed, stderr.closed), (True, True))
+
+
+class SafePathAndLogTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def test_size_class_boundaries_and_timestamp_are_exact(self) -> None:
+        m = self.module
+        self.assertEqual(m.size_class(0), "empty")
+        self.assertEqual(m.size_class(1), "small")
+        self.assertEqual(m.size_class(65_536), "small")
+        self.assertEqual(m.size_class(65_537), "medium")
+        self.assertEqual(m.size_class(1_048_576), "medium")
+        self.assertEqual(m.size_class(1_048_577), "large")
+        self.assertRegex(m.rfc3339_seconds(0), r"^1970-01-01T00:00:00Z$")
+
+    def test_dir_fd_rejects_leaf_and_parent_symlinks_and_nonregular_files(self) -> None:
+        m = self.module
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "safe").mkdir()
+            (root / "safe" / "file").write_text("secret", encoding="utf-8")
+            (root / "leaf-link").symlink_to(root / "safe" / "file")
+            (root / "parent-link").symlink_to(root / "safe", target_is_directory=True)
+            os.mkfifo(root / "fifo")
+            sock = socket.socket(socket.AF_UNIX)
+            sock.bind(str(root / "socket"))
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                fd, _ = m.open_regular_beneath(root_fd, ("safe", "file"), readable=False)
+                os.close(fd)
+                for parts in (("leaf-link",), ("parent-link", "file"), ("fifo",), ("socket",), ("..", "file")):
+                    with self.subTest(parts=parts), self.assertRaises(m.SourceRejected):
+                        m.open_regular_beneath(root_fd, parts, readable=False)
+            finally:
+                os.close(root_fd)
+                sock.close()
+
+    def test_metadata_collection_never_calls_read_and_preserves_applicability(self) -> None:
+        m = self.module
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "queue" / "inbox").mkdir(parents=True)
+            (root / "queue" / "inbox" / "shogun.yaml").write_text(
+                "oauth: must-not-be-read", encoding="utf-8"
+            )
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                spec = m.SourceSpec("inbox", ("queue", "inbox", "shogun.yaml"), "required")
+                with mock.patch.object(m.os, "read", side_effect=AssertionError("content read")):
+                    value, errors, warnings = m.collect_source_metadata(
+                        root_fd, spec, agent="shogun"
+                    )
+                self.assertEqual(value["state"], "present")
+                self.assertEqual(value["applicability"], "required")
+                self.assertEqual(errors, ())
+                self.assertEqual(warnings, ())
+                self.assertNotIn("oauth", json.dumps(value))
+            finally:
+                os.close(root_fd)
+
+    def test_missing_required_optional_and_not_applicable_are_distinct(self) -> None:
+        m = self.module
+        with tempfile.TemporaryDirectory() as raw:
+            root_fd = os.open(raw, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                required = m.SourceSpec("inbox", ("queue", "inbox", "ashigaru1.yaml"), "required")
+                optional = m.SourceSpec("report", ("queue", "reports", "ashigaru1_report.yaml"), "optional")
+                na = m.SourceSpec("task", (), "not_applicable")
+                req_value, req_errors, _ = m.collect_source_metadata(root_fd, required, agent="ashigaru1")
+                opt_value, opt_errors, opt_warnings = m.collect_source_metadata(root_fd, optional, agent="ashigaru1")
+                na_value, na_errors, na_warnings = m.collect_source_metadata(root_fd, na, agent="shogun")
+                self.assertEqual(req_value["state"], "missing")
+                self.assertEqual(req_errors[0].code, "required_source_missing")
+                self.assertEqual(opt_value["state"], "missing")
+                self.assertEqual((opt_errors, opt_warnings), ((), ()))
+                self.assertEqual(na_value["state"], "not_applicable")
+                self.assertEqual((na_errors, na_warnings), ((), ()))
+            finally:
+                os.close(root_fd)
+
+    def test_log_reader_uses_only_last_1048576_bytes_and_fixed_markers(self) -> None:
+        m = self.module
+        prefix = b"send-keys nudge failed\n" + b"x" * 64
+        tail = (
+            b"Wake-up sent to safe-agent\n"
+            b"send-keys nudge failed token-value\n"
+            b"nudge text still visible in pane\n"
+            b"send-keys failed after 3 tries\n"
+            b"WARNING: new unknown condition customer-name\n"
+            b"normal customer-name line\n"
+        )
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "watcher.log"
+            padding = b"p" * (1_048_576 - len(tail))
+            path.write_bytes(prefix + padding + tail)
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+            try:
+                before = os.fstat(fd)
+                bounded = m.read_bounded_tail(fd, before)
+            finally:
+                os.close(fd)
+        self.assertEqual(len(bounded), 1_048_576)
+        events = m.aggregate_log_tail(bounded, "2026-07-14T00:00:00Z")
+        self.assertEqual(events["send_keys_failed_attempt"], 1)
+        self.assertEqual(events["nudge_still_visible"], 1)
+        self.assertEqual(events["wakeup_retry_exhausted"], 1)
+        self.assertEqual(events["wakeup_success_logged"], 1)
+        self.assertEqual(events["unclassified_error_candidate"], 1)
+        rendered = json.dumps(events)
+        self.assertNotIn("token-value", rendered)
+        self.assertNotIn("customer-name", rendered)
 
 
 if __name__ == "__main__":
