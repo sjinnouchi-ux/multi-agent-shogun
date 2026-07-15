@@ -30,7 +30,7 @@
 - raw JSON、tmux pane、生queue、生report、生logをwork log、PR、chatへ保存・表示しない。記録するのはexit、count、enum、hash一致、commitだけである。
 
 - Rollback is never automatic: revoke the persistent command permission first, require an explicit user-selected superseded record, and keep policy disabled after restoration.
-- `tests/contract/codex_diagnostics_consumer.py` is test/deployment-verification-only; `scripts/rollback_codex_diagnostics_snapshot.py` is offline maintenance-only. Neither is imported into, installed with, or persistently approved as part of the one-file diagnostic production snapshot.
+- `tests/contract/codex_diagnostics_consumer.py` is test/deployment-verification-only; `scripts/rollback_codex_diagnostics_snapshot.py` is a deployment-lifecycle helper whose `install-initial` mode is Task 9-only and whose legacy flag mode is explicit rollback maintenance-only. Neither is imported into, installed with, or persistently approved as part of the one-file diagnostic production snapshot.
 
 ## File Structure
 
@@ -50,8 +50,8 @@
 - Create `tests/contract/__init__.py`: consumer contract package marker.
 - Create `tests/contract/codex_diagnostics_consumer.py`: executable fail-closed consumer contract.
 - Create `tests/contract/test_codex_diagnostics_consumer.py`: hostile registry/output/no-fallback fixtures.
-- Create `scripts/rollback_codex_diagnostics_snapshot.py`: hash-gated atomic snapshot rollback primitive.
-- Create `tests/unit/test_rollback_codex_diagnostics_snapshot.py`: pre/post-commit and TOCTOU rollback tests.
+- Create `scripts/rollback_codex_diagnostics_snapshot.py`: no-replace first-install and hash-gated atomic rollback lifecycle primitives.
+- Create `tests/unit/test_rollback_codex_diagnostics_snapshot.py`: first-install concurrency/durability plus rollback pre/post-commit and TOCTOU tests.
 
 ### Workspace policy PR（Shogun deployment record main反映後）
 
@@ -2620,7 +2620,7 @@ Expected staged paths: the two listed files only.
 **Interfaces:**
 
 - Consumes: executable CLI and `collect_tmux()` from Task 6.
-- Produces: standard `make test` coverage, executable fail-closed consumer fixtures, tested atomic snapshot rollback primitive, WSL-only real tmux coverage, deployment acceptance target, and the exact marker block later copied to Workspace.
+- Produces: standard `make test` coverage, executable fail-closed consumer fixtures, tested no-replace first-install and atomic rollback lifecycle primitives, WSL-only real tmux coverage, deployment acceptance target, and the exact marker block later copied to Workspace.
 
 - [ ] **Step 1: Write RED-first consumer contract tests and the unit Bats wrapper**
 
@@ -3465,7 +3465,7 @@ make test
 
 Expected: dry-run shows the four command preflights and integration path; existing `make test` passes with unchanged scope.
 
-- [ ] **Step 5: Implement and test the atomic snapshot rollback primitive**
+- [ ] **Step 5: Implement and test the snapshot lifecycle primitives**
 
 Use this mandatory TDD execution order with the final tracked files. The actual
 contents of `scripts/rollback_codex_diagnostics_snapshot.py` and
@@ -3902,7 +3902,7 @@ snapshot and the latter preserves the unknown sentinel for explicit recovery.
 Only after the rollback suite is GREEN, extend `tests/unit/test_codex_diagnostics.bats`. Insert this test after the consumer-contract test:
 
 ```bash
-@test "codex diagnostics rollback primitive passes atomicity tests" {
+@test "codex diagnostics snapshot lifecycle primitives pass atomicity tests" {
     run python3 -m unittest -v \
         tests.unit.test_rollback_codex_diagnostics_snapshot
     [ "$status" -eq 0 ]
@@ -4365,49 +4365,51 @@ python3 -I -c \
   'import pathlib,sys; compile(pathlib.Path(sys.argv[1]).read_bytes(), sys.argv[1], "exec")' \
   "$source"
 
-if test -e /home/jinnouchi/.local || test -L /home/jinnouchi/.local; then
-  test -d /home/jinnouchi/.local
-  test ! -L /home/jinnouchi/.local
-else
-  /usr/bin/mkdir /home/jinnouchi/.local
-fi
-if test -e /home/jinnouchi/.local/libexec || test -L /home/jinnouchi/.local/libexec; then
-  test -d /home/jinnouchi/.local/libexec
-  test ! -L /home/jinnouchi/.local/libexec
-else
-  /usr/bin/mkdir /home/jinnouchi/.local/libexec
-fi
-test -d /home/jinnouchi/.local/libexec
 source_sha="$(sha256sum "$source" | awk '{print $1}')"
 test "${#source_sha}" -eq 64
 
-if test -e "$dest" || test -L "$dest"; then
-  test -f "$dest"
-  test ! -L "$dest"
-  test "$(stat -c '%U' "$dest")" = jinnouchi
-  test "$(stat -c '%a' "$dest")" = 555
-  test "$(sha256sum "$dest" | awk '{print $1}')" = "$source_sha"
-  printf 'ALREADY_CURRENT %s\n' "$source_sha"
-  exit 0
+set +e
+install_output="$(
+  python3 -I scripts/rollback_codex_diagnostics_snapshot.py \
+    install-initial --source "$source"
+)"
+install_rc="$?"
+set -e
+if test "$install_rc" -eq 3; then
+  printf '%s\n' 'snapshot_install=refused' >&2
+  exit 3
 fi
-
-tmp="$(mktemp /home/jinnouchi/.local/libexec/.shogun-codex-diagnostics.XXXXXXXX)"
-cleanup() { test ! -e "$tmp" || /usr/bin/unlink "$tmp"; }
-trap cleanup EXIT
-/usr/bin/install -m 0555 -- "$source" "$tmp"
-test "$(stat -c '%a' "$tmp")" = 555
-test "$(sha256sum "$tmp" | awk '{print $1}')" = "$source_sha"
-/usr/bin/mv -T -- "$tmp" "$dest"
-tmp=''
+if test "$install_rc" -eq 4; then
+  printf '%s\n' 'snapshot_install=indeterminate' >&2
+  exit 4
+fi
+test "$install_rc" -eq 0
+case "$install_output" in
+  snapshot_install=installed|snapshot_install=already_current) ;;
+  *) exit 1 ;;
+esac
 test -f "$dest"
 test ! -L "$dest"
 test "$(stat -c '%U' "$dest")" = jinnouchi
 test "$(stat -c '%a' "$dest")" = 555
 test "$(sha256sum "$dest" | awk '{print $1}')" = "$source_sha"
-printf 'DEPLOYED %s %s\n' "$(git rev-parse HEAD)" "$source_sha"
+printf '%s\n' "$install_output"
+printf 'source_commit=%s source_hash_match=pass mode=0555\n' "$(git rev-parse HEAD)"
 ```
 
-Expected: `DEPLOYED` or `ALREADY_CURRENT`, reviewed main commit, 64-character hash, mode `555`. A different pre-existing snapshot is a blocker; do not overwrite or delete it in this task.
+Expected: `snapshot_install=installed` or `snapshot_install=already_current`,
+reviewed main commit, source hash match, and mode `555`. The tested lifecycle
+helper creates missing user-local parent directories with component-wise
+`O_NOFOLLOW` dir-FD traversal and parent/child directory fsync, writes and fsyncs
+a mode-`0555` same-directory temporary inode, and publishes with no-replace
+`linkat`. Before reporting success it revalidates the fixed parent binding and
+published leaf inode after final byte readback. An existing identical
+owner/mode/regular/bytes snapshot is idempotent;
+a different or unsafe pre-existing snapshot is exit 3 and remains untouched.
+Exit 4 means publish or exact temporary cleanup/durability is indeterminate;
+stop before Task 10, do not retry automatically, and open a new explicit
+recovery task. This `install-initial` subcommand is deployment-only, never
+installed, persistently approved, or used by the Task 12 rollback path.
 
 - [ ] **Step 6: Validate fixed JSON and suffix rejection without exposing raw output**
 
@@ -4922,7 +4924,7 @@ test "$(sha256sum "$snapshot" | awk '{print $1}')" = "$TARGET_SHA256"
 Expected: the current hash is rechecked inside the primitive immediately before a same-directory `os.replace`; exit 0 means the installed bytes exactly match the selected Git blob at mode `0555`. Exit 3 proves the failing bytes remain and exact cleanup completed, then stops. Exit 4 means commit state or exact temporary-artifact cleanup/durability state is indeterminate; the wrapper safely classifies the snapshot as only `target|failing|other|unreadable`, never prints the hash, always exits 4, and also reconciles any preserved temporary artifact only in a new explicit recovery task. Exit 4 must never be silently retried or recorded as active.
 
 6. From a new Shogun work-log branch, change the failing record to `superseded` and append a new sole `active` record for the restored target commit/hash with the newly observed deployment timestamp. Run the Task 10 validator, commit only the work-log, open a PR, obtain independent review and explicit user approval, merge, and verify raw GitHub main.
-7. Leave the host marker, Workspace exception, and command approval disabled. Re-enablement is a new reviewed deployment task. Never use `git reset --hard`, force push, an unverified local backup, Task 9's first-install helper, or a direct runtime-data fallback.
+7. Leave the host marker, Workspace exception, and command approval disabled. Re-enablement is a new reviewed deployment task. Never invoke `install-initial` or otherwise use Task 9's first-install helper during rollback. Never use `git reset --hard`, force push, an unverified local backup, or a direct runtime-data fallback.
 
 - [ ] **Step 6: Run final Git/GitHub cleanliness checks and remove task-local artifacts**
 

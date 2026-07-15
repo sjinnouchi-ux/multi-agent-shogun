@@ -72,8 +72,8 @@ Shogun repoへself-containedなsourceを置く。
 - `tests/contract/__init__.py`: consumer contract package marker
 - `tests/contract/codex_diagnostics_consumer.py`: Codex consumerの完全schema・fail-closed参照実装（test/台帳検証専用）
 - `tests/contract/test_codex_diagnostics_consumer.py`: hostile registry/output、exit、deadline、no-fallback契約test
-- `scripts/rollback_codex_diagnostics_snapshot.py`: 明示rollback時だけ使うoffline atomic snapshot replacement helper
-- `tests/unit/test_rollback_codex_diagnostics_snapshot.py`: pre/post-commit stateとTOCTOUのrollback test
+- `scripts/rollback_codex_diagnostics_snapshot.py`: Task 9限定no-replace初回配置と明示rollback maintenanceのsnapshot lifecycle helper
+- `tests/unit/test_rollback_codex_diagnostics_snapshot.py`: 初回配置の競合/durabilityとrollback pre/post-commit/TOCTOU test
 - `docs/codex-diagnostics.md`: 利用、deployment、出力契約
 - `docs/github-boundary-operation.md`: 信頼済みゲートの限定例外
 - `docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md`: source provenance、検証、deployment記録
@@ -98,7 +98,7 @@ Workspace main反映後、実PCの`C:\Users\jinnouchi\.codex\AGENTS.md`と`CODEX
 
 plugin、dynamic registration、base class、`sys.path`操作、repo内module importは作らない。
 
-`tests/contract/codex_diagnostics_consumer.py`はCodexが実行結果を信頼するための独立したtest参照実装であり、同じstrict registry validatorだけをTask 10/12の台帳検証にも使用する。診断snapshotへimport・配置せず、恒常許可もしない。`scripts/rollback_codex_diagnostics_snapshot.py`は通常診断、policy例外、恒常許可prefixへ含めず、Shogun停止・許可撤回・policy無効化・明示承認後のmaintenanceだけで実行する。この2fileを追加しても診断production一file制約は変えない。
+`tests/contract/codex_diagnostics_consumer.py`はCodexが実行結果を信頼するための独立したtest参照実装であり、同じstrict registry validatorだけをTask 10/12の台帳検証にも使用する。診断snapshotへimport・配置せず、恒常許可もしない。`scripts/rollback_codex_diagnostics_snapshot.py`は通常診断、policy例外、恒常許可prefixへ含めず、`install-initial`はreview済みmainからTask 9初回deployment時だけ、legacy flag modeはShogun停止・許可撤回・policy無効化・明示承認後のrollback maintenanceだけで実行する。helper自体はinstall/恒常許可せず、Task 12 rollbackから`install-initial`を呼ばない。この2fileを追加しても診断production一file制約は変えない。
 
 既存の`skills/shogun-agent-status/scripts/agent_status.sh`が採用している、引数なし、固定tmux format、未知値の破棄、repo helper非依存という安全原則を踏襲する。ただし同scriptを呼び出したり変更したりせず、両者の固定agent ID enumだけが一致する契約testを追加してdriftを検出する。
 
@@ -741,12 +741,17 @@ session検出とpane件数を先にassertし、その後に秘密文字列非漏
 
 `test-no-skip`は実deployment host用の受入targetである。最初にClaude、Bats、Python、tmux等の必須commandをpreflightし、不足時はskipせず非0終了する。その後root-levelとunit BatsをTAP formatterで実行し、一時出力に`# skip`が1件でもあれば非0終了する。通常のtest failure、timeout、formatter errorも非0のまま伝播し、skip件数を成功扱いしない。既存`make test`の意味は変更しない。
 
-### 9.7 rollback primitive
+### 9.7 snapshot lifecycle primitives
 
+- `install-initial`はsourceとdestination parentをcomponent単位のdir FD/`O_NOFOLLOW`で固定し、欠落するuser-local parentだけをmode `0755`で作成してfile/directoryをfsyncする。
+- source bytesを同一directoryの`O_CREAT|O_EXCL` temporary inodeへ書き、mode `0555`・file fsync・readback後、`linkat` no-replaceで公開する。公開とtemporary unlinkをそれぞれdirectory fsyncし、`os.replace`/`rename`は使わない。
+- publish後のfinal readback後に固定destination parent bindingとleaf inodeを再検証し、readback中のleaf差し替えまたはparent再束縛を成功扱いせずexit 4とする。
+- existing destinationはregular、current user owner、mode `0555`、source bytes完全一致の場合だけ`already_current`とし、inodeを変更しない。異内容、symlink、非regular、mode/owner不一致、異内容の競合winnerは変更せず拒否する。同内容の同時deployは一方だけがpublishし、他方はwinnerを上書きしない。
+- publish後またはexact temporary cleanup/durabilityが不確定ならexit 4でTask 10へ進まず、新しい明示recovery taskを要求する。
 - current/target hash不一致、snapshot/target symlink、`O_NOFOLLOW`不在、target差し替え、replace前失敗はsnapshotを変更せずtemporary fileを残さない。
 - replace直前にcurrent hashを再検証し、同一directory・mode `0555` temporary fileだけをatomic replaceへ渡す。
 - replace後のdirectory fsync/post-read失敗、またはreplace前後を問わずexact temporary cleanup/durabilityを証明できない失敗はexit 4となり、外部snapshot/artifact reconciliationと停止を要求する。
-- rollback helperを診断snapshot、恒常許可prefix、通常consumer pathへ含めない。
+- lifecycle helperを診断snapshot、恒常許可prefix、通常consumer pathへ含めない。`install-initial`はTask 9限定で、rollbackはlegacy flagsだけを使う。
 
 GitHub CIはClaude CLIを持たず、既存`test_cli_adapter.bats`に既知の条件付きskipがあるため、v1では`test-no-skip`をCIへ追加しない。CIの`make test`は通常回帰gateとして使うが、完了根拠のskip 0判定には使わない。完了判定はClaude導入済みの実WSL deployment hostで`make test-no-skip`が通ったことを必須とする。
 

@@ -50,6 +50,14 @@ supervisor mandatory requires a separate approved control-plane task.
 Deploy only a reviewed main Git blob to
 `/home/jinnouchi/.local/libexec/shogun-codex-diagnostics` with mode `0555`.
 Do not use sudo, a system directory, `/mnt/c`, a local manifest, or a cache.
+For the first deployment, run only the tested lifecycle helper's
+`install-initial --source scripts/codex_diagnostics.py` subcommand from reviewed
+main. It uses component-wise no-follow dir FDs, durable parent creation,
+file/directory fsync, and no-replace publication. Identical existing bytes are
+idempotent; different or unsafe entries are never overwritten. The lifecycle
+helper revalidates both the fixed parent binding and published leaf inode after
+final readback; uncertainty is exit 4. The helper itself is not installed or
+persistently approved.
 Record each deployment through a separate Shogun work-log PR. Roll back by
 revoking the full-command permission first, byte-safely removing the host marker,
 and reverting the Workspace policy through a PR. Select an explicit superseded
@@ -57,7 +65,8 @@ GitHub record, extract its exact Git blob, and use the tested rollback primitive
 only when the current bytes equal the failing active hash and the blob equals the
 selected target hash. Record the restored deployment as the sole active record
 through a separate Shogun work-log PR before any later re-enablement. The
-rollback helper is never installed or persistently approved. Its exit 3 is a
+legacy rollback mode is invoked without `install-initial`; that deployment-only
+subcommand is forbidden in the rollback procedure. Exit 3 is a
 verified pre-commit refusal only when exact temporary cleanup also succeeds.
 Exit 4 means snapshot commit state or exact temporary-artifact cleanup/durability
 state is indeterminate; it requires external reconciliation plus a new explicit

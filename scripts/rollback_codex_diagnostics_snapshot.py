@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -15,6 +16,7 @@ SNAPSHOT_PATH = Path("/home/jinnouchi/.local/libexec/shogun-codex-diagnostics")
 MAX_SOURCE_BYTES = 1_048_576
 SHA256 = re.compile(r"[0-9a-f]{64}")
 TEMP_PREFIX = ".shogun-codex-diagnostics.rollback."
+INSTALL_TEMP_PREFIX = ".shogun-codex-diagnostics.install."
 MAX_TEMP_ATTEMPTS = 16
 
 
@@ -23,6 +25,10 @@ class RollbackRefused(Exception):
 
 
 class RollbackCommitOrCleanupIndeterminate(Exception):
+    pass
+
+
+class SnapshotInstallCommitOrCleanupIndeterminate(Exception):
     pass
 
 
@@ -57,17 +63,109 @@ def _leaf_name(path: Path) -> str:
 def _open_parent(path: Path) -> tuple[int, os.stat_result]:
     _require_platform_support()
     flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    value = Path(path)
+    if ".." in value.parts:
+        raise RollbackRefused
+    start = Path(value.anchor) if value.is_absolute() else Path(".")
     try:
-        fd = os.open(path, flags)
+        fd = os.open(start, flags)
     except (OSError, TypeError, NotImplementedError) as exc:
         raise RollbackRefused from exc
     try:
+        parts = value.parts[1:] if value.is_absolute() else value.parts
+        for part in parts:
+            if part in ("", "."):
+                continue
+            next_fd = os.open(part, flags, dir_fd=fd)
+            try:
+                metadata = os.fstat(next_fd)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise RollbackRefused
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(fd)
+            fd = next_fd
         metadata = os.fstat(fd)
         if not stat.S_ISDIR(metadata.st_mode):
             raise RollbackRefused
         return fd, metadata
+    except (OSError, TypeError, NotImplementedError) as exc:
+        os.close(fd)
+        raise RollbackRefused from exc
     except BaseException:
         os.close(fd)
+        raise
+
+
+def _open_or_create_install_parent(path: Path) -> tuple[int, os.stat_result]:
+    _require_platform_support()
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+    value = Path(path)
+    if ".." in value.parts:
+        raise RollbackRefused
+    start = Path(value.anchor) if value.is_absolute() else Path(".")
+    created_any = False
+    try:
+        fd = os.open(start, flags)
+    except (OSError, TypeError, NotImplementedError) as exc:
+        raise RollbackRefused from exc
+    try:
+        parts = value.parts[1:] if value.is_absolute() else value.parts
+        for part in parts:
+            if part in ("", "."):
+                continue
+            created = False
+            try:
+                next_fd = os.open(part, flags, dir_fd=fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                else:
+                    created = True
+                    created_any = True
+                    os.fsync(fd)
+                next_fd = os.open(part, flags, dir_fd=fd)
+            try:
+                metadata = os.fstat(next_fd)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise RollbackRefused
+                if created:
+                    os.fchmod(next_fd, 0o755)
+                    os.fsync(next_fd)
+                    metadata = os.fstat(next_fd)
+                    if (
+                        metadata.st_uid != os.geteuid()
+                        or stat.S_IMODE(metadata.st_mode) != 0o755
+                    ):
+                        raise SnapshotInstallCommitOrCleanupIndeterminate
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(fd)
+            fd = next_fd
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise RollbackRefused
+        return fd, metadata
+    except SnapshotInstallCommitOrCleanupIndeterminate:
+        os.close(fd)
+        raise
+    except (OSError, TypeError, NotImplementedError) as exc:
+        os.close(fd)
+        if created_any:
+            raise SnapshotInstallCommitOrCleanupIndeterminate from exc
+        raise RollbackRefused from exc
+    except BaseException as exc:
+        os.close(fd)
+        if created_any and isinstance(exc, RollbackRefused):
+            raise SnapshotInstallCommitOrCleanupIndeterminate from exc
         raise
 
 
@@ -187,7 +285,9 @@ def _lock_exclusive(fd: int) -> None:
         raise RollbackRefused from exc
 
 
-def _create_temp_at(directory_fd: int) -> tuple[int, str]:
+def _create_temp_at(
+    directory_fd: int, *, prefix: str = TEMP_PREFIX
+) -> tuple[int, str]:
     _require_platform_support()
     flags = (
         os.O_RDWR
@@ -197,7 +297,7 @@ def _create_temp_at(directory_fd: int) -> tuple[int, str]:
         | os.O_NOFOLLOW
     )
     for _attempt in range(MAX_TEMP_ATTEMPTS):
-        name = TEMP_PREFIX + secrets.token_hex(16)
+        name = prefix + secrets.token_hex(16)
         try:
             fd = os.open(name, flags, 0o600, dir_fd=directory_fd)
         except FileExistsError:
@@ -260,6 +360,271 @@ def _cleanup_exact_temp_at(directory_fd: int, name: str, fd: int) -> None:
         raise
     except (OSError, TypeError, NotImplementedError) as exc:
         raise RollbackCommitOrCleanupIndeterminate from exc
+
+
+def _cleanup_published_install_temp_at(
+    directory_fd: int,
+    temp_name: str,
+    destination_name: str,
+    fd: int,
+) -> None:
+    try:
+        opened = os.fstat(fd)
+        temp_visible = os.stat(
+            temp_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        destination_visible = os.stat(
+            destination_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(temp_visible.st_mode)
+            or not stat.S_ISREG(destination_visible.st_mode)
+            or _identity(opened) != _identity(temp_visible)
+            or _identity(opened) != _identity(destination_visible)
+            or opened.st_nlink != 2
+            or temp_visible.st_nlink != 2
+            or destination_visible.st_nlink != 2
+        ):
+            raise SnapshotInstallCommitOrCleanupIndeterminate
+        os.unlink(temp_name, dir_fd=directory_fd)
+        try:
+            os.stat(
+                temp_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise SnapshotInstallCommitOrCleanupIndeterminate
+        remaining = os.fstat(fd)
+        destination_remaining = os.stat(
+            destination_name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(remaining.st_mode)
+            or not stat.S_ISREG(destination_remaining.st_mode)
+            or _identity(remaining) != _identity(destination_remaining)
+            or remaining.st_nlink != 1
+            or destination_remaining.st_nlink != 1
+        ):
+            raise SnapshotInstallCommitOrCleanupIndeterminate
+        os.fsync(directory_fd)
+    except SnapshotInstallCommitOrCleanupIndeterminate:
+        raise
+    except (OSError, TypeError, NotImplementedError) as exc:
+        raise SnapshotInstallCommitOrCleanupIndeterminate from exc
+
+
+def _existing_install_matches(
+    directory_fd: int,
+    destination_name: str,
+    expected: bytes,
+) -> bool:
+    fd = _open_regular_at(directory_fd, destination_name, 0o555)
+    try:
+        _require_leaf_matches_fd(
+            directory_fd, destination_name, fd, 0o555
+        )
+        metadata = os.fstat(fd)
+        if metadata.st_uid != os.geteuid():
+            raise RollbackRefused
+        value = _read_regular_fd(fd, 0o555)
+        _require_leaf_matches_fd(
+            directory_fd, destination_name, fd, 0o555
+        )
+        return value == expected
+    finally:
+        os.close(fd)
+
+
+def _install_initial_snapshot(
+    *,
+    source: Path,
+    destination: Path,
+) -> str:
+    source_name = _leaf_name(source)
+    destination_name = _leaf_name(destination)
+    source_parent_fd = -1
+    destination_parent_fd = -1
+    temp_fd = -1
+    temp_name: str | None = None
+    published = False
+    cleanup_indeterminate: SnapshotInstallCommitOrCleanupIndeterminate | None = None
+    try:
+        source_parent_fd, source_parent_identity = _open_parent(source.parent)
+        _parent_still_bound(
+            source.parent, source_parent_fd, source_parent_identity
+        )
+        source_bytes = _read_regular_at(
+            source_parent_fd, source_name, None
+        )
+        _parent_still_bound(
+            source.parent, source_parent_fd, source_parent_identity
+        )
+
+        destination_parent_fd, destination_parent_identity = (
+            _open_or_create_install_parent(destination.parent)
+        )
+        _parent_still_bound(
+            destination.parent,
+            destination_parent_fd,
+            destination_parent_identity,
+        )
+        try:
+            os.stat(
+                destination_name,
+                dir_fd=destination_parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        except (OSError, TypeError, NotImplementedError) as exc:
+            raise RollbackRefused from exc
+        else:
+            if _existing_install_matches(
+                destination_parent_fd, destination_name, source_bytes
+            ):
+                _parent_still_bound(
+                    destination.parent,
+                    destination_parent_fd,
+                    destination_parent_identity,
+                )
+                return "already_current"
+            raise RollbackRefused
+
+        temp_fd, temp_name = _create_temp_at(
+            destination_parent_fd,
+            prefix=INSTALL_TEMP_PREFIX,
+        )
+        _write_temp(temp_fd, source_bytes)
+        _require_leaf_matches_fd(
+            destination_parent_fd, temp_name, temp_fd, 0o555
+        )
+        if _read_regular_fd(temp_fd, 0o555) != source_bytes:
+            raise RollbackRefused
+        _parent_still_bound(
+            destination.parent,
+            destination_parent_fd,
+            destination_parent_identity,
+        )
+        try:
+            os.link(
+                temp_name,
+                destination_name,
+                src_dir_fd=destination_parent_fd,
+                dst_dir_fd=destination_parent_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            if _existing_install_matches(
+                destination_parent_fd, destination_name, source_bytes
+            ):
+                _parent_still_bound(
+                    destination.parent,
+                    destination_parent_fd,
+                    destination_parent_identity,
+                )
+                return "already_current"
+            raise RollbackRefused
+        except (OSError, TypeError, NotImplementedError) as exc:
+            raise RollbackRefused from exc
+        published = True
+        try:
+            os.fsync(destination_parent_fd)
+        except OSError as exc:
+            raise SnapshotInstallCommitOrCleanupIndeterminate from exc
+
+        _cleanup_published_install_temp_at(
+            destination_parent_fd,
+            temp_name,
+            destination_name,
+            temp_fd,
+        )
+        temp_name = None
+        try:
+            _parent_still_bound(
+                destination.parent,
+                destination_parent_fd,
+                destination_parent_identity,
+            )
+            _require_leaf_matches_fd(
+                destination_parent_fd, destination_name, temp_fd, 0o555
+            )
+            installed_bytes = _read_regular_fd(temp_fd, 0o555)
+            _parent_still_bound(
+                destination.parent,
+                destination_parent_fd,
+                destination_parent_identity,
+            )
+            _require_leaf_matches_fd(
+                destination_parent_fd, destination_name, temp_fd, 0o555
+            )
+            installed = os.fstat(temp_fd)
+            if (
+                installed.st_uid != os.geteuid()
+                or installed_bytes != source_bytes
+            ):
+                raise SnapshotInstallCommitOrCleanupIndeterminate
+        except SnapshotInstallCommitOrCleanupIndeterminate:
+            raise
+        except (OSError, RollbackRefused) as exc:
+            raise SnapshotInstallCommitOrCleanupIndeterminate from exc
+        return "installed"
+    finally:
+        if (
+            temp_name is not None
+            and temp_fd >= 0
+            and destination_parent_fd >= 0
+        ):
+            try:
+                if published:
+                    _cleanup_published_install_temp_at(
+                        destination_parent_fd,
+                        temp_name,
+                        destination_name,
+                        temp_fd,
+                    )
+                else:
+                    _cleanup_exact_temp_at(
+                        destination_parent_fd, temp_name, temp_fd
+                    )
+            except (
+                RollbackCommitOrCleanupIndeterminate,
+                SnapshotInstallCommitOrCleanupIndeterminate,
+            ) as exc:
+                cleanup_indeterminate = (
+                    SnapshotInstallCommitOrCleanupIndeterminate()
+                )
+                cleanup_indeterminate.__cause__ = exc
+        for fd in (temp_fd, destination_parent_fd, source_parent_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        if cleanup_indeterminate is not None:
+            raise cleanup_indeterminate
+
+
+def install_initial_snapshot(
+    *,
+    source: Path,
+) -> str:
+    try:
+        return _install_initial_snapshot(
+            source=Path(source),
+            destination=SNAPSHOT_PATH,
+        )
+    except RollbackCommitOrCleanupIndeterminate as exc:
+        raise SnapshotInstallCommitOrCleanupIndeterminate from exc
 
 
 def _destination_state(
@@ -407,7 +772,7 @@ def atomic_rollback(
             raise cleanup_indeterminate
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def _rollback_main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(add_help=True)
     parser.add_argument("--failing-sha256", required=True)
     parser.add_argument("--target-sha256", required=True)
@@ -425,6 +790,27 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (OSError, RollbackRefused):
         return 3
     return 0
+
+
+def _install_initial_main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--source", required=True, type=Path)
+    args = parser.parse_args(argv)
+    try:
+        result = install_initial_snapshot(source=args.source)
+    except SnapshotInstallCommitOrCleanupIndeterminate:
+        return 4
+    except (OSError, RollbackRefused):
+        return 3
+    print(f"snapshot_install={result}")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    values = tuple(sys.argv[1:] if argv is None else argv)
+    if values[:1] == ("install-initial",):
+        return _install_initial_main(values[1:])
+    return _rollback_main(values)
 
 
 if __name__ == "__main__":
