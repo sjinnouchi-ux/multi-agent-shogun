@@ -30,12 +30,21 @@ def registry(records: list[dict[str, object]], schema: int = 1) -> bytes:
     return consumer.BEGIN + b"\n" + body + b"\n" + consumer.END
 
 
-def source_value() -> dict[str, object]:
+def source_value(applicability: str = "optional") -> dict[str, object]:
     return {
-        "applicability": "optional",
+        "applicability": applicability,
         "state": "present",
         "modified_at": "2026-07-14T00:00:00Z",
         "size_class": "small",
+    }
+
+
+def not_applicable_source() -> dict[str, object]:
+    return {
+        "applicability": "not_applicable",
+        "state": "not_applicable",
+        "modified_at": None,
+        "size_class": None,
     }
 
 
@@ -54,6 +63,7 @@ def log_events() -> dict[str, object]:
 def output_value(source_hash: str = SOURCE_SHA) -> dict[str, object]:
     agents = []
     for index, agent_id in enumerate(consumer.AGENT_IDS):
+        task_agent = agent_id not in ("shogun", "karo")
         agents.append({
             "id": agent_id,
             "observed": True,
@@ -62,7 +72,19 @@ def output_value(source_hash: str = SOURCE_SHA) -> dict[str, object]:
             "cli": "codex",
             "watcher_count": 1,
             "watcher_state": "healthy",
-            "sources": {key: source_value() for key in consumer.SOURCE_KEYS},
+            "sources": {
+                "inbox": source_value("required"),
+                "task": (
+                    source_value("required")
+                    if task_agent else not_applicable_source()
+                ),
+                "report": (
+                    source_value("optional")
+                    if task_agent else not_applicable_source()
+                ),
+                "handoff_status": source_value("optional"),
+                "watcher_log": source_value("required"),
+            },
             "log_events": log_events(),
         })
     return {
@@ -98,8 +120,8 @@ def output_value(source_hash: str = SOURCE_SHA) -> dict[str, object]:
             "watcher_supervisor_state": "healthy",
         },
         "global_sources": {
-            "command_queue": source_value(),
-            "dashboard": source_value(),
+            "command_queue": source_value("required"),
+            "dashboard": source_value("optional"),
         },
         "agents": agents,
         "errors": [],
@@ -121,6 +143,44 @@ def changed_output(change, *, ensure_ascii: bool = True) -> bytes:
     ).encode("utf-8")
 
 
+def bounded_issue_fixture(*, severity: str, count: int):
+    if severity == "errors":
+        codes = tuple(
+            code for code in consumer.CLI_ERROR_CODES
+            if code != "result_truncated"
+        )
+    elif severity == "warnings":
+        codes = ("command_failed", "source_rejected")
+    else:
+        raise AssertionError("unsupported severity")
+    values = sorted(
+        (
+            (code, component, agent)
+            for code in codes
+            for component in ("diagnostic", "log", "source")
+            for agent in (None, *consumer.AGENT_IDS)
+        ),
+        key=lambda item: (item[0], item[1], item[2] or ""),
+    )[:count]
+    return [
+        {"code": code, "component": component, "agent": agent}
+        for code, component, agent in values
+    ]
+
+
+def truncated_error_fixture():
+    values = bounded_issue_fixture(severity="errors", count=63)
+    values.append({
+        "code": "result_truncated",
+        "component": "diagnostic",
+        "agent": None,
+    })
+    return sorted(
+        values,
+        key=lambda item: (item["code"], item["component"], item["agent"] or ""),
+    )
+
+
 class ConsumerContractTests(unittest.TestCase):
     def evaluate(self, **overrides):
         values = {
@@ -140,6 +200,91 @@ class ConsumerContractTests(unittest.TestCase):
         self.assertIsNone(decision.code)
         self.assertEqual(decision.action, "use_sanitized_diagnostic")
         self.assertFalse(decision.fallback_allowed)
+
+    def test_missing_optional_supervisor_is_trusted_when_everything_else_is_healthy(
+        self,
+    ) -> None:
+        decision = self.evaluate(stdout=changed_output(
+            lambda value: value["processes"].update(
+                watcher_supervisor_count=0,
+                watcher_supervisor_state="missing",
+            )
+        ))
+        self.assertTrue(decision.trusted)
+        self.assertIsNone(decision.code)
+
+    def test_truncation_marker_allows_only_omitted_correlation_issue(self) -> None:
+        def truncated_missing_watcher(value):
+            value["agents"][0].update(
+                watcher_count=0,
+                watcher_state="missing",
+            )
+            value["errors"] = truncated_error_fixture()
+            value["overall"] = "degraded"
+
+        decision = self.evaluate(stdout=changed_output(truncated_missing_watcher))
+        self.assertTrue(decision.trusted)
+        self.assertIsNone(decision.code)
+
+        def truncated_unknown_agent_warning(value):
+            value["sessions"][0].update(
+                pane_count=2,
+                unknown_agent_count=1,
+            )
+            value["errors"] = [{
+                "code": "result_truncated",
+                "component": "diagnostic",
+                "agent": None,
+            }]
+            value["warnings"] = bounded_issue_fixture(
+                severity="warnings", count=64
+            )
+            value["overall"] = "degraded"
+
+        decision = self.evaluate(
+            stdout=changed_output(truncated_unknown_agent_warning)
+        )
+        self.assertTrue(decision.trusted)
+        self.assertIsNone(decision.code)
+
+    def test_truncation_marker_requires_full_corresponding_issue_array(
+        self,
+    ) -> None:
+        def short_marker(value):
+            value["agents"][0].update(
+                watcher_count=0,
+                watcher_state="missing",
+            )
+            value["errors"] = [{
+                "code": "result_truncated",
+                "component": "diagnostic",
+                "agent": None,
+            }]
+            value["overall"] = "degraded"
+
+        def warnings_do_not_truncate_errors(value):
+            short_marker(value)
+            value["warnings"] = bounded_issue_fixture(
+                severity="warnings", count=64
+            )
+
+        def errors_do_not_truncate_warnings(value):
+            value["sessions"][0].update(
+                pane_count=2,
+                unknown_agent_count=1,
+            )
+            value["errors"] = truncated_error_fixture()
+            value["overall"] = "degraded"
+
+        for name, change in (
+            ("short_marker", short_marker),
+            ("warnings_do_not_truncate_errors", warnings_do_not_truncate_errors),
+            ("errors_do_not_truncate_warnings", errors_do_not_truncate_warnings),
+        ):
+            with self.subTest(name=name):
+                decision = self.evaluate(stdout=changed_output(change))
+                self.assertFalse(decision.trusted)
+                self.assertEqual(decision.code, "diagnostic_process_failed")
 
     def test_every_provenance_failure_stops_without_fallback(self) -> None:
         valid = registry([record()])
@@ -181,6 +326,47 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertFalse(decision.fallback_allowed)
 
     def test_every_process_failure_stops_without_fallback(self) -> None:
+        def missing_session_with_nonzero_counts(value):
+            value["sessions"][0].update(state="missing", pane_count=1)
+            value["overall"] = "degraded"
+            value["errors"] = [{
+                "code": "session_missing",
+                "component": "tmux",
+                "agent": None,
+            }]
+
+        def required_source_not_applicable(value):
+            value["global_sources"]["command_queue"] = {
+                "applicability": "required",
+                "state": "not_applicable",
+                "modified_at": None,
+                "size_class": None,
+            }
+            value["overall"] = "degraded"
+
+        def mismatch_with_expected_session(value):
+            value["agents"][0]["pane_state"] = "error"
+            value["errors"] = [{
+                "code": "agent_session_mismatch",
+                "component": "tmux",
+                "agent": "shogun",
+            }]
+            value["overall"] = "degraded"
+
+        def mismatch_without_session(value):
+            mismatch_with_expected_session(value)
+            value["agents"][0]["session"] = None
+
+        def duplicate_with_nonunknown_cli(value):
+            value["agents"][0]["pane_state"] = "error"
+            value["agents"][0]["session"] = None
+            value["errors"] = [{
+                "code": "duplicate_agent_pane",
+                "component": "tmux",
+                "agent": "shogun",
+            }]
+            value["overall"] = "degraded"
+
         cases = {
             "empty_stdout": self.evaluate(stdout=b""),
             "partial_json": self.evaluate(stdout=b'{"schema_version":1'),
@@ -243,6 +429,101 @@ class ConsumerContractTests(unittest.TestCase):
             ),
             "output_deep_nesting": self.evaluate(
                 stdout=b"[" * 1_500 + b"]" * 1_500
+            ),
+            "healthy_overall_cannot_be_declared_degraded": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value.update(overall="degraded")
+                )
+            ),
+            "error_requires_recomputed_overall": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value.update(errors=[{
+                        "code": "command_failed",
+                        "component": "log",
+                        "agent": "ashigaru1",
+                    }])
+                )
+            ),
+            "canonical_remote_cannot_be_false": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value["repository"].update(
+                        canonical_remote_present=False
+                    )
+                )
+            ),
+            "missing_session_requires_zero_counts": self.evaluate(
+                stdout=changed_output(missing_session_with_nonzero_counts)
+            ),
+            "source_applicability_must_match_state": self.evaluate(
+                stdout=changed_output(required_source_not_applicable)
+            ),
+            "unobserved_agent_cannot_keep_observed_fields": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value["agents"][2].update(observed=False)
+                )
+            ),
+            "watcher_count_must_match_state": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value["agents"][0].update(watcher_count=0)
+                )
+            ),
+            "supervisor_count_must_match_state": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value["processes"].update(
+                        watcher_supervisor_count=0
+                    )
+                )
+            ),
+            "mismatch_requires_unexpected_session": self.evaluate(
+                stdout=changed_output(mismatch_with_expected_session)
+            ),
+            "mismatch_requires_nonnull_session": self.evaluate(
+                stdout=changed_output(mismatch_without_session)
+            ),
+            "duplicate_requires_unknown_cli": self.evaluate(
+                stdout=changed_output(duplicate_with_nonunknown_cli)
+            ),
+            "error_rejects_warning_only_code": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value.update(
+                        overall="degraded",
+                        errors=[{
+                            "code": "unknown_cli_observed",
+                            "component": "tmux",
+                            "agent": "shogun",
+                        }],
+                    )
+                )
+            ),
+            "warning_rejects_error_only_code": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value.update(warnings=[{
+                        "code": "watcher_missing",
+                        "component": "process",
+                        "agent": "shogun",
+                    }])
+                )
+            ),
+            "cli_rejects_consumer_process_code": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value.update(
+                        overall="degraded",
+                        errors=[{
+                            "code": "diagnostic_process_failed",
+                            "component": "diagnostic",
+                            "agent": None,
+                        }],
+                    )
+                )
+            ),
+            "cli_rejects_consumer_provenance_code": self.evaluate(
+                stdout=changed_output(
+                    lambda value: value.update(warnings=[{
+                        "code": "diagnostic_provenance_untrusted",
+                        "component": "diagnostic",
+                        "agent": None,
+                    }])
+                )
             ),
             "nonempty_stderr": self.evaluate(stderr=b"unexpected"),
             "exit_two": self.evaluate(exit_code=2),

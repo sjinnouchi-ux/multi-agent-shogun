@@ -96,7 +96,8 @@ panes.
 
 Before using any diagnostic field, Codex must require exit 0 and independently
 validate ASCII-only bytes plus the complete nested schema, exact key order,
-session/agent cardinality, enums, and count limits.
+session/agent cardinality, enums, issue severity, count/state/applicability
+cross-field invariants, and a recomputed `overall` value.
 
 Do not persist a shorter `wsl.exe`, `bash -lc`, `python3`, or repo-script prefix.
 `cat`, `grep`, YAML bodies, log lines, pane capture, arbitrary paths, sessions,

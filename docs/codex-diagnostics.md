@@ -29,7 +29,9 @@ exit, empty/non-JSON/partial JSON, nonempty stderr, or a run of 10 seconds or mo
 `diagnostic_process_failed`. Neither case permits a raw fallback, repo source
 execution, direct runtime reads, or a shorter WSL permission.
 Before using any field, independently validate the complete nested schema,
-exact key order/cardinality/enums/count limits, ASCII-only bytes, and exit 0.
+exact key order/cardinality/enums/count limits, issue severity, cross-field
+state/count/applicability relationships, recomputed `overall`, ASCII-only bytes,
+and exit 0. A CLI document may not contain the consumer-only decision codes.
 
 ## Output
 
@@ -38,6 +40,10 @@ completed; `overall=degraded` or `overall=unavailable` remains a valid result.
 Exit 2 is a preflight/argument rejection. Exit 3 is a fail-closed internal or
 serialization failure. The complete schema is fixed by
 `docs/superpowers/specs/2026-07-14-codex-readonly-diagnostics-design.md`.
+The canonical launcher starts agent watchers directly, so supervisor count `0`
+and state `missing` are an optional/not-managed observation and do not degrade
+health. Supervisor `duplicate` or `unknown` still degrades health. Making the
+supervisor mandatory requires a separate approved control-plane task.
 
 ## Deployment and rollback
 

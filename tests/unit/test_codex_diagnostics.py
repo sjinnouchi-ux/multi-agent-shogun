@@ -37,6 +37,44 @@ def load_module():
     return module
 
 
+def bounded_issue_fixture(module, *, severity: str, count: int):
+    if severity == "errors":
+        codes = tuple(
+            code for code in module.CLI_ERROR_CODES
+            if code != "result_truncated"
+        )
+    elif severity == "warnings":
+        codes = ("command_failed", "source_rejected")
+    else:
+        raise AssertionError("unsupported severity")
+    values = sorted(
+        (
+            (code, component, agent)
+            for code in codes
+            for component in ("diagnostic", "log", "source")
+            for agent in (None, *module.AGENT_IDS)
+        ),
+        key=lambda item: (item[0], item[1], item[2] or ""),
+    )[:count]
+    return [
+        {"code": code, "component": component, "agent": agent}
+        for code, component, agent in values
+    ]
+
+
+def truncated_error_fixture(module):
+    values = bounded_issue_fixture(module, severity="errors", count=63)
+    values.append({
+        "code": "result_truncated",
+        "component": "diagnostic",
+        "agent": None,
+    })
+    return sorted(
+        values,
+        key=lambda item: (item["code"], item["component"], item["agent"] or ""),
+    )
+
+
 class CliAndSourceHashTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
@@ -126,7 +164,7 @@ class CliAndSourceHashTests(unittest.TestCase):
     def test_issue_arrays_are_deduplicated_sorted_and_bounded(self) -> None:
         issue = self.module.Issue("watcher_missing", "process", "ashigaru1")
         many = [issue, issue]
-        for code in self.module.ERROR_CODES:
+        for code in self.module.CLI_ERROR_CODES:
             for component in self.module.COMPONENTS:
                 for agent in (None, *self.module.AGENT_IDS):
                     many.append(self.module.Issue(code, component, agent))
@@ -144,9 +182,36 @@ class CliAndSourceHashTests(unittest.TestCase):
             item["code"], item["component"], item["agent"] or ""
         )))
 
-        warning_errors, bounded_warnings = self.module.normalize_issues((), many)
+        warning_many = []
+        for code in self.module.CLI_WARNING_CODES:
+            for component in self.module.COMPONENTS:
+                for agent in (None, *self.module.AGENT_IDS):
+                    warning_many.append(self.module.Issue(code, component, agent))
+                    if len(warning_many) >= 72:
+                        break
+                if len(warning_many) >= 72:
+                    break
+            if len(warning_many) >= 72:
+                break
+        warning_errors, bounded_warnings = self.module.normalize_issues(
+            (), warning_many
+        )
         self.assertEqual(len(bounded_warnings), 64)
         self.assertIn("result_truncated", {item["code"] for item in warning_errors})
+
+    def test_issue_normalization_rejects_wrong_severity_and_consumer_codes(self) -> None:
+        m = self.module
+        invalid = (
+            ((m.Issue("unknown_cli_observed", "tmux", "shogun"),), ()),
+            ((), (m.Issue("watcher_missing", "process", "shogun"),)),
+            ((m.Issue("diagnostic_process_failed", "diagnostic", None),), ()),
+            ((), (m.Issue("diagnostic_provenance_untrusted", "diagnostic", None),)),
+        )
+        for errors, warnings in invalid:
+            with self.subTest(errors=errors, warnings=warnings), self.assertRaises(
+                m.InternalFailure
+            ):
+                m.normalize_issues(errors, warnings)
 
     def test_deployment_work_log_has_one_marker_pair_and_at_most_one_active(self) -> None:
         text = WORK_LOG.read_text(encoding="utf-8")
@@ -223,7 +288,7 @@ class CommandRunnerTests(unittest.TestCase):
         )
         terminate.assert_called_once()
 
-    def test_terminate_does_not_wait_after_overall_deadline_is_exhausted(self) -> None:
+    def test_terminate_uses_bounded_reap_grace_after_overall_deadline(self) -> None:
         process = mock.Mock(pid=42)
         with mock.patch.object(self.module.os, "killpg"):
             self.module._terminate_and_reap(
@@ -231,7 +296,23 @@ class CommandRunnerTests(unittest.TestCase):
                 deadline=10.0,
                 monotonic=lambda: 10.0,
             )
-        process.wait.assert_not_called()
+        process.wait.assert_called_once_with(
+            timeout=self.module.REAP_GRACE_SECONDS
+        )
+        process.poll.assert_not_called()
+
+    def test_terminate_never_uses_unbounded_wait_when_reap_grace_expires(self) -> None:
+        process = mock.Mock(pid=42)
+        process.wait.side_effect = subprocess.TimeoutExpired("child", 0.1)
+        with mock.patch.object(self.module.os, "killpg"):
+            self.module._terminate_and_reap(
+                process,
+                deadline=10.0,
+                monotonic=lambda: 10.0,
+            )
+        process.wait.assert_called_once_with(
+            timeout=self.module.REAP_GRACE_SECONDS
+        )
         process.poll.assert_called_once_with()
 
     def test_runner_rejects_non_allowlisted_executable_without_spawning(self) -> None:
@@ -579,6 +660,26 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
                 self.assertIn("command_failed", {issue.code for issue in collection.errors})
                 self.assertNotIn(secret.decode(), repr(collection))
 
+    def test_malformed_pane_batch_discards_provisional_unknown_warnings(self) -> None:
+        m = self.module
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult(
+                "ok", 0, b"shogun\nmultiagent\n"
+            ),
+            m.TMUX_PANES_ARGV: m.CommandResult(
+                "ok",
+                0,
+                b"shogun|0||claude\n"
+                b"multiagent|not-a-dead-flag|ashigaru1|codex\n",
+            ),
+        })
+        collection = m.collect_tmux(runner)
+        self.assertEqual(
+            [item["state"] for item in collection.sessions],
+            ["error", "error"],
+        )
+        self.assertEqual(collection.warnings, ())
+
     def test_missing_sessions_have_fixed_shape_without_polling_absent_agents(self) -> None:
         m = self.module
         runner = ScriptedRunner({
@@ -649,6 +750,25 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
         self.assertNotIn("101", json.dumps(collection.processes))
         self.assertIn("watcher_missing", {issue.code for issue in collection.errors})
 
+    def test_missing_optional_supervisor_is_observed_without_health_error(self) -> None:
+        m = self.module
+        runner = ScriptedRunner({
+            m.PGREP_SUPERVISOR_ARGV: m.CommandResult("nonzero", 1, b""),
+            m.PGREP_AGENT_ARGV["shogun"]: m.CommandResult("ok", 0, b"201\n"),
+        })
+        collection = m.collect_processes(frozenset(("shogun",)), runner)
+        self.assertEqual(
+            collection.processes,
+            {
+                "watcher_supervisor_count": 0,
+                "watcher_supervisor_state": "missing",
+            },
+        )
+        self.assertNotIn(
+            ("watcher_missing", "process", None),
+            {(issue.code, issue.component, issue.agent) for issue in collection.errors},
+        )
+
     def test_duplicate_and_timeout_process_results_have_fixed_states_and_issues(self) -> None:
         m = self.module
         runner = ScriptedRunner({
@@ -698,7 +818,11 @@ class RepositoryCollectorTests(unittest.TestCase):
         self.module = load_module()
 
     def _collect_counts(
-        self, tracked_stdout: bytes, untracked_stdout: bytes
+        self,
+        tracked_stdout: bytes,
+        untracked_stdout: bytes,
+        *,
+        branch_stdout: bytes = b"main\n",
     ):
         m = self.module
         results = {
@@ -711,7 +835,7 @@ class RepositoryCollectorTests(unittest.TestCase):
                 b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
             ),
             m.git_argv("symbolic-ref", "--quiet", "--short", "HEAD"): m.CommandResult(
-                "ok", 0, b"main\n"
+                "ok", 0, branch_stdout
             ),
             m.git_argv("rev-parse", "--verify", "HEAD"): m.CommandResult(
                 "ok", 0, b"2" * 40 + b"\n"
@@ -742,6 +866,17 @@ class RepositoryCollectorTests(unittest.TestCase):
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(self.module.classify_branch(raw), expected)
+
+    def test_invalid_successful_branch_output_adds_fixed_repository_error(self) -> None:
+        collection = self._collect_counts(
+            b"", b"", branch_stdout=b"bad branch with secret\n"
+        )
+        self.assertEqual(collection.value["branch_class"], "invalid")
+        self.assertFalse(collection.available)
+        self.assertIn(
+            ("command_failed", "repository", None),
+            {(issue.code, issue.component, issue.agent) for issue in collection.errors},
+        )
 
     def test_canonical_remote_accepts_only_fixed_https_or_ssh_repo(self) -> None:
         for raw in (
@@ -930,11 +1065,24 @@ def sample_collections(
         states = ("present", "missing")
     else:
         states = ("present", "present")
+    observed_ids = set()
+    if states[0] == "present":
+        observed_ids.add("shogun")
+    if states[1] == "present":
+        observed_ids.update(("karo", "ashigaru1"))
     sessions = tuple(
         {
             "name": name,
             "state": state,
-            "pane_count": 0 if state == "missing" else 1,
+            "pane_count": (
+                0
+                if state == "missing"
+                else sum(
+                    agent in observed_ids
+                    and ("shogun" if agent == "shogun" else "multiagent") == name
+                    for agent in module.AGENT_IDS
+                )
+            ),
             "dead_pane_count": 0,
             "unknown_agent_count": 0,
         }
@@ -942,17 +1090,17 @@ def sample_collections(
     )
     observations = {
         agent: module.PaneObservation(
-            agent in ("shogun", "karo", "ashigaru1"),
+            agent in observed_ids,
             "shogun"
-            if agent == "shogun"
+            if agent == "shogun" and agent in observed_ids
             else (
-                "multiagent" if agent in ("karo", "ashigaru1") else None
+                "multiagent" if agent in observed_ids else None
             ),
             "alive"
-            if agent in ("shogun", "karo", "ashigaru1")
+            if agent in observed_ids
             else "not_observed",
             "claude"
-            if agent in ("shogun", "karo", "ashigaru1")
+            if agent in observed_ids
             else "unknown",
         )
         for agent in module.AGENT_IDS
@@ -965,7 +1113,7 @@ def sample_collections(
     tmux = module.TmuxCollection(
         sessions,
         observations,
-        frozenset(("shogun", "karo", "ashigaru1")),
+        frozenset(observed_ids),
         tmux_errors,
         (),
     )
@@ -983,12 +1131,13 @@ def sample_collections(
         (),
         (),
     )
-    present = {
-        "applicability": "optional",
-        "state": "present",
-        "modified_at": "2026-07-14T00:00:00Z",
-        "size_class": "small",
-    }
+    def present(applicability):
+        return {
+            "applicability": applicability,
+            "state": "present",
+            "modified_at": "2026-07-14T00:00:00Z",
+            "size_class": "small",
+        }
     na = {
         "applicability": "not_applicable",
         "state": "not_applicable",
@@ -998,15 +1147,22 @@ def sample_collections(
     agent_sources = {}
     for agent in module.AGENT_IDS:
         task_report = agent not in ("shogun", "karo")
+        observed = observations[agent].observed
         agent_sources[agent] = {
-            "inbox": dict(present),
-            "task": dict(present if task_report else na),
-            "report": dict(present if task_report else na),
-            "handoff_status": dict(present),
-            "watcher_log": dict(present),
+            "inbox": present("required" if observed else "optional"),
+            "task": (
+                present("required" if observed else "optional")
+                if task_report else dict(na)
+            ),
+            "report": present("optional") if task_report else dict(na),
+            "handoff_status": present("optional"),
+            "watcher_log": present("required" if observed else "optional"),
         }
     sources = module.SourceCollection(
-        {"command_queue": dict(present), "dashboard": dict(present)},
+        {
+            "command_queue": present("required"),
+            "dashboard": present("optional"),
+        },
         agent_sources,
         (),
         (),
@@ -1067,6 +1223,243 @@ class SummaryAndSerializationTests(unittest.TestCase):
         self.assertEqual(degraded["overall"], "degraded")
         self.assertEqual(unavailable["overall"], "unavailable")
         self.assertEqual(healthy_warning["overall"], "healthy")
+        for document in (degraded, unavailable, healthy_warning):
+            m.validate_document(document)
+
+    def test_optional_missing_supervisor_keeps_success_document_healthy(self) -> None:
+        m = self.module
+        parts = list(sample_collections(m))
+        watchers = parts[2].agent_watchers
+        parts[2] = m.ProcessCollection(
+            {
+                "watcher_supervisor_count": 0,
+                "watcher_supervisor_state": "missing",
+            },
+            watchers,
+            (),
+            (),
+        )
+        document = m.build_success_document("a" * 64, *parts)
+        self.assertEqual(document["overall"], "healthy")
+        m.validate_document(document)
+
+    def test_supervisor_duplicate_and_unknown_remain_valid_degraded_states(self) -> None:
+        m = self.module
+        cases = (
+            (
+                2,
+                "duplicate",
+                m.Issue("duplicate_process", "process", None),
+            ),
+            (
+                None,
+                "unknown",
+                m.Issue("command_timeout", "process", None),
+            ),
+        )
+        for count, state, issue in cases:
+            with self.subTest(state=state):
+                parts = list(sample_collections(m))
+                parts[2] = m.ProcessCollection(
+                    {
+                        "watcher_supervisor_count": count,
+                        "watcher_supervisor_state": state,
+                    },
+                    parts[2].agent_watchers,
+                    (issue,),
+                    (),
+                )
+                document = m.build_success_document("a" * 64, *parts)
+                self.assertEqual(document["overall"], "degraded")
+                m.validate_document(document)
+
+    def test_validator_rejects_cross_field_semantic_contradictions(self) -> None:
+        m = self.module
+
+        def mutate_overall(document):
+            document["overall"] = "degraded"
+
+        def mutate_error_without_overall(document):
+            document["errors"] = [{
+                "code": "command_failed",
+                "component": "log",
+                "agent": "ashigaru1",
+            }]
+
+        def mutate_canonical_remote(document):
+            document["repository"]["canonical_remote_present"] = False
+
+        def mutate_missing_session_counts(document):
+            document["sessions"][0].update(
+                state="missing",
+                pane_count=1,
+                dead_pane_count=0,
+                unknown_agent_count=0,
+            )
+            document["overall"] = "degraded"
+            document["errors"] = [{
+                "code": "session_missing",
+                "component": "tmux",
+                "agent": None,
+            }]
+
+        def mutate_source_state(document):
+            document["global_sources"]["command_queue"] = {
+                "applicability": "required",
+                "state": "not_applicable",
+                "modified_at": None,
+                "size_class": None,
+            }
+            document["overall"] = "degraded"
+
+        def mutate_unobserved_agent(document):
+            document["agents"][3]["session"] = "multiagent"
+
+        def mutate_observed_watcher(document):
+            document["agents"][0]["watcher_count"] = 0
+
+        def mutate_supervisor_pair(document):
+            document["processes"]["watcher_supervisor_count"] = 0
+
+        def mutate_mismatch_with_expected_session(document):
+            document["agents"][0]["pane_state"] = "error"
+            document["overall"] = "degraded"
+            document["errors"] = [{
+                "code": "agent_session_mismatch",
+                "component": "tmux",
+                "agent": "shogun",
+            }]
+
+        def mutate_mismatch_without_session(document):
+            mutate_mismatch_with_expected_session(document)
+            document["agents"][0]["session"] = None
+
+        def mutate_duplicate_with_nonunknown_cli(document):
+            document["agents"][0]["pane_state"] = "error"
+            document["agents"][0]["session"] = None
+            document["overall"] = "degraded"
+            document["errors"] = [{
+                "code": "duplicate_agent_pane",
+                "component": "tmux",
+                "agent": "shogun",
+            }]
+
+        for name, mutate in (
+            ("overall_recalculation", mutate_overall),
+            ("error_requires_degraded", mutate_error_without_overall),
+            ("canonical_remote_true", mutate_canonical_remote),
+            ("missing_session_zero_counts", mutate_missing_session_counts),
+            ("source_applicability_state", mutate_source_state),
+            ("unobserved_agent_shape", mutate_unobserved_agent),
+            ("observed_watcher_pair", mutate_observed_watcher),
+            ("supervisor_count_state_pair", mutate_supervisor_pair),
+            ("mismatch_requires_unexpected_session", mutate_mismatch_with_expected_session),
+            ("mismatch_requires_nonnull_session", mutate_mismatch_without_session),
+            ("duplicate_requires_unknown_cli", mutate_duplicate_with_nonunknown_cli),
+        ):
+            with self.subTest(name=name):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                mutate(document)
+                with self.assertRaises(m.InternalFailure):
+                    m.validate_document(document)
+
+    def test_validator_accepts_omitted_correlation_only_with_truncation_marker(
+        self,
+    ) -> None:
+        m = self.module
+        document = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        document["agents"][0]["watcher_count"] = 0
+        document["agents"][0]["watcher_state"] = "missing"
+        document["errors"] = truncated_error_fixture(m)
+        document["overall"] = "degraded"
+        m.validate_document(document)
+
+        document = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        document["sessions"][0]["pane_count"] = 2
+        document["sessions"][0]["unknown_agent_count"] = 1
+        document["errors"] = [{
+            "code": "result_truncated",
+            "component": "diagnostic",
+            "agent": None,
+        }]
+        document["warnings"] = bounded_issue_fixture(
+            m, severity="warnings", count=64
+        )
+        document["overall"] = "degraded"
+        m.validate_document(document)
+
+    def test_truncation_marker_requires_full_corresponding_issue_array(
+        self,
+    ) -> None:
+        m = self.module
+
+        def missing_watcher(document):
+            document["agents"][0]["watcher_count"] = 0
+            document["agents"][0]["watcher_state"] = "missing"
+            document["errors"] = [{
+                "code": "result_truncated",
+                "component": "diagnostic",
+                "agent": None,
+            }]
+            document["overall"] = "degraded"
+
+        short_marker = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        missing_watcher(short_marker)
+
+        warnings_only = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        missing_watcher(warnings_only)
+        warnings_only["warnings"] = bounded_issue_fixture(
+            m, severity="warnings", count=64
+        )
+
+        errors_only = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        errors_only["sessions"][0]["pane_count"] = 2
+        errors_only["sessions"][0]["unknown_agent_count"] = 1
+        errors_only["errors"] = truncated_error_fixture(m)
+        errors_only["overall"] = "degraded"
+
+        for name, document in (
+            ("short_marker", short_marker),
+            ("warnings_do_not_truncate_errors", warnings_only),
+            ("errors_do_not_truncate_warnings", errors_only),
+        ):
+            with self.subTest(name=name), self.assertRaises(m.InternalFailure):
+                m.validate_document(document)
+
+    def test_validator_rejects_issue_codes_at_the_wrong_severity(self) -> None:
+        m = self.module
+        cases = (
+            ("errors", "unknown_cli_observed", "tmux", "shogun"),
+            ("warnings", "watcher_missing", "process", "shogun"),
+            ("errors", "diagnostic_process_failed", "diagnostic", None),
+            ("warnings", "diagnostic_provenance_untrusted", "diagnostic", None),
+        )
+        for array_name, code, component, agent in cases:
+            with self.subTest(array=array_name, code=code):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                document[array_name] = [{
+                    "code": code,
+                    "component": component,
+                    "agent": agent,
+                }]
+                if array_name == "errors":
+                    document["overall"] = "degraded"
+                with self.assertRaises(m.InternalFailure):
+                    m.validate_document(document)
 
     def test_validator_rejects_unknown_keys_and_free_text(self) -> None:
         m = self.module

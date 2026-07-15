@@ -36,7 +36,7 @@ CLI_NAMES = (
     "cursor", "antigravity", "unknown",
 )
 COMPONENTS = ("repository", "tmux", "process", "source", "log", "diagnostic")
-ERROR_CODES = (
+ALL_ISSUE_CODES = (
     "argument_rejected", "agent_session_mismatch", "boundary_rejected",
     "canonical_remote_missing", "command_failed", "command_output_limited",
     "command_timeout", "diagnostic_process_failed",
@@ -45,6 +45,22 @@ ERROR_CODES = (
     "required_source_missing", "result_truncated", "session_missing",
     "source_rejected", "unknown_agent_observed", "unknown_cli_observed",
     "watcher_missing",
+)
+CONSUMER_DECISION_CODES = (
+    "diagnostic_process_failed",
+    "diagnostic_provenance_untrusted",
+)
+CLI_ERROR_CODES = (
+    "argument_rejected", "agent_session_mismatch", "boundary_rejected",
+    "canonical_remote_missing", "command_failed", "command_output_limited",
+    "command_timeout", "duplicate_agent_pane", "duplicate_process",
+    "internal_error", "pane_dead", "required_source_missing",
+    "result_truncated", "session_missing", "source_rejected",
+    "watcher_missing",
+)
+CLI_WARNING_CODES = (
+    "command_failed", "source_rejected", "unknown_agent_observed",
+    "unknown_cli_observed",
 )
 
 FALLBACK_INTERNAL_ERROR = (
@@ -64,7 +80,7 @@ class ArgumentRejected(Exception):
 
 class BoundaryRejected(Exception):
     def __init__(self, code: str = "boundary_rejected") -> None:
-        self.code = code if code in ERROR_CODES else "boundary_rejected"
+        self.code = code if code in CLI_ERROR_CODES else "boundary_rejected"
 
 
 class InternalFailure(Exception):
@@ -148,7 +164,7 @@ def _timestamp() -> str:
 
 
 def build_failure_document(code: str) -> dict[str, object]:
-    safe_code = code if code in ERROR_CODES else "internal_error"
+    safe_code = code if code in CLI_ERROR_CODES else "internal_error"
     return {
         "schema_version": SCHEMA_VERSION,
         "generated_at": _timestamp(),
@@ -176,21 +192,25 @@ def _issue_json(issue: Issue) -> dict[str, object]:
 def normalize_issues(
     errors: Iterable[Issue], warnings: Iterable[Issue]
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
-    def one(values: Iterable[Issue]) -> tuple[list[dict[str, object]], bool]:
-        unique = {
-            (item.code, item.component, item.agent)
-            for item in values
-            if item.code in ERROR_CODES
-            and item.component in COMPONENTS
-            and (item.agent is None or item.agent in AGENT_IDS)
-        }
+    def one(
+        values: Iterable[Issue], allowed_codes: tuple[str, ...]
+    ) -> tuple[list[dict[str, object]], bool]:
+        unique: set[tuple[str, str, str | None]] = set()
+        for item in values:
+            if (
+                item.code not in allowed_codes
+                or item.component not in COMPONENTS
+                or (item.agent is not None and item.agent not in AGENT_IDS)
+            ):
+                raise InternalFailure
+            unique.add((item.code, item.component, item.agent))
         ordered = sorted(unique, key=lambda item: (item[0], item[1], item[2] or ""))
         truncated = len(ordered) > MAX_ISSUES
         ordered = ordered[:MAX_ISSUES]
         return [_issue_json(Issue(*item)) for item in ordered], truncated
 
-    error_values, error_truncated = one(errors)
-    warning_values, warning_truncated = one(warnings)
+    error_values, error_truncated = one(errors, CLI_ERROR_CODES)
+    warning_values, warning_truncated = one(warnings, CLI_WARNING_CODES)
     if error_truncated or warning_truncated:
         marker = _issue_json(Issue("result_truncated", "diagnostic", None))
         error_values = [item for item in error_values if item != marker][: MAX_ISSUES - 1]
@@ -234,6 +254,7 @@ MAX_COMMAND_BYTES = 65_536
 MAX_COMMAND_RECORDS = 128
 COMMAND_TIMEOUT_SECONDS = 2.0
 OVERALL_TIMEOUT_SECONDS = 10.0
+REAP_GRACE_SECONDS = 0.1
 ALLOWED_EXECUTABLES = frozenset(("/usr/bin/git", "/usr/bin/tmux", "/usr/bin/pgrep"))
 SAFE_ENV = {
     "PATH": "/usr/bin:/bin",
@@ -281,17 +302,14 @@ def _terminate_and_reap(
         os.killpg(process.pid, signal.SIGKILL)
     except (OSError, ProcessLookupError):
         pass
-    remaining = _remaining(deadline, monotonic)
-    if remaining <= 0:
+    del deadline, monotonic
+    try:
+        process.wait(timeout=REAP_GRACE_SECONDS)
+    except (OSError, subprocess.TimeoutExpired):
         try:
             process.poll()
         except OSError:
             pass
-        return
-    try:
-        process.wait(timeout=min(0.1, remaining))
-    except (OSError, subprocess.TimeoutExpired):
-        pass
 
 
 def drain_process(
@@ -830,6 +848,7 @@ def collect_tmux(run) -> TmuxCollection:
         if malformed:
             pane_error_sessions.update(present)
             errors.append(Issue("command_failed", "tmux", None))
+            warnings.clear()
             rows = {name: [] for name in SESSION_NAMES}
             pane_counts = {name: 0 for name in SESSION_NAMES}
             dead_counts = {name: 0 for name in SESSION_NAMES}
@@ -949,9 +968,7 @@ def collect_processes(
     supervisor_result = run(PGREP_SUPERVISOR_ARGV)
     supervisor_count = count_pgrep(supervisor_result)
     supervisor_state = _watcher_state(supervisor_count)
-    if supervisor_state == "missing":
-        errors.append(Issue("watcher_missing", "process", None))
-    elif supervisor_state == "duplicate":
+    if supervisor_state == "duplicate":
         errors.append(Issue("duplicate_process", "process", None))
     elif supervisor_state == "unknown":
         errors.append(_command_issue(supervisor_result, "process"))
@@ -1128,6 +1145,8 @@ def collect_repository(run) -> RepositoryCollection:
     branch_result = run(git_argv("symbolic-ref", "--quiet", "--short", "HEAD"))
     if branch_result.status == "ok":
         branch_class = classify_branch(branch_result.stdout)
+        if branch_class == "invalid":
+            errors.append(Issue("command_failed", "repository", None))
     elif branch_result.status == "nonzero" and branch_result.returncode == 1:
         branch_class = "detached"
     else:
@@ -1292,7 +1311,9 @@ def _nullable_timestamp(value: object) -> None:
         raise InternalFailure from exc
 
 
-def _validate_source_value(raw: object) -> None:
+def _validate_source_value(
+    raw: object, *, expected_applicability: str | None = None
+) -> dict[str, object]:
     value = _exact_keys(raw, SOURCE_VALUE_KEYS)
     if value["state"] not in (
         "present", "missing", "rejected", "not_applicable", "error"
@@ -1300,15 +1321,106 @@ def _validate_source_value(raw: object) -> None:
         raise InternalFailure
     if value["applicability"] not in ("required", "optional", "not_applicable"):
         raise InternalFailure
+    if (
+        expected_applicability is not None
+        and value["applicability"] != expected_applicability
+    ):
+        raise InternalFailure
     _nullable_timestamp(value["modified_at"])
     if value["size_class"] not in ("empty", "small", "medium", "large", None):
         raise InternalFailure
-    if value["state"] == "not_applicable" and (
-        value["applicability"] != "not_applicable"
-        or value["modified_at"] is not None
-        or value["size_class"] is not None
-    ):
+    if value["applicability"] == "not_applicable":
+        if value != {
+            "applicability": "not_applicable",
+            "state": "not_applicable",
+            "modified_at": None,
+            "size_class": None,
+        }:
+            raise InternalFailure
+    elif value["state"] == "not_applicable":
         raise InternalFailure
+    elif value["state"] == "present":
+        if value["modified_at"] is None or value["size_class"] is None:
+            raise InternalFailure
+    elif value["modified_at"] is not None or value["size_class"] is not None:
+        raise InternalFailure
+    return value
+
+
+def _validate_watcher_pair(
+    count: object, state: object, *, observed: bool
+) -> None:
+    _nullable_count(count)
+    if not observed:
+        if count is not None or state != "not_observed":
+            raise InternalFailure
+        return
+    valid = (
+        (state == "healthy" and count == 1)
+        or (state == "missing" and count == 0)
+        or (
+            state == "duplicate"
+            and type(count) is int
+            and count >= 2
+        )
+        or (state == "unknown" and count is None)
+    )
+    if not valid:
+        raise InternalFailure
+
+
+def _agent_source_applicability(
+    agent: str, observed: bool
+) -> dict[str, str]:
+    task_agent = agent not in ("shogun", "karo")
+    required_or_optional = "required" if observed else "optional"
+    return {
+        "inbox": required_or_optional,
+        "task": required_or_optional if task_agent else "not_applicable",
+        "report": "optional" if task_agent else "not_applicable",
+        "handoff_status": "optional",
+        "watcher_log": required_or_optional,
+    }
+
+
+def _expected_success_overall(
+    top: dict[str, object], *, repository_available: bool
+) -> str:
+    sessions = top["sessions"]
+    if not isinstance(sessions, list):
+        raise InternalFailure
+    session_states = [item["state"] for item in sessions]
+    if not repository_available or session_states == ["missing", "missing"]:
+        return "unavailable"
+    if top["errors"] or any(state != "present" for state in session_states):
+        return "degraded"
+    processes = top["processes"]
+    if not isinstance(processes, dict):
+        raise InternalFailure
+    if processes["watcher_supervisor_state"] in ("duplicate", "unknown"):
+        return "degraded"
+    global_sources = top["global_sources"]
+    if not isinstance(global_sources, dict):
+        raise InternalFailure
+    if global_sources["command_queue"]["state"] != "present":
+        return "degraded"
+    agents = top["agents"]
+    if not isinstance(agents, list):
+        raise InternalFailure
+    for agent in agents:
+        if not agent["observed"]:
+            continue
+        if agent["pane_state"] in ("dead", "error"):
+            return "degraded"
+        if agent["watcher_state"] != "healthy":
+            return "degraded"
+        if any(
+            source["applicability"] == "required"
+            and source["state"] != "present"
+            for source in agent["sources"].values()
+        ):
+            return "degraded"
+    return "healthy"
 
 
 def validate_document(document: dict[str, object]) -> None:
@@ -1347,8 +1459,13 @@ def validate_document(document: dict[str, object]) -> None:
         raise InternalFailure
     _nullable_count(repository["tracked_changes"], 10_000)
     _nullable_count(repository["untracked_changes"], 10_000)
-    if repository["canonical_remote_present"] is not None and not isinstance(
-        repository["canonical_remote_present"], bool
+    if repository["canonical_remote_present"] is not True:
+        raise InternalFailure
+    if repository["tracked_changes"] is None or repository["untracked_changes"] is None:
+        if repository["dirty"] is not None:
+            raise InternalFailure
+    elif repository["dirty"] is not bool(
+        repository["tracked_changes"] or repository["untracked_changes"]
     ):
         raise InternalFailure
 
@@ -1366,21 +1483,46 @@ def validate_document(document: dict[str, object]) -> None:
             raise InternalFailure
         for key in ("pane_count", "dead_pane_count", "unknown_agent_count"):
             _nullable_count(item[key], 64)
+        counts = tuple(item[key] for key in SESSION_KEYS[2:])
+        if item["state"] == "missing" and counts != (0, 0, 0):
+            raise InternalFailure
+        if item["state"] == "error" and counts != (None, None, None):
+            raise InternalFailure
+        if item["state"] == "present":
+            pane_count, dead_count, unknown_count = counts
+            if (
+                type(pane_count) is not int
+                or type(dead_count) is not int
+                or type(unknown_count) is not int
+                or pane_count < 1
+                or dead_count > pane_count
+                or unknown_count > pane_count
+            ):
+                raise InternalFailure
     processes_value = _exact_keys(
         top["processes"],
         ("watcher_supervisor_count", "watcher_supervisor_state"),
     )
-    _nullable_count(processes_value["watcher_supervisor_count"])
     if processes_value["watcher_supervisor_state"] not in (
         "healthy", "missing", "duplicate", "unknown"
     ):
         raise InternalFailure
+    _validate_watcher_pair(
+        processes_value["watcher_supervisor_count"],
+        processes_value["watcher_supervisor_state"],
+        observed=True,
+    )
 
     global_sources = _exact_keys(
         top["global_sources"], ("command_queue", "dashboard")
     )
-    for raw in global_sources.values():
-        _validate_source_value(raw)
+    _validate_source_value(
+        global_sources["command_queue"], expected_applicability="required"
+    )
+    _validate_source_value(
+        global_sources["dashboard"], expected_applicability="optional"
+    )
+    validated_agents: list[dict[str, object]] = []
     for expected, raw in zip(AGENT_IDS, agents):
         item = _exact_keys(raw, AGENT_KEYS)
         if item["id"] != expected or not isinstance(item["observed"], bool):
@@ -1391,28 +1533,81 @@ def validate_document(document: dict[str, object]) -> None:
             raise InternalFailure
         if item["cli"] not in CLI_NAMES:
             raise InternalFailure
-        _nullable_count(item["watcher_count"])
         if item["watcher_state"] not in (
             "healthy", "missing", "duplicate", "unknown", "not_observed"
         ):
             raise InternalFailure
+        observed = item["observed"]
+        if not observed:
+            if (
+                item["session"] is not None
+                or item["pane_state"] != "not_observed"
+                or item["cli"] != "unknown"
+            ):
+                raise InternalFailure
+        else:
+            if item["pane_state"] == "not_observed":
+                raise InternalFailure
+            expected_session = EXPECTED_SESSION[expected]
+            if item["pane_state"] in ("alive", "dead") and (
+                item["session"] != expected_session
+            ):
+                raise InternalFailure
+            if item["session"] is not None:
+                session_index = SESSION_NAMES.index(item["session"])
+                if sessions[session_index]["state"] != "present":
+                    raise InternalFailure
+        _validate_watcher_pair(
+            item["watcher_count"], item["watcher_state"], observed=observed
+        )
         sources_value = _exact_keys(item["sources"], SOURCE_KEYS)
-        for raw_source in sources_value.values():
-            _validate_source_value(raw_source)
+        expected_sources = _agent_source_applicability(expected, observed)
+        for key, raw_source in sources_value.items():
+            _validate_source_value(
+                raw_source,
+                expected_applicability=expected_sources[key],
+            )
         events = _exact_keys(item["log_events"], LOG_EVENT_KEYS)
         if events["window"] != "tail_1048576_bytes":
             raise InternalFailure
         _nullable_timestamp(events["modified_at"])
+        event_counts = []
         for key in LOG_EVENT_KEYS[2:]:
             _nullable_count(events[key])
-    for array_name in ("errors", "warnings"):
+            event_counts.append(events[key])
+        if any(value is None for value in event_counts):
+            if any(value is not None for value in event_counts) or (
+                events["modified_at"] is not None
+            ):
+                raise InternalFailure
+        elif events["modified_at"] is None:
+            raise InternalFailure
+        validated_agents.append(item)
+
+    for index, session in enumerate(sessions):
+        name = SESSION_NAMES[index]
+        assigned = [agent for agent in validated_agents if agent["session"] == name]
+        if session["state"] == "missing" and assigned:
+            raise InternalFailure
+        if session["state"] == "present":
+            if session["pane_count"] < len(assigned) + session["unknown_agent_count"]:
+                raise InternalFailure
+            dead = sum(agent["pane_state"] == "dead" for agent in assigned)
+            if session["dead_pane_count"] < dead:
+                raise InternalFailure
+
+    issue_sets: dict[str, set[tuple[str, str, str | None]]] = {}
+    for array_name, allowed_codes in (
+        ("errors", CLI_ERROR_CODES),
+        ("warnings", CLI_WARNING_CODES),
+    ):
         values = top[array_name]
         if not isinstance(values, list) or len(values) > 64:
             raise InternalFailure
         previous: tuple[str, str, str] | None = None
         for raw in values:
             issue = _exact_keys(raw, ISSUE_KEYS)
-            if issue["code"] not in ERROR_CODES or issue["component"] not in COMPONENTS:
+            if issue["code"] not in allowed_codes or issue["component"] not in COMPONENTS:
                 raise InternalFailure
             if issue["agent"] not in (*AGENT_IDS, None):
                 raise InternalFailure
@@ -1424,6 +1619,151 @@ def validate_document(document: dict[str, object]) -> None:
             if previous is not None and current <= previous:
                 raise InternalFailure
             previous = current
+        issue_sets[array_name] = {
+            (issue["code"], issue["component"], issue["agent"])
+            for issue in values
+        }
+
+    errors = issue_sets["errors"]
+    warnings = issue_sets["warnings"]
+    truncation_reported = ("result_truncated", "diagnostic", None) in errors
+    if truncation_reported and (
+        len(top["errors"]) != MAX_ISSUES
+        and len(top["warnings"]) != MAX_ISSUES
+    ):
+        raise InternalFailure
+    errors_truncated = truncation_reported and len(top["errors"]) == MAX_ISSUES
+    warnings_truncated = truncation_reported and len(top["warnings"]) == MAX_ISSUES
+    missing_session = any(item["state"] == "missing" for item in sessions)
+    session_missing_reported = ("session_missing", "tmux", None) in errors
+    if session_missing_reported and not missing_session:
+        raise InternalFailure
+    if missing_session and not session_missing_reported and not errors_truncated:
+        raise InternalFailure
+    unknown_agents = any(item["unknown_agent_count"] for item in sessions)
+    unknown_agents_reported = ("unknown_agent_observed", "tmux", None) in warnings
+    if unknown_agents_reported and not unknown_agents:
+        raise InternalFailure
+    if unknown_agents and not unknown_agents_reported and not warnings_truncated:
+        raise InternalFailure
+
+    supervisor_state = processes_value["watcher_supervisor_state"]
+    global_process_errors = {
+        item for item in errors if item[1] == "process" and item[2] is None
+    }
+    if supervisor_state in ("healthy", "missing"):
+        if global_process_errors:
+            raise InternalFailure
+    elif supervisor_state == "duplicate":
+        if global_process_errors:
+            if global_process_errors != {("duplicate_process", "process", None)}:
+                raise InternalFailure
+        elif not errors_truncated:
+            raise InternalFailure
+    elif global_process_errors:
+        if any(
+            code not in ("command_failed", "command_output_limited", "command_timeout")
+            for code, _component, _agent in global_process_errors
+        ):
+            raise InternalFailure
+    elif not errors_truncated:
+        raise InternalFailure
+
+    for agent in validated_agents:
+        agent_id = agent["id"]
+        pane_errors = {
+            item for item in errors
+            if item[1] == "tmux" and item[2] == agent_id
+        }
+        if agent["pane_state"] == "dead":
+            expected_pane_errors = {("pane_dead", "tmux", agent_id)}
+            if pane_errors:
+                if pane_errors != expected_pane_errors:
+                    raise InternalFailure
+            elif not errors_truncated:
+                raise InternalFailure
+        elif agent["pane_state"] == "error":
+            if agent["session"] is None:
+                if agent["cli"] != "unknown":
+                    raise InternalFailure
+                expected_pane_errors = {
+                    ("duplicate_agent_pane", "tmux", agent_id)
+                }
+            else:
+                if agent["session"] == EXPECTED_SESSION[agent_id]:
+                    raise InternalFailure
+                expected_pane_errors = {
+                    ("agent_session_mismatch", "tmux", agent_id)
+                }
+            if pane_errors:
+                if pane_errors != expected_pane_errors:
+                    raise InternalFailure
+            elif not errors_truncated:
+                raise InternalFailure
+        elif pane_errors.intersection({
+            ("pane_dead", "tmux", agent_id),
+            ("duplicate_agent_pane", "tmux", agent_id),
+            ("agent_session_mismatch", "tmux", agent_id),
+        }):
+            raise InternalFailure
+
+        watcher_state = agent["watcher_state"]
+        process_errors = {
+            item for item in errors
+            if item[1] == "process" and item[2] == agent_id
+        }
+        if watcher_state in ("healthy", "not_observed"):
+            if process_errors:
+                raise InternalFailure
+        elif watcher_state == "missing":
+            if process_errors:
+                if process_errors != {("watcher_missing", "process", agent_id)}:
+                    raise InternalFailure
+            elif not errors_truncated:
+                raise InternalFailure
+        elif watcher_state == "duplicate":
+            if process_errors:
+                if process_errors != {("duplicate_process", "process", agent_id)}:
+                    raise InternalFailure
+            elif not errors_truncated:
+                raise InternalFailure
+        elif process_errors:
+            if any(
+                code not in ("command_failed", "command_output_limited", "command_timeout")
+                for code, _component, _agent in process_errors
+            ):
+                raise InternalFailure
+        elif not errors_truncated:
+            raise InternalFailure
+
+        if (
+            agent["observed"]
+            and agent["pane_state"] != "error"
+            and agent["cli"] == "unknown"
+            and ("unknown_cli_observed", "tmux", agent_id) not in warnings
+            and not warnings_truncated
+        ):
+            raise InternalFailure
+
+    repository_complete = (
+        repository["branch_class"] != "invalid"
+        and repository["head"] is not None
+        and repository["dirty"] is not None
+        and repository["tracked_changes"] is not None
+        and repository["untracked_changes"] is not None
+    )
+    repository_errors = any(item[1] == "repository" for item in errors)
+    repository_available = repository_complete and not repository_errors
+    if (
+        not repository_available
+        and not repository_errors
+        and not errors_truncated
+    ):
+        raise InternalFailure
+    if top["overall"] != _expected_success_overall(
+        top, repository_available=repository_available
+    ):
+        raise InternalFailure
 
 
 def collect_summary(
