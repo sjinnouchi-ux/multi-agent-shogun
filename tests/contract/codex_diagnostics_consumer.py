@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import math
 import re
+import sys
 from dataclasses import dataclass
 
 BEGIN = b"<!-- BEGIN CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
@@ -126,7 +127,16 @@ def _json_object(raw: bytes) -> dict[str, object]:
     return value
 
 
-def _active_record(raw: bytes) -> dict[str, object]:
+def validate_registry(
+    raw: bytes, *, require_active: bool
+) -> list[dict[str, object]]:
+    if (
+        not isinstance(raw, bytes)
+        or not raw
+        or len(raw) > MAX_CONSUMER_BYTES
+        or type(require_active) is not bool
+    ):
+        raise ContractRejected
     if raw.count(BEGIN) != 1 or raw.count(END) != 1:
         raise ContractRejected
     begin_marker = raw.index(BEGIN)
@@ -144,9 +154,10 @@ def _active_record(raw: bytes) -> dict[str, object]:
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
         raise ContractRejected
     records = value["deployments"]
-    if not isinstance(records, list) or not records:
+    if not isinstance(records, list):
         raise ContractRejected
     active: list[dict[str, object]] = []
+    validated: list[dict[str, object]] = []
     for record in records:
         if not isinstance(record, dict) or tuple(record) != RECORD_KEYS:
             raise ContractRejected
@@ -179,9 +190,17 @@ def _active_record(raw: bytes) -> dict[str, object]:
             raise ContractRejected
         if record["status"] == "active":
             active.append(record)
-    if len(active) != 1:
+        validated.append(record)
+    if (require_active and len(active) != 1) or (
+        not require_active and len(active) > 1
+    ):
         raise ContractRejected
-    return active[0]
+    return validated
+
+
+def _active_record(raw: bytes) -> dict[str, object]:
+    records = validate_registry(raw, require_active=True)
+    return next(record for record in records if record["status"] == "active")
 
 
 def _exact_keys(value: object, keys: tuple[str, ...]) -> dict[str, object]:
@@ -693,3 +712,20 @@ def evaluate_consumer(
     if source_hash != active["source_sha256"]:
         return _failure("diagnostic_provenance_untrusted")
     return ConsumerDecision(True, None, "use_sanitized_diagnostic")
+
+
+def registry_cli(argv: tuple[str, ...]) -> int:
+    if len(argv) != 2 or argv[0] != "validate-active-registry":
+        return 2
+    try:
+        with open(argv[1], "rb") as handle:
+            raw = handle.read(MAX_CONSUMER_BYTES + 1)
+        validate_registry(raw, require_active=True)
+    except (ContractRejected, OSError):
+        return 1
+    print("deployment_registry=pass")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(registry_cli(tuple(sys.argv[1:])))

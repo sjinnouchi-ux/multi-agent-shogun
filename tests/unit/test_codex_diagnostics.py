@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import errno
 import hashlib
 import importlib.util
@@ -25,6 +26,12 @@ WORK_LOG = (
     / "plans"
     / "2026-07-14-codex-readonly-diagnostics-work-log.md"
 )
+WORK_LOG_BEGIN = b"<!-- BEGIN CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
+WORK_LOG_END = b"<!-- END CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
+WORK_LOG_RECORD_KEYS = (
+    "status", "source_repo", "source_commit", "source_path", "source_sha256",
+    "deployed_at", "snapshot_path", "snapshot_mode", "contract_schema_version",
+)
 
 
 def load_module():
@@ -35,6 +42,113 @@ def load_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def validate_work_log_registry(raw: bytes) -> list[dict[str, object]]:
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise AssertionError("duplicate registry key")
+            value[key] = item
+        return value
+
+    def reject_constant(_value):
+        raise AssertionError("non-finite registry number")
+
+    if not isinstance(raw, bytes) or not raw or len(raw) > 1_048_576:
+        raise AssertionError("registry byte boundary")
+    if raw.count(WORK_LOG_BEGIN) != 1 or raw.count(WORK_LOG_END) != 1:
+        raise AssertionError("registry marker cardinality")
+    begin = raw.index(WORK_LOG_BEGIN) + len(WORK_LOG_BEGIN)
+    end = raw.index(WORK_LOG_END)
+    if end <= begin:
+        raise AssertionError("registry marker order")
+    payload = raw[begin:end].strip()
+    if not payload or b"\n" in payload or b"\r" in payload:
+        raise AssertionError("registry must be one line")
+    try:
+        value = json.loads(
+            payload.decode("ascii", errors="strict"),
+            object_pairs_hook=unique_object,
+            parse_constant=reject_constant,
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise AssertionError("invalid registry JSON") from exc
+    if not isinstance(value, dict) or tuple(value) != (
+        "schema_version", "deployments"
+    ):
+        raise AssertionError("registry top-level schema")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise AssertionError("registry schema version")
+    records = value["deployments"]
+    if not isinstance(records, list):
+        raise AssertionError("registry deployments type")
+    validated: list[dict[str, object]] = []
+    for record in records:
+        if not isinstance(record, dict) or tuple(record) != WORK_LOG_RECORD_KEYS:
+            raise AssertionError("registry record keys")
+        if record["status"] not in ("active", "superseded"):
+            raise AssertionError("registry status")
+        if record["source_repo"] != (
+            "https://github.com/sjinnouchi-ux/multi-agent-shogun"
+        ):
+            raise AssertionError("registry source repo")
+        if not isinstance(record["source_commit"], str) or re.fullmatch(
+            r"[0-9a-f]{40}", record["source_commit"]
+        ) is None:
+            raise AssertionError("registry source commit")
+        if record["source_path"] != "scripts/codex_diagnostics.py":
+            raise AssertionError("registry source path")
+        if not isinstance(record["source_sha256"], str) or re.fullmatch(
+            r"[0-9a-f]{64}", record["source_sha256"]
+        ) is None:
+            raise AssertionError("registry source SHA-256")
+        timestamp = record["deployed_at"]
+        if not isinstance(timestamp, str) or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", timestamp
+        ) is None:
+            raise AssertionError("registry deployment timestamp")
+        try:
+            dt.datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as exc:
+            raise AssertionError("registry deployment timestamp") from exc
+        if record["snapshot_path"] != (
+            "/home/jinnouchi/.local/libexec/shogun-codex-diagnostics"
+        ):
+            raise AssertionError("registry snapshot path")
+        if record["snapshot_mode"] != "0555":
+            raise AssertionError("registry snapshot mode")
+        if type(record["contract_schema_version"]) is not int or (
+            record["contract_schema_version"] != 1
+        ):
+            raise AssertionError("registry contract schema")
+        validated.append(record)
+    if sum(record["status"] == "active" for record in validated) > 1:
+        raise AssertionError("multiple active deployment records")
+    return validated
+
+
+def work_log_record(status: str = "active") -> dict[str, object]:
+    return {
+        "status": status,
+        "source_repo": "https://github.com/sjinnouchi-ux/multi-agent-shogun",
+        "source_commit": "1" * 40,
+        "source_path": "scripts/codex_diagnostics.py",
+        "source_sha256": "a" * 64,
+        "deployed_at": "2026-07-14T00:00:00Z",
+        "snapshot_path": "/home/jinnouchi/.local/libexec/shogun-codex-diagnostics",
+        "snapshot_mode": "0555",
+        "contract_schema_version": 1,
+    }
+
+
+def work_log_registry(records: list[dict[str, object]], schema=1) -> bytes:
+    payload = json.dumps(
+        {"schema_version": schema, "deployments": records},
+        separators=(",", ":"),
+    ).encode("ascii")
+    return WORK_LOG_BEGIN + b"\n" + payload + b"\n" + WORK_LOG_END
 
 
 def bounded_issue_fixture(module, *, severity: str, count: int):
@@ -214,20 +328,49 @@ class CliAndSourceHashTests(unittest.TestCase):
                 m.normalize_issues(errors, warnings)
 
     def test_deployment_work_log_has_one_marker_pair_and_at_most_one_active(self) -> None:
-        text = WORK_LOG.read_text(encoding="utf-8")
-        begin = "<!-- BEGIN CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
-        end = "<!-- END CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
-        self.assertEqual(text.count(begin), 1)
-        self.assertEqual(text.count(end), 1)
-        payload = text.split(begin, 1)[1].split(end, 1)[0].strip()
-        self.assertNotIn("\n", payload)
-        value = json.loads(payload)
-        self.assertEqual(set(value), {"schema_version", "deployments"})
-        self.assertEqual(value["schema_version"], 1)
-        self.assertIsInstance(value["deployments"], list)
+        records = validate_work_log_registry(WORK_LOG.read_bytes())
         self.assertLessEqual(
-            sum(item.get("status") == "active" for item in value["deployments"]), 1
+            sum(item["status"] == "active" for item in records), 1
         )
+
+    def test_work_log_validator_exercises_nonempty_hostile_records(self) -> None:
+        self.assertEqual(
+            validate_work_log_registry(work_log_registry([work_log_record()])),
+            [work_log_record()],
+        )
+        self.assertEqual(validate_work_log_registry(work_log_registry([])), [])
+
+        reordered = work_log_record()
+        reordered = {
+            key: reordered[key]
+            for key in (
+                WORK_LOG_RECORD_KEYS[1],
+                WORK_LOG_RECORD_KEYS[0],
+                *WORK_LOG_RECORD_KEYS[2:],
+            )
+        }
+        impossible_date = work_log_record()
+        impossible_date["deployed_at"] = "2026-02-30T12:00:00Z"
+        contract_bool = work_log_record()
+        contract_bool["contract_schema_version"] = True
+        wrong_mode = work_log_record()
+        wrong_mode["snapshot_mode"] = "0755"
+        missing_key = work_log_record()
+        missing_key.pop("snapshot_mode")
+        cases = {
+            "schema_bool": work_log_registry([work_log_record()], schema=True),
+            "record_key_order": work_log_registry([reordered]),
+            "record_missing_key": work_log_registry([missing_key]),
+            "contract_schema_bool": work_log_registry([contract_bool]),
+            "impossible_utc_second": work_log_registry([impossible_date]),
+            "fixed_snapshot_mode": work_log_registry([wrong_mode]),
+            "active_multiple": work_log_registry(
+                [work_log_record(), work_log_record()]
+            ),
+        }
+        for name, raw in cases.items():
+            with self.subTest(name=name), self.assertRaises(AssertionError):
+                validate_work_log_registry(raw)
 
 
 class ScriptedRunner:

@@ -30,7 +30,7 @@
 - raw JSON、tmux pane、生queue、生report、生logをwork log、PR、chatへ保存・表示しない。記録するのはexit、count、enum、hash一致、commitだけである。
 
 - Rollback is never automatic: revoke the persistent command permission first, require an explicit user-selected superseded record, and keep policy disabled after restoration.
-- `tests/contract/codex_diagnostics_consumer.py` is test-only; `scripts/rollback_codex_diagnostics_snapshot.py` is offline maintenance-only. Neither is imported into, installed with, or persistently approved as part of the one-file diagnostic production snapshot.
+- `tests/contract/codex_diagnostics_consumer.py` is test/deployment-verification-only; `scripts/rollback_codex_diagnostics_snapshot.py` is offline maintenance-only. Neither is imported into, installed with, or persistently approved as part of the one-file diagnostic production snapshot.
 
 ## File Structure
 
@@ -116,7 +116,7 @@ Expected: exit 1 and no output, meaning all nine exact paths are trackable.
 
 - [ ] **Step 2: Write RED contract tests**
 
-Create `tests/unit/test_codex_diagnostics.py` with this loader, test helper, and first test class:
+Create `tests/unit/test_codex_diagnostics.py` with this loader, test helper, and first test class. The local `validate_work_log_registry()` helper must validate marker order/cardinality, duplicate JSON keys, exact top-level and nine-record key order, strict integer/string types, lowercase commit/hash formats, all fixed values, real UTC seconds, and at most one active record. Exercise it with non-empty valid and hostile synthetic records so the initial empty registry cannot make the record loop vacuous:
 
 ```python
 from __future__ import annotations
@@ -265,20 +265,16 @@ class CliAndSourceHashTests(unittest.TestCase):
         self.assertIn("result_truncated", {item["code"] for item in warning_errors})
 
     def test_deployment_work_log_has_one_marker_pair_and_at_most_one_active(self) -> None:
-        text = WORK_LOG.read_text(encoding="utf-8")
-        begin = "<!-- BEGIN CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
-        end = "<!-- END CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
-        self.assertEqual(text.count(begin), 1)
-        self.assertEqual(text.count(end), 1)
-        payload = text.split(begin, 1)[1].split(end, 1)[0].strip()
-        self.assertNotIn("\n", payload)
-        value = json.loads(payload)
-        self.assertEqual(set(value), {"schema_version", "deployments"})
-        self.assertEqual(value["schema_version"], 1)
-        self.assertIsInstance(value["deployments"], list)
+        records = validate_work_log_registry(WORK_LOG.read_bytes())
         self.assertLessEqual(
-            sum(item.get("status") == "active" for item in value["deployments"]), 1
+            sum(item["status"] == "active" for item in records), 1
         )
+
+    def test_work_log_validator_exercises_nonempty_hostile_records(self) -> None:
+        # Use fixed nine-field records. Valid empty/one-active inputs pass;
+        # reordered/missing/extra keys, bool versions, impossible UTC seconds,
+        # wrong fixed values, uppercase hashes, and two active records fail.
+        ...
 
 
 if __name__ == "__main__":
@@ -4549,47 +4545,20 @@ Before staging, parse the marked line and run the fixed registry validator in St
 - [ ] **Step 4: Validate the fixed deployment registry**
 
 ```bash
-python3 - <<'PY'
-import json
-import pathlib
-import re
-
-path = pathlib.Path("docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md")
-text = path.read_text(encoding="utf-8")
-begin = "<!-- BEGIN CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
-end = "<!-- END CODEX_DIAGNOSTICS_DEPLOYMENTS_V1 -->"
-assert text.count(begin) == text.count(end) == 1
-raw = text.split(begin, 1)[1].split(end, 1)[0].strip()
-assert "\n" not in raw
-value = json.loads(raw)
-assert set(value) == {"schema_version", "deployments"}
-assert value["schema_version"] == 1
-records = value["deployments"]
-assert isinstance(records, list) and records
-assert sum(item["status"] == "active" for item in records) == 1
-keys = [
-    "status", "source_repo", "source_commit", "source_path", "source_sha256",
-    "deployed_at", "snapshot_path", "snapshot_mode", "contract_schema_version",
-]
-for item in records:
-    assert list(item) == keys
-    assert item["status"] in ("active", "superseded")
-    assert item["source_repo"] == "https://github.com/sjinnouchi-ux/multi-agent-shogun"
-    assert re.fullmatch(r"[0-9a-f]{40}", item["source_commit"])
-    assert item["source_path"] == "scripts/codex_diagnostics.py"
-    assert re.fullmatch(r"[0-9a-f]{64}", item["source_sha256"])
-    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", item["deployed_at"])
-    assert item["snapshot_path"] == "/home/jinnouchi/.local/libexec/shogun-codex-diagnostics"
-    assert item["snapshot_mode"] == "0555"
-    assert item["contract_schema_version"] == 1
-print("deployment_registry=pass")
-PY
-python3 -m unittest -v tests.unit.test_codex_diagnostics
+python3 -I tests/contract/codex_diagnostics_consumer.py \
+  validate-active-registry \
+  docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
+python3 -W error -m unittest -v \
+  tests.unit.test_codex_diagnostics \
+  tests.contract.test_codex_diagnostics_consumer
 git diff --check
 git diff --name-only origin/main...HEAD
 ```
 
-Expected: registry pass, unittest pass, diff check pass, and only the work-log path changed.
+Expected: fixed `deployment_registry=pass`, all strict registry/work-log hostile
+fixtures and unit tests pass without warnings/skips, diff check passes, and only
+the work-log path changed. The shared validator rejects duplicate keys, wrong key
+order/types/fixed values, non-real UTC seconds, and active zero/multiple.
 
 - [ ] **Step 5: Commit, push, review, and stop for work-log merge approval**
 
@@ -4619,7 +4588,12 @@ gh pr merge \
   --merge --delete-branch=false
 ```
 
-Fetch the raw `main` work-log URL through the GitHub/web boundary, repeat the Step 4 validator against those raw bytes, and run the fixed installed command into a transient file. Expected: exactly one active record and `tool.source_sha256` equals its `source_sha256`. If any fetch/schema/hash check fails, classify `diagnostic_provenance_untrusted`, remove transient output, and stop without fallback.
+Fetch the raw `main` work-log URL through the GitHub/web boundary into a bounded
+transient file, repeat the Step 4 `validate-active-registry` command against those
+exact raw bytes, and run the fixed installed command into a separate transient
+file. Expected: exactly one active record and `tool.source_sha256` equals its
+`source_sha256`. If any fetch/schema/hash check fails, classify
+`diagnostic_provenance_untrusted`, remove transient output, and stop without fallback.
 
 ### Task 11: Enable the Workspace Policy and Preserve Host-Specific Rules
 

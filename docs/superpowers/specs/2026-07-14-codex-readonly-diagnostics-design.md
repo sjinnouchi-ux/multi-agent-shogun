@@ -70,7 +70,7 @@ Shogun repoへself-containedなsourceを置く。
 - `tests/integration/test_codex_diagnostics_tmux.py`: WSL deployment hostのunique socket integration
 - `tests/integration/test_codex_diagnostics_tmux.bats`: `test-no-skip`専用wrapper
 - `tests/contract/__init__.py`: consumer contract package marker
-- `tests/contract/codex_diagnostics_consumer.py`: Codex consumerの完全schema・fail-closed参照実装（test専用）
+- `tests/contract/codex_diagnostics_consumer.py`: Codex consumerの完全schema・fail-closed参照実装（test/台帳検証専用）
 - `tests/contract/test_codex_diagnostics_consumer.py`: hostile registry/output、exit、deadline、no-fallback契約test
 - `scripts/rollback_codex_diagnostics_snapshot.py`: 明示rollback時だけ使うoffline atomic snapshot replacement helper
 - `tests/unit/test_rollback_codex_diagnostics_snapshot.py`: pre/post-commit stateとTOCTOUのrollback test
@@ -98,7 +98,7 @@ Workspace main反映後、実PCの`C:\Users\jinnouchi\.codex\AGENTS.md`と`CODEX
 
 plugin、dynamic registration、base class、`sys.path`操作、repo内module importは作らない。
 
-`tests/contract/codex_diagnostics_consumer.py`はCodexが実行結果を信頼するための独立したtest参照実装であり、診断snapshotへimport・配置しない。`scripts/rollback_codex_diagnostics_snapshot.py`は通常診断、policy例外、恒常許可prefixへ含めず、Shogun停止・許可撤回・policy無効化・明示承認後のmaintenanceだけで実行する。この2fileを追加しても診断production一file制約は変えない。
+`tests/contract/codex_diagnostics_consumer.py`はCodexが実行結果を信頼するための独立したtest参照実装であり、同じstrict registry validatorだけをTask 10/12の台帳検証にも使用する。診断snapshotへimport・配置せず、恒常許可もしない。`scripts/rollback_codex_diagnostics_snapshot.py`は通常診断、policy例外、恒常許可prefixへ含めず、Shogun停止・許可撤回・policy無効化・明示承認後のmaintenanceだけで実行する。この2fileを追加しても診断production一file制約は変えない。
 
 既存の`skills/shogun-agent-status/scripts/agent_status.sh`が採用している、引数なし、固定tmux format、未知値の破棄、repo helper非依存という安全原則を踏襲する。ただし同scriptを呼び出したり変更したりせず、両者の固定agent ID enumだけが一致する契約testを追加してdriftを検出する。
 
@@ -776,8 +776,8 @@ rollbackはこの通常導入順序の自動分岐ではない。必要時は、
 - 既存watcher、queue writer、launcher、agent status、WebUIの実装変更は0件。
 - runtime schema変更は0件。
 - production入口は固定command一つ、subcommand一つ、JSON schema一つ。
-- 常時許可される診断sourceはself-contained一fileで、既存runtime module、test-only consumer、rollback helperをimportしない。
-- test-only consumerとoffline rollback helperは診断snapshot・通常execution path・恒常許可prefixへ含めない。
+- 常時許可される診断sourceはself-contained一fileで、既存runtime module、test/台帳検証専用consumer、rollback helperをimportしない。
+- test/台帳検証専用consumerとoffline rollback helperは診断snapshot・通常execution path・恒常許可prefixへ含めない。
 - collector間でraw textを渡さず、検証済み型または固定codeだけを渡す。
 - collectorから別collectorを呼ばない。
 - output field追加はschema test、漏洩test、docs更新を同じ変更に含める。

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import tempfile
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import tests.contract.codex_diagnostics_consumer as consumer
 
@@ -324,6 +329,146 @@ class ConsumerContractTests(unittest.TestCase):
                 self.assertEqual(decision.code, "diagnostic_provenance_untrusted")
                 self.assertEqual(decision.action, "stop_without_fallback")
                 self.assertFalse(decision.fallback_allowed)
+
+    def test_registry_validator_enforces_exact_record_contract(self) -> None:
+        valid_record = record()
+        self.assertEqual(
+            consumer.validate_registry(
+                registry([valid_record]), require_active=True
+            ),
+            [valid_record],
+        )
+        self.assertEqual(
+            consumer.validate_registry(registry([]), require_active=False),
+            [],
+        )
+        self.assertEqual(
+            consumer.validate_registry(
+                registry([record("superseded")]), require_active=False
+            )[0]["status"],
+            "superseded",
+        )
+
+        reordered = record()
+        reordered = {
+            key: reordered[key]
+            for key in (
+                consumer.RECORD_KEYS[1],
+                consumer.RECORD_KEYS[0],
+                *consumer.RECORD_KEYS[2:],
+            )
+        }
+        missing_key = record()
+        missing_key.pop("snapshot_mode")
+        extra_key = record()
+        extra_key["unexpected"] = False
+        impossible_date = record()
+        impossible_date["deployed_at"] = "2026-02-30T12:00:00Z"
+        fraction = record()
+        fraction["deployed_at"] = "2026-07-14T00:00:00.0Z"
+        offset = record()
+        offset["deployed_at"] = "2026-07-14T00:00:00+00:00"
+        schema_bool = registry([record()]).replace(
+            b'"schema_version":1', b'"schema_version":true', 1
+        )
+        contract_bool = registry([record()]).replace(
+            b'"contract_schema_version":1',
+            b'"contract_schema_version":true',
+            1,
+        )
+        duplicate_key = registry([record()]).replace(
+            b'{"schema_version":1',
+            b'{"schema_version":1,"schema_version":1',
+            1,
+        )
+        top_level_reordered = consumer.BEGIN + b"\n" + json.dumps(
+            {"deployments": [record()], "schema_version": 1},
+            separators=(",", ":"),
+        ).encode("ascii") + b"\n" + consumer.END
+        deployments_not_list = consumer.BEGIN + b"\n" + json.dumps(
+            {"schema_version": 1, "deployments": {}},
+            separators=(",", ":"),
+        ).encode("ascii") + b"\n" + consumer.END
+
+        mutations = {
+            "record_key_order": registry([reordered]),
+            "record_missing_key": registry([missing_key]),
+            "record_extra_key": registry([extra_key]),
+            "impossible_utc_second": registry([impossible_date]),
+            "fractional_second": registry([fraction]),
+            "utc_offset": registry([offset]),
+            "schema_bool": schema_bool,
+            "contract_schema_bool": contract_bool,
+            "duplicate_key": duplicate_key,
+            "top_level_key_order": top_level_reordered,
+            "deployments_not_list": deployments_not_list,
+        }
+        fixed_fields = {
+            "status": "pending",
+            "source_repo": "https://example.invalid/repo",
+            "source_commit": "A" * 40,
+            "source_path": "scripts/other.py",
+            "source_sha256": "A" * 64,
+            "snapshot_path": "/tmp/snapshot",
+            "snapshot_mode": "0755",
+        }
+        for field, value in fixed_fields.items():
+            changed = record()
+            changed[field] = value
+            mutations[f"fixed_{field}"] = registry([changed])
+
+        for name, raw in mutations.items():
+            with self.subTest(name=name), self.assertRaises(consumer.ContractRejected):
+                consumer.validate_registry(raw, require_active=True)
+
+        for require_active, records in (
+            (True, []),
+            (True, [record(), record()]),
+            (False, [record(), record()]),
+        ):
+            with self.subTest(
+                require_active=require_active, count=len(records)
+            ), self.assertRaises(consumer.ContractRejected):
+                consumer.validate_registry(
+                    registry(records), require_active=require_active
+                )
+
+    def test_registry_validator_cli_is_fixed_and_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "work-log.md"
+            path.write_bytes(registry([record()]))
+            with mock.patch("builtins.print") as output:
+                self.assertEqual(
+                    consumer.registry_cli(
+                        ("validate-active-registry", str(path))
+                    ),
+                    0,
+                )
+            output.assert_called_once_with("deployment_registry=pass")
+
+            path.write_bytes(registry([record()]))
+            completed = subprocess.run(
+                (
+                    sys.executable,
+                    "-I",
+                    str(Path(consumer.__file__).resolve()),
+                    "validate-active-registry",
+                    str(path),
+                ),
+                check=False,
+                capture_output=True,
+                timeout=5,
+            )
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, b"deployment_registry=pass\n")
+            self.assertEqual(completed.stderr, b"")
+
+            path.write_bytes(registry([]))
+            self.assertEqual(
+                consumer.registry_cli(("validate-active-registry", str(path))),
+                1,
+            )
+            self.assertEqual(consumer.registry_cli(("other", str(path))), 2)
 
     def test_every_process_failure_stops_without_fallback(self) -> None:
         def missing_session_with_nonzero_counts(value):
