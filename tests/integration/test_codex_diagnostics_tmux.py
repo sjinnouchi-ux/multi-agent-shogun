@@ -108,7 +108,10 @@ class UniqueTmuxSocketTests(unittest.TestCase):
         self.assertEqual(value.observations["ashigaru1"].cli, "codex")
         self.assertNotIn("harmless-pane-sentinel", repr(value))
 
-        hostile_agent = "ashigaru2|codex\nmultiagent|0|ashigaru3"
+        hostile_agent_token = "hostile-agent-secret"
+        hostile_agent = (
+            f"ashigaru2|{hostile_agent_token}\nmultiagent|0|ashigaru3"
+        )
         self.tmux(
             "set-option", "-p", "-t", "multiagent:0.0",
             "@agent_id", hostile_agent,
@@ -120,9 +123,12 @@ class UniqueTmuxSocketTests(unittest.TestCase):
         self.assertEqual(hostile_agent_value.sessions[1]["unknown_agent_count"], 1)
         self.assertFalse(hostile_agent_value.observations["ashigaru2"].observed)
         self.assertFalse(hostile_agent_value.observations["ashigaru3"].observed)
-        self.assertNotIn(hostile_agent, repr(hostile_agent_value))
+        self.assertNotIn(hostile_agent_token, repr(hostile_agent_value))
 
-        hostile_cli = "codex|hostile-cli\nmultiagent|0|ashigaru2"
+        hostile_cli_token = "hostile-cli-secret"
+        hostile_cli = (
+            f"codex|{hostile_cli_token}\nmultiagent|0|ashigaru2"
+        )
         self.tmux(
             "set-option", "-p", "-t", "multiagent:0.0",
             "@agent_id", "ashigaru1",
@@ -134,9 +140,12 @@ class UniqueTmuxSocketTests(unittest.TestCase):
         hostile_cli_value = self.module.collect_tmux(
             SocketRunner(self.module, self.socket_name)
         )
+        self.assertEqual(hostile_cli_value.sessions[1]["state"], "present")
+        self.assertEqual(hostile_cli_value.sessions[1]["pane_count"], 1)
+        self.assertTrue(hostile_cli_value.observations["ashigaru1"].observed)
         self.assertEqual(hostile_cli_value.observations["ashigaru1"].cli, "unknown")
         self.assertFalse(hostile_cli_value.observations["ashigaru2"].observed)
-        self.assertNotIn(hostile_cli, repr(hostile_cli_value))
+        self.assertNotIn(hostile_cli_token, repr(hostile_cli_value))
 
 
 if __name__ == "__main__":
