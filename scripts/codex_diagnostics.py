@@ -62,7 +62,8 @@ class ArgumentRejected(Exception):
 
 
 class BoundaryRejected(Exception):
-    pass
+    def __init__(self, code: str = "boundary_rejected") -> None:
+        self.code = code if code in ERROR_CODES else "boundary_rejected"
 
 
 class InternalFailure(Exception):
@@ -222,8 +223,8 @@ def run_cli(argv: Sequence[str], collector) -> tuple[int, dict[str, object]]:
     try:
         source_hash = calculate_source_sha256()
         return 0, collector(source_hash)
-    except BoundaryRejected:
-        return 2, build_failure_document("boundary_rejected")
+    except BoundaryRejected as exc:
+        return 2, build_failure_document(exc.code)
     except BaseException:
         return 3, build_failure_document("internal_error")
 
@@ -978,4 +979,140 @@ def collect_processes(
         agent_watchers,
         tuple(errors),
         (),
+    )
+
+
+GIT_PREFIX = (
+    "/usr/bin/git",
+    "-c", "core.fsmonitor=false",
+    "-c", "color.ui=false",
+    "-c", "core.pager=cat",
+)
+SAFE_BRANCH = re.compile(rb"^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$")
+SAFE_SHA = re.compile(rb"^[0-9a-f]{40}$")
+CANONICAL_REMOTE = re.compile(
+    rb"^(?:https://github\.com/sjinnouchi-ux/multi-agent-shogun(?:\.git)?|"
+    rb"git@github\.com:sjinnouchi-ux/multi-agent-shogun(?:\.git)?)$"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryCollection:
+    value: dict[str, object]
+    boundary_accepted: bool
+    available: bool
+    errors: tuple[Issue, ...]
+    warnings: tuple[Issue, ...]
+
+
+def git_argv(*parts: str) -> tuple[str, ...]:
+    return GIT_PREFIX + tuple(parts)
+
+
+def _single_line(raw: bytes) -> bytes | None:
+    if b"\x00" in raw or raw.count(b"\n") > 1:
+        return None
+    return raw.rstrip(b"\n")
+
+
+def classify_branch(raw: bytes) -> str:
+    value = _single_line(raw)
+    if value == b"":
+        return "detached"
+    if value is None or not SAFE_BRANCH.fullmatch(value):
+        return "invalid"
+    if b".." in value or value.endswith(b".lock") or value.startswith(b"/") or value.endswith(b"/"):
+        return "invalid"
+    if value == b"main":
+        return "main"
+    if value.startswith(b"shogun/"):
+        return "shogun_namespace"
+    if value.startswith(b"codex/"):
+        return "codex_namespace"
+    return "other"
+
+
+def is_canonical_remote(raw: bytes) -> bool:
+    for line in raw.splitlines():
+        fields = line.split(b"\t", 1)
+        if len(fields) != 2:
+            continue
+        url = fields[1].split(b" ", 1)[0]
+        if CANONICAL_REMOTE.fullmatch(url):
+            return True
+    return False
+
+
+def _nul_count(result: CommandResult) -> tuple[int | None, Issue | None]:
+    if result.status != "ok":
+        return None, _command_issue(result, "repository")
+    if not result.stdout:
+        return 0, None
+    if not result.stdout.endswith(b"\x00"):
+        return None, Issue("command_failed", "repository", None)
+    count = result.stdout.count(b"\x00")
+    if count > 10_000:
+        return None, Issue("result_truncated", "repository", None)
+    return count, None
+
+
+def collect_repository(run) -> RepositoryCollection:
+    top = run(git_argv("rev-parse", "--show-toplevel"))
+    if top.status != "ok":
+        raise BoundaryRejected("boundary_rejected")
+    top_line = _single_line(top.stdout)
+    if top_line is None:
+        raise BoundaryRejected("boundary_rejected")
+    try:
+        if not os.path.samefile(os.fsdecode(top_line), "."):
+            raise BoundaryRejected("boundary_rejected")
+    except OSError:
+        raise BoundaryRejected("boundary_rejected") from None
+
+    remote = run(git_argv("remote", "-v"))
+    if remote.status != "ok":
+        raise BoundaryRejected("boundary_rejected")
+    if not is_canonical_remote(remote.stdout):
+        raise BoundaryRejected("canonical_remote_missing")
+
+    errors: list[Issue] = []
+    branch_result = run(git_argv("symbolic-ref", "--quiet", "--short", "HEAD"))
+    if branch_result.status == "ok":
+        branch_class = classify_branch(branch_result.stdout)
+    elif branch_result.status == "nonzero" and branch_result.returncode == 1:
+        branch_class = "detached"
+    else:
+        branch_class = "invalid"
+        errors.append(_command_issue(branch_result, "repository"))
+
+    head_result = run(git_argv("rev-parse", "--verify", "HEAD"))
+    head_line = _single_line(head_result.stdout) if head_result.status == "ok" else None
+    head = head_line.decode("ascii") if head_line and SAFE_SHA.fullmatch(head_line) else None
+    if head is None:
+        errors.append(_command_issue(head_result, "repository"))
+
+    tracked, tracked_issue = _nul_count(
+        run(git_argv("status", "--porcelain=v1", "-z", "--untracked-files=no"))
+    )
+    untracked, untracked_issue = _nul_count(
+        run(git_argv("ls-files", "--others", "--exclude-standard", "-z"))
+    )
+    for issue in (tracked_issue, untracked_issue):
+        if issue is not None:
+            errors.append(issue)
+    dirty = None if tracked is None or untracked is None else bool(tracked or untracked)
+    available = not errors and branch_class != "invalid" and head is not None
+    return RepositoryCollection(
+        value={
+            "branch_class": branch_class,
+            "head": head,
+            "dirty": dirty,
+            "tracked_changes": tracked,
+            "untracked_changes": untracked,
+            "canonical_remote_present": True,
+        },
+        boundary_accepted=True,
+        available=available,
+        errors=tuple(errors),
+        warnings=(),
     )

@@ -693,5 +693,130 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
             self.assertEqual(argv[:3], ("/usr/bin/pgrep", "-f", "--"))
 
 
+class RepositoryCollectorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_module()
+
+    def test_branch_classifier_covers_valid_and_hostile_values(self) -> None:
+        cases = {
+            b"main\n": "main",
+            b"shogun/cmd-1\n": "shogun_namespace",
+            b"codex/diagnostics\n": "codex_namespace",
+            b"feature/safe-1\n": "other",
+            b"": "detached",
+            b"bad branch\n": "invalid",
+            b"bad..branch\n": "invalid",
+            b"/leading\n": "invalid",
+            b"trailing/\n": "invalid",
+            b"refs.lock\n": "invalid",
+            "顧客名\n".encode(): "invalid",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(self.module.classify_branch(raw), expected)
+
+    def test_canonical_remote_accepts_only_fixed_https_or_ssh_repo(self) -> None:
+        for raw in (
+            b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
+            b"upstream\tgit@github.com:sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
+        ):
+            self.assertTrue(self.module.is_canonical_remote(raw))
+        self.assertFalse(
+            self.module.is_canonical_remote(
+                b"origin\thttps://github.com/attacker/multi-agent-shogun.git (fetch)\n"
+            )
+        )
+
+    def test_repository_returns_only_class_count_hash_and_boolean(self) -> None:
+        m = self.module
+        results = {
+            m.git_argv("rev-parse", "--show-toplevel"): m.CommandResult(
+                "ok", 0, (os.getcwd() + "\n").encode()
+            ),
+            m.git_argv("remote", "-v"): m.CommandResult(
+                "ok", 0,
+                b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
+            ),
+            m.git_argv("symbolic-ref", "--quiet", "--short", "HEAD"): m.CommandResult(
+                "ok", 0, b"codex/secret-customer-name\n"
+            ),
+            m.git_argv("rev-parse", "--verify", "HEAD"): m.CommandResult(
+                "ok", 0, b"0" * 40 + b"\n"
+            ),
+            m.git_argv("status", "--porcelain=v1", "-z", "--untracked-files=no"): m.CommandResult(
+                "ok", 0, b" M token-looking-name.txt\0"
+            ),
+            m.git_argv("ls-files", "--others", "--exclude-standard", "-z"): m.CommandResult(
+                "ok", 0, b"oauth-code.json\0"
+            ),
+        }
+        collection = m.collect_repository(ScriptedRunner(results))
+        self.assertTrue(collection.boundary_accepted)
+        self.assertTrue(collection.available)
+        self.assertEqual(
+            collection.value,
+            {
+                "branch_class": "codex_namespace",
+                "head": "0" * 40,
+                "dirty": True,
+                "tracked_changes": 1,
+                "untracked_changes": 1,
+                "canonical_remote_present": True,
+            },
+        )
+        serialized = json.dumps(collection.value)
+        self.assertNotIn("secret-customer-name", serialized)
+        self.assertNotIn("oauth-code", serialized)
+        self.assertNotIn("github.com", serialized)
+
+    def test_missing_or_unreadable_canonical_boundary_raises_before_runtime(self) -> None:
+        m = self.module
+        base = {
+            m.git_argv("rev-parse", "--show-toplevel"): m.CommandResult(
+                "ok", 0, (os.getcwd() + "\n").encode()
+            )
+        }
+        for remote_result, code in (
+            (m.CommandResult("ok", 0, b"origin\thttps://example.invalid/repo (fetch)\n"),
+             "canonical_remote_missing"),
+            (m.CommandResult("timeout", None, b""), "boundary_rejected"),
+        ):
+            with self.subTest(code=code):
+                results = dict(base)
+                results[m.git_argv("remote", "-v")] = remote_result
+                with self.assertRaises(m.BoundaryRejected) as caught:
+                    m.collect_repository(ScriptedRunner(results))
+                self.assertEqual(caught.exception.code, code)
+
+    def test_post_boundary_command_limit_returns_null_not_partial_count(self) -> None:
+        m = self.module
+        results = {
+            m.git_argv("rev-parse", "--show-toplevel"): m.CommandResult(
+                "ok", 0, (os.getcwd() + "\n").encode()
+            ),
+            m.git_argv("remote", "-v"): m.CommandResult(
+                "ok", 0,
+                b"origin\tgit@github.com:sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
+            ),
+            m.git_argv("symbolic-ref", "--quiet", "--short", "HEAD"): m.CommandResult(
+                "ok", 0, b"main\n"
+            ),
+            m.git_argv("rev-parse", "--verify", "HEAD"): m.CommandResult(
+                "ok", 0, b"1" * 40 + b"\n"
+            ),
+            m.git_argv("status", "--porcelain=v1", "-z", "--untracked-files=no"): m.CommandResult(
+                "output_limited", None, b""
+            ),
+            m.git_argv("ls-files", "--others", "--exclude-standard", "-z"): m.CommandResult(
+                "ok", 0, b""
+            ),
+        }
+        collection = m.collect_repository(ScriptedRunner(results))
+        self.assertFalse(collection.available)
+        self.assertIsNone(collection.value["tracked_changes"])
+        self.assertIsNone(collection.value["dirty"])
+        self.assertIn("command_output_limited", {item.code for item in collection.errors})
+
+
 if __name__ == "__main__":
     unittest.main()
