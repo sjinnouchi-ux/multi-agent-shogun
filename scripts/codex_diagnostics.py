@@ -1034,23 +1034,71 @@ def classify_branch(raw: bytes) -> str:
 
 def is_canonical_remote(raw: bytes) -> bool:
     for line in raw.splitlines():
-        fields = line.split(b"\t", 1)
-        if len(fields) != 2:
+        fields = line.split(b"\t")
+        if len(fields) != 2 or not fields[0]:
             continue
-        url = fields[1].split(b" ", 1)[0]
-        if CANONICAL_REMOTE.fullmatch(url):
+        marker = b" (fetch)"
+        if not fields[1].endswith(marker):
+            continue
+        url = fields[1][:-len(marker)]
+        if url and CANONICAL_REMOTE.fullmatch(url):
             return True
     return False
 
 
-def _nul_count(result: CommandResult) -> tuple[int | None, Issue | None]:
+def _malformed_repository_result() -> tuple[None, Issue]:
+    return None, Issue("command_failed", "repository", None)
+
+
+def _porcelain_v1_z_count(
+    result: CommandResult,
+) -> tuple[int | None, Issue | None]:
     if result.status != "ok":
         return None, _command_issue(result, "repository")
     if not result.stdout:
         return 0, None
     if not result.stdout.endswith(b"\x00"):
-        return None, Issue("command_failed", "repository", None)
-    count = result.stdout.count(b"\x00")
+        return _malformed_repository_result()
+
+    fields = result.stdout.split(b"\x00")[:-1]
+    count = 0
+    index = 0
+    valid_status = b" MTADRCU"
+    while index < len(fields):
+        record = fields[index]
+        if (
+            len(record) < 4
+            or record[2:3] != b" "
+            or record[0] not in valid_status
+            or record[1] not in valid_status
+            or record[:2] == b"  "
+        ):
+            return _malformed_repository_result()
+        index += 1
+        if record[0:1] in (b"R", b"C") or record[1:2] in (b"R", b"C"):
+            if index >= len(fields) or not fields[index]:
+                return _malformed_repository_result()
+            index += 1
+        count += 1
+        if count > 10_000:
+            return None, Issue("result_truncated", "repository", None)
+    return count, None
+
+
+def _ls_files_z_count(
+    result: CommandResult,
+) -> tuple[int | None, Issue | None]:
+    if result.status != "ok":
+        return None, _command_issue(result, "repository")
+    if not result.stdout:
+        return 0, None
+    if not result.stdout.endswith(b"\x00"):
+        return _malformed_repository_result()
+
+    records = result.stdout.split(b"\x00")[:-1]
+    if not records or any(not record for record in records):
+        return _malformed_repository_result()
+    count = len(records)
     if count > 10_000:
         return None, Issue("result_truncated", "repository", None)
     return count, None
@@ -1091,10 +1139,10 @@ def collect_repository(run) -> RepositoryCollection:
     if head is None:
         errors.append(_command_issue(head_result, "repository"))
 
-    tracked, tracked_issue = _nul_count(
+    tracked, tracked_issue = _porcelain_v1_z_count(
         run(git_argv("status", "--porcelain=v1", "-z", "--untracked-files=no"))
     )
-    untracked, untracked_issue = _nul_count(
+    untracked, untracked_issue = _ls_files_z_count(
         run(git_argv("ls-files", "--others", "--exclude-standard", "-z"))
     )
     for issue in (tracked_issue, untracked_issue):

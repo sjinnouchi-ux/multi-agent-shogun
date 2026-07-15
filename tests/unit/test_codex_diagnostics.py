@@ -697,6 +697,34 @@ class RepositoryCollectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
 
+    def _collect_counts(
+        self, tracked_stdout: bytes, untracked_stdout: bytes
+    ):
+        m = self.module
+        results = {
+            m.git_argv("rev-parse", "--show-toplevel"): m.CommandResult(
+                "ok", 0, (os.getcwd() + "\n").encode()
+            ),
+            m.git_argv("remote", "-v"): m.CommandResult(
+                "ok",
+                0,
+                b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
+            ),
+            m.git_argv("symbolic-ref", "--quiet", "--short", "HEAD"): m.CommandResult(
+                "ok", 0, b"main\n"
+            ),
+            m.git_argv("rev-parse", "--verify", "HEAD"): m.CommandResult(
+                "ok", 0, b"2" * 40 + b"\n"
+            ),
+            m.git_argv("status", "--porcelain=v1", "-z", "--untracked-files=no"): m.CommandResult(
+                "ok", 0, tracked_stdout
+            ),
+            m.git_argv("ls-files", "--others", "--exclude-standard", "-z"): m.CommandResult(
+                "ok", 0, untracked_stdout
+            ),
+        }
+        return m.collect_repository(ScriptedRunner(results))
+
     def test_branch_classifier_covers_valid_and_hostile_values(self) -> None:
         cases = {
             b"main\n": "main",
@@ -726,6 +754,67 @@ class RepositoryCollectorTests(unittest.TestCase):
                 b"origin\thttps://github.com/attacker/multi-agent-shogun.git (fetch)\n"
             )
         )
+
+    def test_canonical_remote_requires_an_exact_fetch_line(self) -> None:
+        invalid = (
+            b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (push)\n",
+            b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git\n",
+            b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (FETCH)\n",
+            b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch) trailing\n",
+            b"origin\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch)\textra\n",
+            b"\thttps://github.com/sjinnouchi-ux/multi-agent-shogun.git (fetch)\n",
+        )
+        for raw in invalid:
+            with self.subTest(raw=raw):
+                self.assertFalse(self.module.is_canonical_remote(raw))
+
+    def test_porcelain_counts_rename_and_copy_continuations_once(self) -> None:
+        tracked = (
+            b"R  rename-secret-target\0rename-secret-source\0"
+            b" C copy-secret-target\0copy-secret-source\0"
+            b" M ordinary-secret-name\0"
+        )
+        collection = self._collect_counts(tracked, b"")
+        self.assertEqual(collection.value["tracked_changes"], 3)
+        self.assertTrue(collection.value["dirty"])
+        self.assertTrue(collection.available)
+        self.assertNotIn("secret", repr(collection))
+
+    def test_porcelain_rejects_empty_malformed_and_truncated_records(self) -> None:
+        malformed = (
+            b"\0",
+            b" M valid\0\0",
+            b"M missing-separator\0",
+            b"ZZ invalid-status\0",
+            b" M truncated",
+            b"R  rename-target\0",
+            b"R  rename-target\0\0",
+        )
+        for tracked in malformed:
+            with self.subTest(tracked=tracked):
+                collection = self._collect_counts(tracked, b"")
+                self.assertIsNone(collection.value["tracked_changes"])
+                self.assertIsNone(collection.value["dirty"])
+                self.assertFalse(collection.available)
+                self.assertIn(
+                    "command_failed", {item.code for item in collection.errors}
+                )
+
+    def test_ls_files_counts_only_nonempty_complete_path_records(self) -> None:
+        valid = self._collect_counts(b"", b"first-secret\0second-secret\0")
+        self.assertEqual(valid.value["untracked_changes"], 2)
+        self.assertTrue(valid.value["dirty"])
+        self.assertNotIn("secret", repr(valid))
+
+        for untracked in (b"\0", b"first\0\0second\0", b"truncated"):
+            with self.subTest(untracked=untracked):
+                collection = self._collect_counts(b"", untracked)
+                self.assertIsNone(collection.value["untracked_changes"])
+                self.assertIsNone(collection.value["dirty"])
+                self.assertFalse(collection.available)
+                self.assertIn(
+                    "command_failed", {item.code for item in collection.errors}
+                )
 
     def test_repository_returns_only_class_count_hash_and_boolean(self) -> None:
         m = self.module
