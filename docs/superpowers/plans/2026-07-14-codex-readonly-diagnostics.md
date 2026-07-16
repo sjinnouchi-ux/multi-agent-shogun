@@ -4024,7 +4024,8 @@ panes.
 
 Before using any diagnostic field, Codex must require exit 0 and independently
 validate ASCII-only bytes plus the complete nested schema, exact key order,
-session/agent cardinality, enums, and count limits.
+session/agent cardinality, enums, issue severity, count/state/applicability
+cross-field invariants, and a recomputed `overall` value.
 
 Do not persist a shorter `wsl.exe`, `bash -lc`, `python3`, or repo-script prefix.
 `cat`, `grep`, YAML bodies, log lines, pane capture, arbitrary paths, sessions,
@@ -5210,27 +5211,117 @@ user explicitly approves the next phase.
 
 - [ ] **Step 1: Re-gate and merge the exact approved PR**
 
-Derive the PR number from the branch, then verify it is approved and green:
+The two frozen Task 8 review verdicts plus the user's approval of that exact
+tuple are the authority boundary. Supply the three approved values from the
+Task 8 checkpoint as process-local environment variables; never derive the
+authority values from the mutable ignored tuple file. The file is only a
+same-value and package-integrity witness. Because the repository may have only
+one GitHub actor, do not require a self-impossible GitHub `reviewDecision`;
+instead bind every check and merge to the reviewed base/head. Derive the PR
+number from the branch, mark the already-approved draft ready, then verify it
+is green:
 
 ```powershell
 $Repo = 'sjinnouchi-ux/multi-agent-shogun'
-$Pr = gh pr list --repo $Repo --head codex/add-readonly-diagnostics-clean `
+$Branch = 'codex/add-readonly-diagnostics-clean'
+$ReviewedBase = $env:SHOGUN_DIAGNOSTICS_REVIEWED_BASE
+$ReviewedHead = $env:SHOGUN_DIAGNOSTICS_REVIEWED_HEAD
+$ReviewedPackageSha256 = $env:SHOGUN_DIAGNOSTICS_REVIEW_PACKAGE_SHA256
+if ($ReviewedBase -notmatch '^[0-9a-f]{40}$' -or
+    $ReviewedHead -notmatch '^[0-9a-f]{40}$' -or
+    $ReviewedPackageSha256 -notmatch '^[0-9a-f]{64}$') {
+  throw 'retained user-approved review tuple invalid'
+}
+$ReviewTuplePath = '.superpowers/sdd/task8-review-tuple'
+$ReviewTupleItem = Get-Item -LiteralPath $ReviewTuplePath -ErrorAction Stop
+if ($ReviewTupleItem.PSIsContainer -or
+    ($ReviewTupleItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw 'review tuple must not be a link'
+}
+$ReviewTuple = @(Get-Content -LiteralPath $ReviewTuplePath -Encoding ascii)
+if ($ReviewTuple.Count -ne 3) { throw 'review tuple cardinality invalid' }
+if ($ReviewTuple[0] -ne $ReviewedBase -or
+    $ReviewTuple[1] -ne $ReviewedHead -or
+    $ReviewTuple[2] -ne $ReviewedPackageSha256) {
+  throw 'local review tuple differs from retained user approval'
+}
+$ReviewPackagePath = ".superpowers/sdd/review-$($ReviewedBase.Substring(0, 12))..$($ReviewedHead.Substring(0, 12)).diff"
+$ReviewPackageItem = Get-Item -LiteralPath $ReviewPackagePath -ErrorAction Stop
+if ($ReviewPackageItem.PSIsContainer -or
+    ($ReviewPackageItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw 'review package must be a regular file, not a link'
+}
+$ObservedPackageSha256 = (
+  Get-FileHash -LiteralPath $ReviewPackagePath -Algorithm SHA256
+).Hash.ToLowerInvariant()
+if ($ObservedPackageSha256 -ne $ReviewedPackageSha256) {
+  throw 'review package differs from retained user approval'
+}
+$Pr = gh pr list --repo $Repo --head $Branch `
   --state open --json number --jq '.[0].number'
 if (-not $Pr) { throw 'approved diagnostics PR not found' }
-gh pr checks $Pr --repo $Repo
+$IsDraft = gh pr view $Pr --repo $Repo --json isDraft --jq .isDraft
+if ($IsDraft -eq 'true') {
+  gh pr ready $Pr --repo $Repo
+  if ($LASTEXITCODE -ne 0) { throw 'failed to mark approved PR ready' }
+}
+
+function Assert-PrBinding {
+  $Meta = gh pr view $Pr --repo $Repo `
+    --json isDraft,baseRefName,baseRefOid,headRefName,headRefOid |
+    ConvertFrom-Json
+  if ($Meta.isDraft -or $Meta.baseRefName -ne 'main' -or
+      $Meta.baseRefOid -ne $ReviewedBase -or
+      $Meta.headRefName -ne $Branch -or
+      $Meta.headRefOid -ne $ReviewedHead) {
+    throw 'PR reviewed-base/head binding failed'
+  }
+  $RemoteLines = @(git ls-remote --heads origin "refs/heads/$Branch")
+  if ($LASTEXITCODE -ne 0 -or $RemoteLines.Count -ne 1) {
+    throw 'reviewed remote ref cardinality invalid'
+  }
+  $RemoteFields = @($RemoteLines[0] -split '\s+')
+  if ($RemoteFields.Count -ne 2 -or
+      $RemoteFields[0] -ne $ReviewedHead -or
+      $RemoteFields[1] -ne "refs/heads/$Branch") {
+    throw 'reviewed remote head moved'
+  }
+  $MainLines = @(git ls-remote --heads origin refs/heads/main)
+  if ($LASTEXITCODE -ne 0 -or $MainLines.Count -ne 1) {
+    throw 'reviewed base ref cardinality invalid'
+  }
+  $MainFields = @($MainLines[0] -split '\s+')
+  if ($MainFields.Count -ne 2 -or
+      $MainFields[0] -ne $ReviewedBase -or
+      $MainFields[1] -ne 'refs/heads/main') {
+    throw 'reviewed base moved; restart Task 8'
+  }
+}
+
+Assert-PrBinding
+gh pr checks $Pr --repo $Repo --watch
 if ($LASTEXITCODE -ne 0) { throw 'PR checks are not green' }
-$Meta = gh pr view $Pr --repo $Repo `
-  --json isDraft,baseRefName,headRefName,reviewDecision | ConvertFrom-Json
-if ($Meta.isDraft -or $Meta.baseRefName -ne 'main' -or
-    $Meta.headRefName -ne 'codex/add-readonly-diagnostics-clean' -or
-    $Meta.reviewDecision -ne 'APPROVED') { throw 'PR approval gate failed' }
-gh pr merge $Pr --repo $Repo --merge --delete-branch=false
+Assert-PrBinding
+gh pr merge $Pr --repo $Repo --merge --delete-branch=false `
+  --match-head-commit $ReviewedHead
 if ($LASTEXITCODE -ne 0) { throw 'PR merge failed' }
-$Merge = gh pr view $Pr --repo $Repo --json state,mergeCommit | ConvertFrom-Json
-if ($Merge.state -ne 'MERGED' -or $Merge.mergeCommit.oid -notmatch '^[0-9a-f]{40}$') {
+$Merge = gh pr view $Pr --repo $Repo `
+  --json state,headRefOid,mergeCommit | ConvertFrom-Json
+if ($Merge.state -ne 'MERGED' -or $Merge.headRefOid -ne $ReviewedHead -or
+    $Merge.mergeCommit.oid -notmatch '^[0-9a-f]{40}$') {
   throw 'merged commit unavailable'
 }
 $DeploySha = $Merge.mergeCommit.oid
+git fetch origin --prune
+if ($LASTEXITCODE -ne 0) { throw 'post-merge fetch failed' }
+$FirstParent = git rev-parse "$DeploySha^1"
+if ($LASTEXITCODE -ne 0 -or $FirstParent -ne $ReviewedBase) {
+  throw 'merge base differs from reviewed base'
+}
+git diff --quiet $ReviewedHead $DeploySha
+if ($LASTEXITCODE -ne 0) { throw 'merged tree differs from reviewed head' }
+git merge-base --is-ancestor $DeploySha origin/main
+if ($LASTEXITCODE -ne 0) { throw 'merged commit is not in canonical main' }
 ```
 
 Expected: merge succeeds through the PR; `$DeploySha` is a 40-character lowercase commit. Never push directly to `main`.
@@ -5252,12 +5343,18 @@ Expected: user `jinnouchi`, UID is nonzero, cwd is `/home/jinnouchi/multi-agent-
 Run each command separately through real-user WSL approval:
 
 ```powershell
+if ($DeploySha -notmatch '^[0-9a-f]{40}$') {
+  throw 'exact Task 9 deployment commit is unavailable'
+}
 wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git diff --quiet
 wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git diff --cached --quiet
 wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git fetch origin --prune
 wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git switch main
 wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git merge --ff-only origin/main
-wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git rev-parse HEAD
+$LiveHead = wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /usr/bin/git rev-parse HEAD
+if ($LASTEXITCODE -ne 0 -or $LiveHead -ne $DeploySha) {
+  throw 'live main differs from the exact reviewed deployment commit'
+}
 ```
 
 Expected: clean gates and fast-forward exit 0; final SHA equals `$DeploySha`. If main moved, re-run the review/verification gate for the new main; do not reset or force.
@@ -5281,12 +5378,15 @@ umask 077
 repo=/home/jinnouchi/multi-agent-shogun
 source=scripts/codex_diagnostics.py
 dest=/home/jinnouchi/.local/libexec/shogun-codex-diagnostics
+deploy_sha="${SHOGUN_DIAGNOSTICS_DEPLOY_SHA:?set exact Task 9 Step 1 DeploySha}"
+printf '%s\n' "$deploy_sha" | grep -Eq '^[0-9a-f]{40}$'
 
 test "$(id -un)" = jinnouchi
 test "$(id -u)" -ne 0
 test "$PWD" = "$repo"
 test "$(git branch --show-current)" = main
-test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+test "$(git rev-parse HEAD)" = "$deploy_sha"
+test "$(git rev-parse origin/main)" = "$deploy_sha"
 git diff --quiet
 git diff --cached --quiet
 case "$(git remote get-url origin)" in
@@ -5505,6 +5605,7 @@ Before staging, parse the marked line and run the fixed registry validator in St
 - [ ] **Step 4: Validate the fixed deployment registry**
 
 ```bash
+set -euo pipefail
 python3 -I tests/contract/codex_diagnostics_consumer.py \
   validate-active-registry \
   docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
@@ -5512,7 +5613,37 @@ python3 -W error -m unittest -v \
   tests.unit.test_codex_diagnostics \
   tests.contract.test_codex_diagnostics_consumer
 git diff --check
-git diff --name-only origin/main...HEAD
+scope_file="$(mktemp /tmp/shogun-worktree-scope.XXXXXX)"
+case "$scope_file" in
+  /tmp/shogun-worktree-scope.??????) ;;
+  *) exit 1 ;;
+esac
+cleanup_scope() {
+  case "${scope_file:-}" in
+    /tmp/shogun-worktree-scope.??????) /usr/bin/unlink "$scope_file" ;;
+    '') ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_scope EXIT
+git diff --name-only -z --no-renames origin/main -- >"$scope_file"
+git ls-files --others --exclude-standard -z >>"$scope_file"
+test "$(stat -c '%s' "$scope_file")" -le 1048576
+python3 -I - "$scope_file" <<'PY'
+from pathlib import Path
+import sys
+
+expected = [
+    b"docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md",
+]
+raw = Path(sys.argv[1]).read_bytes()
+if raw and not raw.endswith(b"\0"):
+    raise SystemExit("changed-path stream is not NUL terminated")
+actual = [] if not raw else raw[:-1].split(b"\0")
+if len(actual) != len(expected) or sorted(actual) != sorted(expected):
+    raise SystemExit("unexpected changed-path scope")
+print("worktree_scope=pass")
+PY
 ```
 
 Expected: fixed `deployment_registry=pass`, all strict registry/work-log hostile
@@ -5523,29 +5654,137 @@ order/types/fixed values, non-real UTC seconds, and active zero/multiple.
 - [ ] **Step 5: Commit, push, review, and stop for work-log merge approval**
 
 ```bash
+set -euo pipefail
+repo=sjinnouchi-ux/multi-agent-shogun
+branch=codex/record-readonly-diagnostics-deployment
+git fetch origin --prune
+reviewed_base="$(git rev-parse origin/main)"
+printf '%s\n' "$reviewed_base" | grep -Eq '^[0-9a-f]{40}$'
+test "$(git rev-parse HEAD)" = "$reviewed_base"
 git add -- docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
 git diff --cached --name-only
 git commit -m "docs: record readonly diagnostics deployment"
-git push origin codex/record-readonly-diagnostics-deployment
+reviewed_head="$(git rev-parse HEAD)"
+printf '%s\n' "$reviewed_head" | grep -Eq '^[0-9a-f]{40}$'
+committed_scope_file="$(mktemp /tmp/shogun-committed-scope.XXXXXX)"
+case "$committed_scope_file" in
+  /tmp/shogun-committed-scope.??????) ;;
+  *) exit 1 ;;
+esac
+cleanup_committed_scope() {
+  case "${committed_scope_file:-}" in
+    /tmp/shogun-committed-scope.??????)
+      /usr/bin/unlink "$committed_scope_file"
+      ;;
+    '') ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_committed_scope EXIT
+git diff --name-only -z --no-renames \
+  "$reviewed_base" "$reviewed_head" -- >"$committed_scope_file"
+test "$(stat -c '%s' "$committed_scope_file")" -le 1048576
+python3 -I - "$committed_scope_file" <<'PY'
+from pathlib import Path
+import sys
+
+expected = [
+    b"docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md",
+]
+raw = Path(sys.argv[1]).read_bytes()
+if not raw or not raw.endswith(b"\0"):
+    raise SystemExit("committed-path stream is empty or malformed")
+actual = raw[:-1].split(b"\0")
+if len(actual) != len(expected) or sorted(actual) != sorted(expected):
+    raise SystemExit("unexpected committed-path scope")
+print("committed_scope=pass")
+PY
+/usr/bin/unlink "$committed_scope_file"
+committed_scope_file=
+trap - EXIT
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git push origin "$reviewed_head:refs/heads/$branch"
 gh pr create \
-  --repo sjinnouchi-ux/multi-agent-shogun \
+  --repo "$repo" \
   --base main \
-  --head codex/record-readonly-diagnostics-deployment \
+  --head "$branch" \
   --title "Record active Codex diagnostics deployment" \
   --body "Records sanitized immutable provenance only; no raw runtime evidence."
+printf 'deployment_record_reviewed_base=%s deployment_record_reviewed_head=%s\n' \
+  "$reviewed_base" "$reviewed_head"
 ```
 
-Expected: one-file PR. Obtain an independent schema/provenance review and explicit user approval before merging.
+Expected: one-file PR. Obtain an independent schema/provenance review and explicit
+user approval for the reported exact `reviewed_head` before merging. Retain that
+nonsecret approved value for Step 6. Any commit or branch movement invalidates
+the review and restarts Steps 4-5; never recompute the approved value from the
+current PR head during merge.
 
 - [ ] **Step 6: Merge and verify the raw GitHub-main record**
 
 After approval:
 
 ```bash
-gh pr merge \
-  --repo sjinnouchi-ux/multi-agent-shogun \
-  "$(gh pr view --repo sjinnouchi-ux/multi-agent-shogun --json number --jq .number)" \
-  --merge --delete-branch=false
+set -euo pipefail
+repo=sjinnouchi-ux/multi-agent-shogun
+branch=codex/record-readonly-diagnostics-deployment
+reviewed_base="${SHOGUN_DEPLOYMENT_RECORD_REVIEWED_BASE:?set the retained approved base from Step 5}"
+reviewed_head="${SHOGUN_DEPLOYMENT_RECORD_REVIEWED_HEAD:?set the retained approved head from Step 5}"
+printf '%s\n' "$reviewed_base" | grep -Eq '^[0-9a-f]{40}$'
+printf '%s\n' "$reviewed_head" | grep -Eq '^[0-9a-f]{40}$'
+pr="$(gh pr list --repo "$repo" --head "$branch" --state open \
+  --json number --jq '.[0].number')"
+test -n "$pr"
+
+verify_pr_binding() {
+  local remote_base_oid remote_head_oid
+  local -a pr_meta
+  mapfile -t pr_meta < <(
+    gh pr view "$pr" --repo "$repo" \
+      --json baseRefName,baseRefOid,headRefName,headRefOid,isDraft \
+      --jq '.baseRefName, .baseRefOid, .headRefName, .headRefOid, (.isDraft|tostring)'
+  )
+  test "${#pr_meta[@]}" -eq 5
+  test "${pr_meta[0]}" = main
+  test "${pr_meta[1]}" = "$reviewed_base"
+  test "${pr_meta[2]}" = "$branch"
+  test "${pr_meta[3]}" = "$reviewed_head"
+  test "${pr_meta[4]}" = false
+  remote_head_oid="$(
+    git ls-remote --heads origin "refs/heads/$branch" |
+      awk -v expected="refs/heads/$branch" '
+        NR == 1 { oid=$1; ref=$2 }
+        END { if (NR != 1 || ref != expected) exit 1; print oid }
+      '
+  )"
+  test "$remote_head_oid" = "$reviewed_head"
+  remote_base_oid="$(
+    git ls-remote --heads origin refs/heads/main |
+      awk '
+        NR == 1 { oid=$1; ref=$2 }
+        END { if (NR != 1 || ref != "refs/heads/main") exit 1; print oid }
+      '
+  )"
+  test "$remote_base_oid" = "$reviewed_base"
+}
+
+verify_pr_binding
+gh pr checks "$pr" --repo "$repo" --watch
+verify_pr_binding
+gh pr merge "$pr" --repo "$repo" --merge --delete-branch=false \
+  --match-head-commit "$reviewed_head"
+mapfile -t merge_meta < <(
+  gh pr view "$pr" --repo "$repo" --json state,headRefOid,mergeCommit \
+    --jq '.state, .headRefOid, .mergeCommit.oid'
+)
+test "${#merge_meta[@]}" -eq 3
+test "${merge_meta[0]}" = MERGED
+test "${merge_meta[1]}" = "$reviewed_head"
+printf '%s\n' "${merge_meta[2]}" | grep -Eq '^[0-9a-f]{40}$'
+git fetch origin --prune
+test "$(git rev-parse "${merge_meta[2]}^1")" = "$reviewed_base"
+git diff --quiet "$reviewed_head" "${merge_meta[2]}"
+git merge-base --is-ancestor "${merge_meta[2]}" origin/main
 ```
 
 Fetch the raw `main` work-log URL through the GitHub/web boundary into a bounded
@@ -5612,25 +5851,96 @@ Do not record raw JSON or local paths beyond the fixed public command/snapshot p
 - [ ] **Step 4: Verify the Workspace three-file atomic diff**
 
 ```bash
-python3 - <<'PY'
+set -euo pipefail
+canonical_boundary="$(mktemp /tmp/shogun-canonical-boundary.XXXXXX)"
+case "$canonical_boundary" in
+  /tmp/shogun-canonical-boundary.??????) ;;
+  *) exit 1 ;;
+esac
+cleanup_canonical_boundary() {
+  case "$canonical_boundary" in
+    /tmp/shogun-canonical-boundary.??????)
+      rm -f -- "$canonical_boundary"
+      ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_canonical_boundary EXIT
+shogun_main="$(
+  gh api repos/sjinnouchi-ux/multi-agent-shogun/commits/main --jq .sha
+)"
+printf '%s\n' "$shogun_main" | grep -Eq '^[0-9a-f]{40}$'
+curl -fsSLo "$canonical_boundary" \
+  "https://raw.githubusercontent.com/sjinnouchi-ux/multi-agent-shogun/$shogun_main/docs/github-boundary-operation.md"
+test "$(wc -c <"$canonical_boundary")" -le 1048576
+CANONICAL_SHOGUN_BOUNDARY="$canonical_boundary" python3 -I - <<'PY'
+import hashlib
+import os
 from pathlib import Path
 
-begin = "<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
-end = "<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
-startup = Path("codex/CODEX_DESKTOP_STARTUP.md").read_text(encoding="utf-8")
-custom = Path("codex/CODEX_DESKTOP_CUSTOM_INSTRUCTIONS.md").read_text(encoding="utf-8")
-assert startup.count(begin) == startup.count(end) == 1
-assert custom.count(begin) == custom.count(end) == 1
-startup_block = begin + startup.split(begin, 1)[1].split(end, 1)[0] + end
-custom_block = begin + custom.split(begin, 1)[1].split(end, 1)[0] + end
-assert startup_block == custom_block
-command = "wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /home/jinnouchi/.local/libexec/shogun-codex-diagnostics summary"
+begin = b"<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+end = b"<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+
+
+def marked_block(value: bytes) -> bytes:
+    assert value.count(begin) == value.count(end) == 1
+    start = value.index(begin)
+    finish = value.index(end, start) + len(end)
+    return value[start:finish]
+
+
+startup = Path("codex/CODEX_DESKTOP_STARTUP.md").read_bytes()
+custom = Path("codex/CODEX_DESKTOP_CUSTOM_INSTRUCTIONS.md").read_bytes()
+canonical = Path(os.environ["CANONICAL_SHOGUN_BOUNDARY"]).read_bytes()
+startup_block = marked_block(startup)
+custom_block = marked_block(custom)
+canonical_block = marked_block(canonical)
+assert startup_block == custom_block == canonical_block
+assert hashlib.sha256(canonical_block).hexdigest() == (
+    "7f74246da336c45ba1e2fc40cccb11b404b0fcf68b50d555bc86709afef537d7"
+)
+command = b"wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /home/jinnouchi/.local/libexec/shogun-codex-diagnostics summary"
 assert startup_block.count(command) == 1
-assert "diagnostic_provenance_untrusted" in startup_block
-assert "diagnostic_process_failed" in startup_block
+assert b"diagnostic_provenance_untrusted" in startup_block
+assert b"diagnostic_process_failed" in startup_block
 PY
+/usr/bin/unlink "$canonical_boundary"
+canonical_boundary=
+trap - EXIT
 git diff --check
-git diff --name-only origin/main...HEAD | sort
+scope_file="$(mktemp /tmp/workspace-worktree-scope.XXXXXX)"
+case "$scope_file" in
+  /tmp/workspace-worktree-scope.??????) ;;
+  *) exit 1 ;;
+esac
+cleanup_scope() {
+  case "${scope_file:-}" in
+    /tmp/workspace-worktree-scope.??????) /usr/bin/unlink "$scope_file" ;;
+    '') ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_scope EXIT
+git diff --name-only -z --no-renames origin/main -- >"$scope_file"
+git ls-files --others --exclude-standard -z >>"$scope_file"
+test "$(stat -c '%s' "$scope_file")" -le 1048576
+python3 -I - "$scope_file" <<'PY'
+from pathlib import Path
+import sys
+
+expected = [
+    b"codex/CODEX_DESKTOP_CUSTOM_INSTRUCTIONS.md",
+    b"codex/CODEX_DESKTOP_STARTUP.md",
+    b"codex/work_log.md",
+]
+raw = Path(sys.argv[1]).read_bytes()
+if raw and not raw.endswith(b"\0"):
+    raise SystemExit("changed-path stream is not NUL terminated")
+actual = [] if not raw else raw[:-1].split(b"\0")
+if len(actual) != len(expected) or sorted(actual) != sorted(expected):
+    raise SystemExit("unexpected changed-path scope")
+print("worktree_scope=pass")
+PY
 ```
 
 Expected changed files only:
@@ -5644,23 +5954,145 @@ codex/work_log.md
 - [ ] **Step 5: Commit, push, review, and stop for Workspace merge approval**
 
 ```bash
+set -euo pipefail
+repo=sjinnouchi-ux/workspace
+branch=codex/shogun-readonly-diagnostics-policy
+git fetch origin --prune
+reviewed_base="$(git rev-parse origin/main)"
+printf '%s\n' "$reviewed_base" | grep -Eq '^[0-9a-f]{40}$'
+test "$(git rev-parse HEAD)" = "$reviewed_base"
 git add -- codex/CODEX_DESKTOP_STARTUP.md codex/CODEX_DESKTOP_CUSTOM_INSTRUCTIONS.md codex/work_log.md
 git diff --cached --name-only
 git commit -m "docs(codex): gate fixed Shogun diagnostics snapshot"
-git push origin codex/shogun-readonly-diagnostics-policy
+reviewed_head="$(git rev-parse HEAD)"
+printf '%s\n' "$reviewed_head" | grep -Eq '^[0-9a-f]{40}$'
+committed_scope_file="$(mktemp /tmp/workspace-committed-scope.XXXXXX)"
+case "$committed_scope_file" in
+  /tmp/workspace-committed-scope.??????) ;;
+  *) exit 1 ;;
+esac
+cleanup_committed_scope() {
+  case "${committed_scope_file:-}" in
+    /tmp/workspace-committed-scope.??????)
+      /usr/bin/unlink "$committed_scope_file"
+      ;;
+    '') ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_committed_scope EXIT
+git diff --name-only -z --no-renames \
+  "$reviewed_base" "$reviewed_head" -- >"$committed_scope_file"
+test "$(stat -c '%s' "$committed_scope_file")" -le 1048576
+python3 -I - "$committed_scope_file" <<'PY'
+from pathlib import Path
+import sys
+
+expected = [
+    b"codex/CODEX_DESKTOP_CUSTOM_INSTRUCTIONS.md",
+    b"codex/CODEX_DESKTOP_STARTUP.md",
+    b"codex/work_log.md",
+]
+raw = Path(sys.argv[1]).read_bytes()
+if not raw or not raw.endswith(b"\0"):
+    raise SystemExit("committed-path stream is empty or malformed")
+actual = raw[:-1].split(b"\0")
+if len(actual) != len(expected) or sorted(actual) != sorted(expected):
+    raise SystemExit("unexpected committed-path scope")
+print("committed_scope=pass")
+PY
+/usr/bin/unlink "$committed_scope_file"
+committed_scope_file=
+trap - EXIT
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git push origin "$reviewed_head:refs/heads/$branch"
 gh pr create \
-  --repo sjinnouchi-ux/workspace \
+  --repo "$repo" \
   --base main \
-  --head codex/shogun-readonly-diagnostics-policy \
+  --head "$branch" \
   --title "Gate fixed Shogun diagnostics snapshot" \
   --body "Depends on the merged Shogun source and active deployment record; preserves all raw-state prohibitions."
+printf 'workspace_policy_reviewed_base=%s workspace_policy_reviewed_head=%s\n' \
+  "$reviewed_base" "$reviewed_head"
 ```
 
-Expected: three-file PR. Obtain independent policy review and explicit user approval before merge.
+Expected: three-file PR. Obtain independent policy review and explicit user
+approval for the reported exact `reviewed_head`. Retain that nonsecret approved
+value for Step 6. Any commit or branch movement invalidates the review and
+restarts Steps 4-5; never recompute the approved value from the current PR head
+during merge.
 
 - [ ] **Step 6: Merge Workspace and verify raw main**
 
-After approval, merge through the PR. Fetch raw GitHub main copies of all three files and rerun the marker/block equality assertions. If raw main differs, stop before changing host policy.
+After approval, bind the merge to the exact head that passed the independent
+policy review and the user's checkpoint:
+
+```bash
+set -euo pipefail
+repo=sjinnouchi-ux/workspace
+branch=codex/shogun-readonly-diagnostics-policy
+reviewed_base="${SHOGUN_WORKSPACE_POLICY_REVIEWED_BASE:?set the retained approved base from Step 5}"
+reviewed_head="${SHOGUN_WORKSPACE_POLICY_REVIEWED_HEAD:?set the retained approved head from Step 5}"
+printf '%s\n' "$reviewed_base" | grep -Eq '^[0-9a-f]{40}$'
+printf '%s\n' "$reviewed_head" | grep -Eq '^[0-9a-f]{40}$'
+pr="$(gh pr list --repo "$repo" --head "$branch" --state open \
+  --json number --jq '.[0].number')"
+test -n "$pr"
+
+verify_pr_binding() {
+  local remote_base_oid remote_head_oid
+  local -a pr_meta
+  mapfile -t pr_meta < <(
+    gh pr view "$pr" --repo "$repo" \
+      --json baseRefName,baseRefOid,headRefName,headRefOid,isDraft \
+      --jq '.baseRefName, .baseRefOid, .headRefName, .headRefOid, (.isDraft|tostring)'
+  )
+  test "${#pr_meta[@]}" -eq 5
+  test "${pr_meta[0]}" = main
+  test "${pr_meta[1]}" = "$reviewed_base"
+  test "${pr_meta[2]}" = "$branch"
+  test "${pr_meta[3]}" = "$reviewed_head"
+  test "${pr_meta[4]}" = false
+  remote_head_oid="$(
+    git ls-remote --heads origin "refs/heads/$branch" |
+      awk -v expected="refs/heads/$branch" '
+        NR == 1 { oid=$1; ref=$2 }
+        END { if (NR != 1 || ref != expected) exit 1; print oid }
+      '
+  )"
+  test "$remote_head_oid" = "$reviewed_head"
+  remote_base_oid="$(
+    git ls-remote --heads origin refs/heads/main |
+      awk '
+        NR == 1 { oid=$1; ref=$2 }
+        END { if (NR != 1 || ref != "refs/heads/main") exit 1; print oid }
+      '
+  )"
+  test "$remote_base_oid" = "$reviewed_base"
+}
+
+verify_pr_binding
+gh pr checks "$pr" --repo "$repo" --watch
+verify_pr_binding
+gh pr merge "$pr" --repo "$repo" --merge --delete-branch=false \
+  --match-head-commit "$reviewed_head"
+mapfile -t merge_meta < <(
+  gh pr view "$pr" --repo "$repo" --json state,headRefOid,mergeCommit \
+    --jq '.state, .headRefOid, .mergeCommit.oid'
+)
+test "${#merge_meta[@]}" -eq 3
+test "${merge_meta[0]}" = MERGED
+test "${merge_meta[1]}" = "$reviewed_head"
+printf '%s\n' "${merge_meta[2]}" | grep -Eq '^[0-9a-f]{40}$'
+git fetch origin --prune
+test "$(git rev-parse "${merge_meta[2]}^1")" = "$reviewed_base"
+git diff --quiet "$reviewed_head" "${merge_meta[2]}"
+git merge-base --is-ancestor "${merge_meta[2]}" origin/main
+```
+
+Fetch raw GitHub main copies of all three files and rerun the same canonical
+raw-byte equality gate from Step 4 against those bytes. If raw main differs,
+stop before changing host policy.
 
 - [ ] **Step 7: Perform the one-time host marker insertion without replacing the file**
 
@@ -5849,6 +6281,21 @@ $CandidateEnd = @(Find-ByteOffsets $Candidate $End)
 $Start = [int]$CandidateBegin[0]
 $EndStart = [int]$CandidateEnd[0]
 $Finish = $EndStart + $End.Length
+$CandidateBlock = [byte[]]::new($Finish - $Start)
+[Array]::Copy($Candidate, $Start, $CandidateBlock, 0, $CandidateBlock.Length)
+$BlockHasher = [Security.Cryptography.SHA256]::Create()
+try {
+    $CandidateBlockHashBytes = $BlockHasher.ComputeHash($CandidateBlock)
+} finally {
+    $BlockHasher.Dispose()
+}
+$CandidateBlockSha256 = -join (
+    $CandidateBlockHashBytes | ForEach-Object { $_.ToString('x2') }
+)
+if ($CandidateBlockSha256 -ne
+    '7f74246da336c45ba1e2fc40cccb11b404b0fcf68b50d555bc86709afef537d7') {
+    throw 'candidate policy block differs from canonical reviewed bytes'
+}
 if ($Finish + 1 -lt $Candidate.Length -and
     $Candidate[$Finish] -eq 13 -and $Candidate[$Finish + 1] -eq 10) {
     $Finish += 2

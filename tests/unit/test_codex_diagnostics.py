@@ -716,6 +716,37 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
         self.assertEqual(len(collection.sessions), 2)
         self.assertNotIn("capture-pane", SOURCE.read_text(encoding="utf-8"))
 
+    def test_overflowing_session_discards_partial_panes_and_warnings(self) -> None:
+        m = self.module
+        pane_output = (
+            b"shogun|0|shogun|claude\n"
+            + b"shogun|0||claude\n" * 64
+        )
+        runner = ScriptedRunner({
+            m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\n"),
+            m.TMUX_PANES_ARGV: m.CommandResult("ok", 0, pane_output),
+        })
+
+        collection = m.collect_tmux(runner)
+
+        self.assertEqual(
+            collection.sessions[0],
+            {
+                "name": "shogun",
+                "state": "error",
+                "pane_count": None,
+                "dead_pane_count": None,
+                "unknown_agent_count": None,
+            },
+        )
+        self.assertEqual(collection.observed_agents, frozenset())
+        self.assertEqual(collection.warnings, ())
+        self.assertIn("result_truncated", {issue.code for issue in collection.errors})
+        parts = list(sample_collections(m, both_sessions_missing=True))
+        parts[1] = collection
+        document = m.build_success_document("a" * 64, *parts)
+        m.validate_document(document)
+
     def test_unknown_duplicate_wrong_session_dead_and_hostile_cli_are_sanitized(self) -> None:
         m = self.module
         secret = "oauth-secret-customer"

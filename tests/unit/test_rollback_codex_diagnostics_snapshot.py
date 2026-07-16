@@ -26,6 +26,7 @@ PLAN = (
     / "plans"
     / "2026-07-14-codex-readonly-diagnostics.md"
 )
+BOUNDARY_OPERATION = ROOT / "docs" / "github-boundary-operation.md"
 
 
 def load_module():
@@ -1980,6 +1981,208 @@ class AtomicRollbackTests(unittest.TestCase):
         self.assertNotRegex(plan, legacy_head_pattern)
         self.assertNotIn(legacy_head_guard, plan)
         self.assertNotIn("git push --" "force", procedure)
+
+    def test_plan_task7_policy_block_matches_canonical_boundary_bytes(self) -> None:
+        begin = b"<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+        end = b"<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+
+        def marked_block(value: bytes) -> bytes:
+            self.assertEqual(value.count(begin), 1)
+            self.assertEqual(value.count(end), 1)
+            start = value.index(begin)
+            finish = value.index(end, start) + len(end)
+            return value[start:finish]
+
+        plan = PLAN.read_bytes()
+        task7 = plan.split(b"### Task 7:", 1)[1].split(b"### Task 8:", 1)[0]
+        task7 = task7.split(
+            b"**Step 7: Add the exact trusted-gate policy block "
+            b"to Shogun boundary docs**",
+            1,
+        )[1].split(b"**Step 8:", 1)[0]
+        boundary = BOUNDARY_OPERATION.read_bytes()
+        self.assertEqual(marked_block(task7), marked_block(boundary))
+
+    def test_plan_merge_steps_bind_exact_reviewed_remote_heads(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        tasks = (
+            ("### Task 9:", "### Task 10:", "$ReviewedHead"),
+            ("### Task 10:", "### Task 11:", '"$reviewed_head"'),
+            ("### Task 11:", "### Task 12:", '"$reviewed_head"'),
+        )
+        for start, end, variable in tasks:
+            with self.subTest(task=start):
+                task = plan.split(start, 1)[1].split(end, 1)[0]
+                self.assertIn("headRefOid", task)
+                self.assertIn("git ls-remote --heads", task)
+                self.assertIn("refs/heads/", task)
+                self.assertIn("--match-head-commit", task)
+                self.assertIn(variable, task)
+                self.assertNotRegex(
+                    task,
+                    r"--json[^\n]*reviewDecision|\.reviewDecision",
+                )
+                self.assertEqual(
+                    len(re.findall(r"(?m)^gh pr merge\b", task)),
+                    1,
+                )
+                merge = task.split("gh pr merge", 1)[1].split("\n```", 1)[0]
+                self.assertIn("--match-head-commit", merge)
+                self.assertIn(variable, merge)
+                post_merge = task.split("gh pr merge", 1)[1]
+                self.assertIn("headRefOid", post_merge)
+
+        task9 = plan.split("### Task 9:", 1)[1].split("### Task 10:", 1)[0]
+        self.assertIn("task8-review-tuple", task9)
+        self.assertIn("gh pr ready", task9)
+        self.assertIn(
+            "$ReviewedBase = $env:SHOGUN_DIAGNOSTICS_REVIEWED_BASE",
+            task9,
+        )
+        self.assertIn(
+            "$ReviewedHead = $env:SHOGUN_DIAGNOSTICS_REVIEWED_HEAD",
+            task9,
+        )
+        self.assertIn(
+            "$ReviewedPackageSha256 = "
+            "$env:SHOGUN_DIAGNOSTICS_REVIEW_PACKAGE_SHA256",
+            task9,
+        )
+        self.assertNotIn("$ReviewedBase = $ReviewTuple[0]", task9)
+        self.assertNotIn("$ReviewedHead = $ReviewTuple[1]", task9)
+        self.assertIn("$ReviewTuple[0] -ne $ReviewedBase", task9)
+        self.assertIn("$ReviewTuple[1] -ne $ReviewedHead", task9)
+        self.assertIn(
+            "$ReviewTuple[2] -ne $ReviewedPackageSha256",
+            task9,
+        )
+        self.assertIn("Get-FileHash", task9)
+        self.assertIn("$ReviewedBase", task9)
+        self.assertIn("baseRefOid", task9)
+        self.assertIn("refs/heads/main", task9)
+        self.assertIn("$ReviewTuple[0]", task9)
+        self.assertIn("git diff --quiet $ReviewedHead $DeploySha", task9)
+        self.assertIn("$LiveHead -ne $DeploySha", task9)
+        self.assertIn("SHOGUN_DIAGNOSTICS_DEPLOY_SHA", task9)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$deploy_sha"', task9)
+        self.assertIn('test "$(git rev-parse origin/main)" = "$deploy_sha"', task9)
+        self.assertIn("function Assert-PrBinding", task9)
+        self.assertGreaterEqual(task9.count("Assert-PrBinding"), 3)
+
+        for start, end in (
+            ("### Task 10:", "### Task 11:"),
+            ("### Task 11:", "### Task 12:"),
+        ):
+            task = plan.split(start, 1)[1].split(end, 1)[0]
+            self.assertIn('reviewed_base="$(git rev-parse origin/main)"', task)
+            self.assertIn('reviewed_head="$(git rev-parse HEAD)"', task)
+            self.assertIn("baseRefOid", task)
+            self.assertIn("refs/heads/main", task)
+            self.assertIn(
+                'git push origin "$reviewed_head:refs/heads/$branch"',
+                task,
+            )
+            self.assertIn(
+                'git diff --quiet "$reviewed_head" "${merge_meta[2]}"',
+                task,
+            )
+            self.assertIn("verify_pr_binding()", task)
+            self.assertGreaterEqual(task.count("verify_pr_binding"), 3)
+
+    def test_plan_precommit_scope_gates_cover_all_changed_paths(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        tasks = (
+            (
+                "### Task 10:",
+                "### Task 11:",
+                (
+                    "docs/superpowers/plans/"
+                    "2026-07-14-codex-readonly-diagnostics-work-log.md",
+                ),
+            ),
+            (
+                "### Task 11:",
+                "### Task 12:",
+                (
+                    "codex/CODEX_DESKTOP_CUSTOM_INSTRUCTIONS.md",
+                    "codex/CODEX_DESKTOP_STARTUP.md",
+                    "codex/work_log.md",
+                ),
+            ),
+        )
+        for start, end, expected_paths in tasks:
+            with self.subTest(task=start):
+                task = plan.split(start, 1)[1].split(end, 1)[0]
+                step4 = task.split("**Step 4:", 1)[1].split(
+                    "**Step 5:", 1
+                )[0]
+                self.assertIn("set -euo pipefail", step4)
+                self.assertNotIn(
+                    "git diff --name-only origin/main...HEAD",
+                    step4,
+                )
+                self.assertIn(
+                    "git diff --name-only -z --no-renames origin/main --",
+                    step4,
+                )
+                self.assertIn(
+                    "git ls-files --others --exclude-standard -z",
+                    step4,
+                )
+                self.assertIn("worktree_scope=pass", step4)
+                step5 = task.split("**Step 5:", 1)[1].split(
+                    "**Step 6:", 1
+                )[0]
+                self.assertIn(
+                    'git diff --name-only -z --no-renames',
+                    step5,
+                )
+                self.assertIn('"$reviewed_base"', step5)
+                self.assertIn('"$reviewed_head"', step5)
+                self.assertIn("committed_scope=pass", step5)
+                for expected_path in expected_paths:
+                    self.assertIn(expected_path, step4)
+                    self.assertIn(expected_path, step5)
+
+    def test_plan_task11_compares_workspace_policy_to_canonical_raw_bytes(
+        self,
+    ) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        task11 = plan.split("### Task 11:", 1)[1].split("### Task 12:", 1)[0]
+        verification = task11.split(
+            "**Step 4: Verify the Workspace three-file atomic diff**",
+            1,
+        )[1].split("**Step 5:", 1)[0]
+        self.assertIn("raw.githubusercontent.com/sjinnouchi-ux/", verification)
+        self.assertIn("multi-agent-shogun", verification)
+        self.assertIn("python3 -I - <<'PY'", verification)
+        self.assertIn("read_bytes()", verification)
+        self.assertNotIn("read_text(", verification)
+        self.assertIn(
+            "startup_block == custom_block == canonical_block",
+            verification,
+        )
+        begin = b"<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+        end = b"<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
+        boundary = BOUNDARY_OPERATION.read_bytes()
+        start = boundary.index(begin)
+        finish = boundary.index(end, start) + len(end)
+        expected_block_sha256 = hashlib.sha256(
+            boundary[start:finish]
+        ).hexdigest()
+        self.assertIn(expected_block_sha256, verification)
+        merge_step = task11.split(
+            "**Step 6: Merge Workspace and verify raw main**",
+            1,
+        )[1].split("**Step 7:", 1)[0]
+        self.assertIn("raw-byte equality gate", merge_step)
+        host_step = task11.split(
+            "**Step 7: Perform the one-time host marker insertion",
+            1,
+        )[1].split("**Step 8:", 1)[0]
+        self.assertIn(expected_block_sha256, host_step)
+        self.assertIn("CandidateBlock", host_step)
+        self.assertIn("SHA256", host_step)
 
     def test_plan_marks_obsolete_rollback_listings_non_executable(self) -> None:
         plan = PLAN.read_text(encoding="utf-8")

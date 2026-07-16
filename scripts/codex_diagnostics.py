@@ -813,6 +813,9 @@ def collect_tmux(run) -> TmuxCollection:
     pane_counts = {name: 0 for name in SESSION_NAMES}
     dead_counts = {name: 0 for name in SESSION_NAMES}
     unknown_counts = {name: 0 for name in SESSION_NAMES}
+    pane_warnings: dict[str, list[Issue]] = {
+        name: [] for name in SESSION_NAMES
+    }
     pane_error_sessions: set[str] = set()
     if panes_result.status == "ok":
         malformed = False
@@ -834,7 +837,9 @@ def collect_tmux(run) -> TmuxCollection:
                 dead_counts[session] += 1
             if fields[2] not in {item.encode() for item in AGENT_IDS}:
                 unknown_counts[session] += 1
-                warnings.append(Issue("unknown_agent_observed", "tmux", None))
+                pane_warnings[session].append(
+                    Issue("unknown_agent_observed", "tmux", None)
+                )
                 continue
             agent = fields[2].decode("ascii")
             cli = (
@@ -843,7 +848,9 @@ def collect_tmux(run) -> TmuxCollection:
                 else "unknown"
             )
             if cli == "unknown":
-                warnings.append(Issue("unknown_cli_observed", "tmux", agent))
+                pane_warnings[session].append(
+                    Issue("unknown_cli_observed", "tmux", agent)
+                )
             rows[session].append((agent, "dead" if dead else "alive", cli))
         if malformed:
             pane_error_sessions.update(present)
@@ -853,6 +860,7 @@ def collect_tmux(run) -> TmuxCollection:
             pane_counts = {name: 0 for name in SESSION_NAMES}
             dead_counts = {name: 0 for name in SESSION_NAMES}
             unknown_counts = {name: 0 for name in SESSION_NAMES}
+            pane_warnings = {name: [] for name in SESSION_NAMES}
         else:
             empty_present = {name for name in present if pane_counts[name] == 0}
             if empty_present:
@@ -866,6 +874,17 @@ def collect_tmux(run) -> TmuxCollection:
         pane_error_sessions.update(present)
         errors.append(_command_issue(panes_result, "tmux"))
 
+    truncated_sessions = {
+        name
+        for name in present
+        if name not in pane_error_sessions and pane_counts[name] > 64
+    }
+    for name in truncated_sessions:
+        rows[name] = []
+    for name in SESSION_NAMES:
+        if name not in pane_error_sessions and name not in truncated_sessions:
+            warnings.extend(pane_warnings[name])
+
     sessions: list[dict[str, object]] = []
     for name in SESSION_NAMES:
         if session_error:
@@ -875,7 +894,7 @@ def collect_tmux(run) -> TmuxCollection:
         elif name not in present:
             sessions.append(_session_json(name, "missing", 0, 0, 0))
             errors.append(Issue("session_missing", "tmux", None))
-        elif pane_counts[name] > 64:
+        elif name in truncated_sessions:
             sessions.append(_session_json(name, "error", None, None, None))
             errors.append(Issue("result_truncated", "tmux", None))
         else:
