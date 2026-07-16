@@ -542,6 +542,11 @@ def _output_source_hash(raw: bytes) -> str:
         raise ContractRejected
     errors_truncated = truncation_reported and len(top["errors"]) == MAX_ISSUES
     warnings_truncated = truncation_reported and len(top["warnings"]) == MAX_ISSUES
+    if any(
+        item[1] == "log" and item[2] is None
+        for item in errors | warnings
+    ):
+        raise ContractRejected
     missing_session = any(item["state"] == "missing" for item in sessions)
     session_missing_reported = ("session_missing", "tmux", None) in errors
     if session_missing_reported and not missing_session:
@@ -579,6 +584,44 @@ def _output_source_hash(raw: bytes) -> str:
 
     for agent in validated_agents:
         agent_id = agent["id"]
+        log_errors = {
+            item for item in errors
+            if item[1] == "log" and item[2] == agent_id
+        }
+        log_warnings = {
+            item for item in warnings
+            if item[1] == "log" and item[2] == agent_id
+        }
+        log_events_available = agent["log_events"]["modified_at"] is not None
+        if log_events_available:
+            if log_errors or log_warnings:
+                raise ContractRejected
+        elif agent["observed"]:
+            expected_log_errors = {
+                ("required_source_missing", "log", agent_id),
+                ("source_rejected", "log", agent_id),
+                ("command_failed", "log", agent_id),
+            }
+            if log_warnings:
+                raise ContractRejected
+            if log_errors:
+                if len(log_errors) != 1 or not log_errors <= expected_log_errors:
+                    raise ContractRejected
+            elif not errors_truncated:
+                raise ContractRejected
+        else:
+            expected_log_warnings = {
+                ("source_rejected", "log", agent_id),
+                ("command_failed", "log", agent_id),
+            }
+            if log_errors:
+                raise ContractRejected
+            if log_warnings and (
+                len(log_warnings) != 1
+                or not log_warnings <= expected_log_warnings
+            ):
+                raise ContractRejected
+
         pane_errors = {
             item for item in errors
             if item[1] == "tmux" and item[2] == agent_id

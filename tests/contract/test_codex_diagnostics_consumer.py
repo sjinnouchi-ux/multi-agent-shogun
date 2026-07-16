@@ -169,14 +169,14 @@ def bounded_issue_fixture(*, severity: str, count: int):
             if code != "result_truncated"
         )
     elif severity == "warnings":
-        codes = ("command_failed", "source_rejected")
+        codes = consumer.CLI_WARNING_CODES
     else:
         raise AssertionError("unsupported severity")
     values = sorted(
         (
             (code, component, agent)
             for code in codes
-            for component in ("diagnostic", "log", "source")
+            for component in ("diagnostic", "source")
             for agent in (None, *consumer.AGENT_IDS)
         ),
         key=lambda item: (item[0], item[1], item[2] or ""),
@@ -198,6 +198,63 @@ def truncated_error_fixture():
         values,
         key=lambda item: (item["code"], item["component"], item["agent"] or ""),
     )
+
+
+def clear_log_events(value, agent_index):
+    events = value["agents"][agent_index]["log_events"]
+    events["modified_at"] = None
+    for key in consumer.LOG_EVENT_KEYS[2:]:
+        events[key] = None
+
+
+def make_agent_unobserved(value, agent_index):
+    agent = value["agents"][agent_index]
+    agent.update(
+        observed=False,
+        session=None,
+        pane_state="not_observed",
+        cli="unknown",
+        watcher_count=None,
+        watcher_state="not_observed",
+    )
+    for source in ("inbox", "task", "watcher_log"):
+        agent["sources"][source]["applicability"] = "optional"
+
+
+def log_issue(code, agent):
+    return {"code": code, "component": "log", "agent": agent}
+
+
+def truncated_errors_with_log_issues(*issues):
+    base = [
+        issue for issue in truncated_error_fixture()
+        if issue["code"] != "result_truncated"
+    ]
+    values = base[: 63 - len(issues)] + list(issues) + [{
+        "code": "result_truncated",
+        "component": "diagnostic",
+        "agent": None,
+    }]
+    return sorted(
+        values,
+        key=lambda item: (item["code"], item["component"], item["agent"] or ""),
+    )
+
+
+def changed_log_output(
+    *, agent_index, log_available, errors=(), warnings=(), unobserved=False
+):
+    def change(value):
+        if unobserved:
+            make_agent_unobserved(value, agent_index)
+        if not log_available:
+            clear_log_events(value, agent_index)
+        value["errors"] = list(errors)
+        value["warnings"] = list(warnings)
+        if errors:
+            value["overall"] = "degraded"
+
+    return changed_output(change)
 
 
 class ConsumerContractTests(unittest.TestCase):
@@ -284,6 +341,142 @@ class ConsumerContractTests(unittest.TestCase):
         ))
         self.assertTrue(decision.trusted)
         self.assertIsNone(decision.code)
+
+    def test_log_unavailability_is_trusted_only_with_matching_issue(self) -> None:
+        for code in (
+            "required_source_missing",
+            "source_rejected",
+            "command_failed",
+        ):
+            with self.subTest(observed_error=code):
+                decision = self.evaluate(stdout=changed_log_output(
+                    agent_index=0,
+                    log_available=False,
+                    errors=(log_issue(code, "shogun"),),
+                ))
+                self.assertTrue(decision.trusted)
+                self.assertIsNone(decision.code)
+
+        decision = self.evaluate(stdout=changed_log_output(
+            agent_index=3,
+            log_available=False,
+            unobserved=True,
+        ))
+        self.assertTrue(decision.trusted)
+        self.assertIsNone(decision.code)
+
+        for code in ("source_rejected", "command_failed"):
+            with self.subTest(unobserved_warning=code):
+                decision = self.evaluate(stdout=changed_log_output(
+                    agent_index=3,
+                    log_available=False,
+                    warnings=(log_issue(code, "ashigaru2"),),
+                    unobserved=True,
+                ))
+                self.assertTrue(decision.trusted)
+                self.assertIsNone(decision.code)
+
+    def test_log_event_issue_contradictions_fail_closed(self) -> None:
+        cases = (
+            ("observed_missing_without_issue", 0, False, (), ()),
+            (
+                "observed_missing_with_warning", 0, False, (),
+                (log_issue("source_rejected", "shogun"),),
+            ),
+            (
+                "observed_missing_with_two_errors", 0, False,
+                (
+                    log_issue("command_failed", "shogun"),
+                    log_issue("required_source_missing", "shogun"),
+                ),
+                (),
+            ),
+            (
+                "observed_missing_with_wrong_error", 0, False,
+                (log_issue("command_timeout", "shogun"),), (),
+            ),
+            (
+                "observed_complete_with_error", 0, True,
+                (log_issue("command_failed", "shogun"),), (),
+            ),
+            (
+                "unobserved_missing_with_error", 3, False,
+                (log_issue("command_failed", "ashigaru2"),), (),
+            ),
+            (
+                "unobserved_missing_with_two_warnings", 3, False, (),
+                (
+                    log_issue("command_failed", "ashigaru2"),
+                    log_issue("source_rejected", "ashigaru2"),
+                ),
+            ),
+            (
+                "unobserved_missing_with_wrong_warning", 3, False, (),
+                (log_issue("unknown_cli_observed", "ashigaru2"),),
+            ),
+            (
+                "unobserved_complete_with_warning", 3, True, (),
+                (log_issue("source_rejected", "ashigaru2"),),
+            ),
+            (
+                "global_log_issue", 0, True,
+                (log_issue("command_failed", None),), (),
+            ),
+        )
+        for name, agent_index, log_available, errors, warnings in cases:
+            with self.subTest(name=name):
+                decision = self.evaluate(stdout=changed_log_output(
+                    agent_index=agent_index,
+                    log_available=log_available,
+                    errors=errors,
+                    warnings=warnings,
+                    unobserved=agent_index == 3,
+                ))
+                self.assertFalse(decision.trusted)
+                self.assertEqual(decision.code, "diagnostic_process_failed")
+                self.assertEqual(decision.action, "stop_without_fallback")
+                self.assertFalse(decision.fallback_allowed)
+
+    def test_observed_missing_log_issue_may_be_omitted_only_when_errors_truncated(
+        self,
+    ) -> None:
+        decision = self.evaluate(stdout=changed_log_output(
+            agent_index=0,
+            log_available=False,
+            errors=tuple(truncated_error_fixture()),
+        ))
+        self.assertTrue(decision.trusted)
+        self.assertIsNone(decision.code)
+
+    def test_retained_log_contradictions_fail_closed_when_errors_truncated(
+        self,
+    ) -> None:
+        cases = (
+            (
+                "missing_with_two", False,
+                truncated_errors_with_log_issues(
+                    log_issue("command_failed", "shogun"),
+                    log_issue("required_source_missing", "shogun"),
+                ),
+            ),
+            (
+                "complete_with_one", True,
+                truncated_errors_with_log_issues(
+                    log_issue("command_failed", "shogun")
+                ),
+            ),
+        )
+        for name, log_available, errors in cases:
+            with self.subTest(name=name):
+                decision = self.evaluate(stdout=changed_log_output(
+                    agent_index=0,
+                    log_available=log_available,
+                    errors=tuple(errors),
+                ))
+                self.assertFalse(decision.trusted)
+                self.assertEqual(decision.code, "diagnostic_process_failed")
+                self.assertEqual(decision.action, "stop_without_fallback")
+                self.assertFalse(decision.fallback_allowed)
 
     def test_truncation_marker_allows_only_omitted_correlation_issue(self) -> None:
         def truncated_missing_watcher(value):

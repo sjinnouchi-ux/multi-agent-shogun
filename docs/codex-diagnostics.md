@@ -32,6 +32,14 @@ Before using any field, independently validate the complete nested schema,
 exact key order/cardinality/enums/count limits, issue severity, cross-field
 state/count/applicability relationships, recomputed `overall`, ASCII-only bytes,
 and exit 0. A CLI document may not contain the consumer-only decision codes.
+Log counters must be either complete or all null. Complete counters forbid a log
+issue for that agent. All-null counters for an observed agent require exactly one
+matching `required_source_missing`, `source_rejected`, or `command_failed` log
+error; an unobserved agent permits no issue for a missing optional log, or one
+matching `source_rejected`/`command_failed` log warning. Global, wrong-severity,
+wrong-code, duplicate, and retained contradictory log issues are invalid. A
+genuinely full truncated issue array may omit the matching issue, but truncation
+never excuses a contradictory issue that remains present.
 
 ## Output
 

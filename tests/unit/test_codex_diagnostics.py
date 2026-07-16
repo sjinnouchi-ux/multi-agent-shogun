@@ -158,14 +158,14 @@ def bounded_issue_fixture(module, *, severity: str, count: int):
             if code != "result_truncated"
         )
     elif severity == "warnings":
-        codes = ("command_failed", "source_rejected")
+        codes = module.CLI_WARNING_CODES
     else:
         raise AssertionError("unsupported severity")
     values = sorted(
         (
             (code, component, agent)
             for code in codes
-            for component in ("diagnostic", "log", "source")
+            for component in ("diagnostic", "source")
             for agent in (None, *module.AGENT_IDS)
         ),
         key=lambda item: (item[0], item[1], item[2] or ""),
@@ -183,6 +183,33 @@ def truncated_error_fixture(module):
         "component": "diagnostic",
         "agent": None,
     })
+    return sorted(
+        values,
+        key=lambda item: (item["code"], item["component"], item["agent"] or ""),
+    )
+
+
+def clear_log_events(module, document, agent_index):
+    events = document["agents"][agent_index]["log_events"]
+    events["modified_at"] = None
+    for key in module.LOG_EVENT_KEYS[2:]:
+        events[key] = None
+
+
+def log_issue(code, agent):
+    return {"code": code, "component": "log", "agent": agent}
+
+
+def truncated_errors_with_log_issues(module, *issues):
+    base = [
+        issue for issue in truncated_error_fixture(module)
+        if issue["code"] != "result_truncated"
+    ]
+    values = base[: 63 - len(issues)] + list(issues) + [{
+        "code": "result_truncated",
+        "component": "diagnostic",
+        "agent": None,
+    }]
     return sorted(
         values,
         key=lambda item: (item["code"], item["component"], item["agent"] or ""),
@@ -622,6 +649,31 @@ class SafePathAndLogTests(unittest.TestCase):
                 self.assertEqual((na_errors, na_warnings), ((), ()))
             finally:
                 os.close(root_fd)
+
+    def test_missing_observed_log_is_required_error_but_optional_missing_is_silent(
+        self,
+    ) -> None:
+        m = self.module
+        with tempfile.TemporaryDirectory() as raw:
+            root_fd = os.open(raw, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                collection = m.collect_log_aggregates(
+                    root_fd, frozenset({"shogun"})
+                )
+            finally:
+                os.close(root_fd)
+
+        self.assertEqual(
+            collection.errors,
+            (m.Issue("required_source_missing", "log", "shogun"),),
+        )
+        self.assertEqual(collection.warnings, ())
+        for agent, events in collection.events.items():
+            with self.subTest(agent=agent):
+                self.assertIsNone(events["modified_at"])
+                self.assertTrue(
+                    all(events[key] is None for key in m.LOG_EVENT_KEYS[2:])
+                )
 
     def test_log_reader_uses_only_last_1048576_bytes_and_fixed_markers(self) -> None:
         m = self.module
@@ -1416,6 +1468,144 @@ class SummaryAndSerializationTests(unittest.TestCase):
         document = m.build_success_document("a" * 64, *parts)
         self.assertEqual(document["overall"], "healthy")
         m.validate_document(document)
+
+    def test_validator_accepts_log_unavailability_only_with_matching_issue(
+        self,
+    ) -> None:
+        m = self.module
+        for code in (
+            "required_source_missing",
+            "source_rejected",
+            "command_failed",
+        ):
+            with self.subTest(observed_error=code):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                clear_log_events(m, document, 0)
+                document["errors"] = [log_issue(code, "shogun")]
+                document["overall"] = "degraded"
+                m.validate_document(document)
+
+        document = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        clear_log_events(m, document, 3)
+        m.validate_document(document)
+
+        for code in ("source_rejected", "command_failed"):
+            with self.subTest(unobserved_warning=code):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                clear_log_events(m, document, 3)
+                document["warnings"] = [log_issue(code, "ashigaru2")]
+                m.validate_document(document)
+
+    def test_validator_rejects_log_event_issue_contradictions(self) -> None:
+        m = self.module
+        cases = (
+            ("observed_missing_without_issue", 0, False, (), ()),
+            (
+                "observed_missing_with_warning", 0, False, (),
+                (log_issue("source_rejected", "shogun"),),
+            ),
+            (
+                "observed_missing_with_two_errors", 0, False,
+                (
+                    log_issue("command_failed", "shogun"),
+                    log_issue("required_source_missing", "shogun"),
+                ),
+                (),
+            ),
+            (
+                "observed_missing_with_wrong_error", 0, False,
+                (log_issue("command_timeout", "shogun"),), (),
+            ),
+            (
+                "observed_complete_with_error", 0, True,
+                (log_issue("command_failed", "shogun"),), (),
+            ),
+            (
+                "unobserved_missing_with_error", 3, False,
+                (log_issue("command_failed", "ashigaru2"),), (),
+            ),
+            (
+                "unobserved_missing_with_two_warnings", 3, False, (),
+                (
+                    log_issue("command_failed", "ashigaru2"),
+                    log_issue("source_rejected", "ashigaru2"),
+                ),
+            ),
+            (
+                "unobserved_missing_with_wrong_warning", 3, False, (),
+                (log_issue("unknown_cli_observed", "ashigaru2"),),
+            ),
+            (
+                "unobserved_complete_with_warning", 3, True, (),
+                (log_issue("source_rejected", "ashigaru2"),),
+            ),
+            (
+                "global_log_issue", 0, True,
+                (log_issue("command_failed", None),), (),
+            ),
+        )
+        for name, agent_index, log_available, errors, warnings in cases:
+            with self.subTest(name=name):
+                document = m.build_success_document(
+                    "a" * 64, *sample_collections(m)
+                )
+                if not log_available:
+                    clear_log_events(m, document, agent_index)
+                document["errors"] = list(errors)
+                document["warnings"] = list(warnings)
+                if errors:
+                    document["overall"] = "degraded"
+                with self.assertRaises(m.InternalFailure):
+                    m.validate_document(document)
+
+    def test_validator_allows_omitted_observed_log_issue_only_when_errors_truncated(
+        self,
+    ) -> None:
+        m = self.module
+        document = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        clear_log_events(m, document, 0)
+        document["errors"] = truncated_error_fixture(m)
+        document["overall"] = "degraded"
+        m.validate_document(document)
+
+    def test_validator_rejects_retained_log_contradictions_when_errors_truncated(
+        self,
+    ) -> None:
+        m = self.module
+
+        missing_with_two = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        clear_log_events(m, missing_with_two, 0)
+        missing_with_two["errors"] = truncated_errors_with_log_issues(
+            m,
+            log_issue("command_failed", "shogun"),
+            log_issue("required_source_missing", "shogun"),
+        )
+        missing_with_two["overall"] = "degraded"
+
+        complete_with_one = m.build_success_document(
+            "a" * 64, *sample_collections(m)
+        )
+        complete_with_one["errors"] = truncated_errors_with_log_issues(
+            m, log_issue("command_failed", "shogun")
+        )
+        complete_with_one["overall"] = "degraded"
+
+        for name, document in (
+            ("missing_with_two", missing_with_two),
+            ("complete_with_one", complete_with_one),
+        ):
+            with self.subTest(name=name), self.assertRaises(m.InternalFailure):
+                m.validate_document(document)
 
     def test_supervisor_duplicate_and_unknown_remain_valid_degraded_states(self) -> None:
         m = self.module
