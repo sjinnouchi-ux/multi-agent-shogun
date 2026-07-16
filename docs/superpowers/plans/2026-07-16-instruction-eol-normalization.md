@@ -83,7 +83,45 @@ wsl.exe -d Ubuntu --cd /mnt/c/Users/jinnouchi/Documents/Codex/2026-07-12/new-cha
 
 Expected: one failing test whose sanitized failure names the ten known paths and reports `i/crlf` or `i/mixed`. If the failure contains any additional path, stop; do not broaden the allowlist automatically.
 
-- [ ] **Step 4: Normalize only the paths governed by the existing policy**
+- [ ] **Step 4: Clear skip-worktree only for flagged allowlisted targets**
+
+Run:
+
+```powershell
+$targets = @(
+  'instructions/cli_specific/claude_tools.md',
+  'instructions/cli_specific/codex_tools.md',
+  'instructions/cli_specific/copilot_tools.md',
+  'instructions/cli_specific/kimi_tools.md',
+  'instructions/common/forbidden_actions.md',
+  'instructions/common/protocol.md',
+  'instructions/roles/ashigaru_role.md',
+  'instructions/roles/gunshi_role.md',
+  'instructions/roles/karo_role.md',
+  'instructions/roles/shogun_role.md'
+)
+$rows = @(git ls-files -v -- $targets)
+if ($LASTEXITCODE -ne 0) { throw 'failed to inspect skip-worktree flags' }
+$flagged = @(
+  $rows |
+    Where-Object { $_ -cmatch '^S ' } |
+    ForEach-Object { $_.Substring(2) }
+)
+$outside = @($flagged | Where-Object { $_ -cnotin $targets })
+if ($outside.Count -gt 0) { $outside; throw 'skip-worktree allowlist mismatch' }
+if ($flagged.Count -gt 0) {
+  git update-index --no-skip-worktree -- $flagged
+  if ($LASTEXITCODE -ne 0) { throw 'failed to clear skip-worktree flags' }
+}
+$verifyRows = @(git ls-files -v -- $targets)
+if ($LASTEXITCODE -ne 0) { throw 'failed to verify skip-worktree flags' }
+$remaining = @($verifyRows | Where-Object { $_ -cmatch '^S ' })
+if ($remaining.Count -gt 0) { $remaining; throw 'target still has skip-worktree set' }
+```
+
+Expected: no output and exit zero. Only uppercase `S` entries from the exact ten-path allowlist are cleared; flags are not restored.
+
+- [ ] **Step 5: Normalize only the paths governed by the existing policy**
 
 Run:
 
@@ -93,7 +131,7 @@ git add --renormalize -- 'instructions/*.md' 'instructions/**/*.md'
 
 This uses the existing Git clean filter. It must not be run in the WSL live repository.
 
-- [ ] **Step 5: Prove the staged normalization allowlist**
+- [ ] **Step 6: Prove the staged normalization allowlist**
 
 Run:
 
@@ -117,7 +155,7 @@ if ($delta) { $delta; throw 'normalization allowlist mismatch' }
 
 Expected: no output and exit zero.
 
-- [ ] **Step 6: Prove content and mode equivalence**
+- [ ] **Step 7: Prove content and mode equivalence**
 
 Run:
 
@@ -131,7 +169,7 @@ git diff --cached --check
 
 Expected: no output and exit zero. `--ignore-cr-at-eol` is an assertion here, not a deployment-gate bypass.
 
-- [ ] **Step 7: Run the new test and verify GREEN**
+- [ ] **Step 8: Run the new test and verify GREEN**
 
 Run:
 
@@ -141,7 +179,7 @@ wsl.exe -d Ubuntu --cd /mnt/c/Users/jinnouchi/Documents/Codex/2026-07-12/new-cha
 
 Expected: one passing test and no skip.
 
-- [ ] **Step 8: Stage the test and commit the minimal fix**
+- [ ] **Step 9: Stage the test and commit the minimal fix**
 
 Run:
 
@@ -224,8 +262,9 @@ Expected: every required check passes. Do not restart unchanged CI failures. Cap
 Run:
 
 ```powershell
-$base = gh pr view --repo sjinnouchi-ux/multi-agent-shogun --json baseRefOid --jq .baseRefOid
-$head = gh pr view --repo sjinnouchi-ux/multi-agent-shogun --json headRefOid --jq .headRefOid
+$pr = 12
+$base = gh pr view $pr --repo sjinnouchi-ux/multi-agent-shogun --json baseRefOid --jq .baseRefOid
+$head = gh pr view $pr --repo sjinnouchi-ux/multi-agent-shogun --json headRefOid --jq .headRefOid
 $package = ".superpowers/sdd/review-$($base.Substring(0,12))..$($head.Substring(0,12)).diff"
 New-Item -ItemType Directory -Force .superpowers/sdd | Out-Null
 git diff --binary --full-index "$base..$head" --output="$package"
@@ -248,8 +287,9 @@ Independent reviewers must confirm:
 After both reviews pass, run:
 
 ```powershell
-$base = gh pr view --repo sjinnouchi-ux/multi-agent-shogun --json baseRefOid --jq .baseRefOid
-$head = gh pr view --repo sjinnouchi-ux/multi-agent-shogun --json headRefOid --jq .headRefOid
+$pr = 12
+$base = gh pr view $pr --repo sjinnouchi-ux/multi-agent-shogun --json baseRefOid --jq .baseRefOid
+$head = gh pr view $pr --repo sjinnouchi-ux/multi-agent-shogun --json headRefOid --jq .headRefOid
 $package = ".superpowers/sdd/review-$($base.Substring(0,12))..$($head.Substring(0,12)).diff"
 $packageSha = (Get-FileHash -Algorithm SHA256 $package).Hash.ToLowerInvariant()
 "base_sha=$base"
