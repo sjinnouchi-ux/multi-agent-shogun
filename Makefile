@@ -1,4 +1,4 @@
-.PHONY: test build lint check help install-deps clean skill-registry-check skill-registry-lock
+.PHONY: test test-no-skip build lint check help install-deps clean skill-registry-check skill-registry-lock
 
 GENERATED_OUTPUTS := instructions/generated/ .opencode/agents/ \
 	instructions/shogun.md instructions/karo.md instructions/ashigaru.md \
@@ -11,6 +11,7 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  make test          - Run bats unit tests"
+	@echo "  make test-no-skip  - Deployment-host tests; any skip or missing prerequisite fails"
 	@echo "  make test-int      - Run bats integration tests"
 	@echo "  make build         - Run build_instructions.sh"
 	@echo "  make lint          - Run shellcheck on lib/ and scripts/"
@@ -36,6 +37,33 @@ test:
 		echo "--- Unit tests ---"; \
 		bats tests/unit/ --timing; \
 	fi
+
+test-no-skip:
+	@set -eu; \
+	for cmd in bats python3 tmux claude; do \
+		command -v "$$cmd" >/dev/null 2>&1 || { \
+			echo "ERROR: missing required command: $$cmd"; exit 1; \
+		}; \
+	done; \
+	python3 -c 'import sys; assert sys.version_info >= (3, 10)' || { echo "ERROR: Python 3.10+ required"; exit 1; }; \
+	test -x .venv/bin/python3 || { echo "ERROR: .venv/bin/python3 missing"; exit 1; }; \
+	.venv/bin/python3 -c 'import yaml' || { echo "ERROR: PyYAML missing"; exit 1; }; \
+	test -f tests/test_helper/bats-support/load.bash || { echo "ERROR: bats-support missing"; exit 1; }; \
+	test -f tests/test_helper/bats-assert/load.bash || { echo "ERROR: bats-assert missing"; exit 1; }; \
+	tap="$$(mktemp)"; \
+	trap 'rm -f "$$tap"' EXIT; \
+	set +e; \
+	bats --formatter tap tests/*.bats tests/unit/ \
+		tests/integration/test_codex_diagnostics_tmux.bats >"$$tap" 2>&1; \
+	rc="$$?"; \
+	set -e; \
+	cat "$$tap"; \
+	tests="$$(grep -Ec '^(ok|not ok) ' "$$tap" || true)"; \
+	skips="$$(grep -Eic '^ok [0-9]+ .*# skip([[:space:]]|$$)' "$$tap" || true)"; \
+	echo "tests=$$tests skips=$$skips exit=$$rc"; \
+	test "$$tests" -gt 0; \
+	test "$$rc" -eq 0; \
+	test "$$skips" -eq 0
 
 # Run integration tests
 test-int:

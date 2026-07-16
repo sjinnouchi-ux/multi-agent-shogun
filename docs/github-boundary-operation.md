@@ -74,6 +74,45 @@ and WSL2 authentication; it must not point gcloud or `CODEX_HOME` at `/mnt/c`.
 - Excluded `shogun/` branches from legacy auto-merge.
 - Verified 26 boundary tests and 82 agent/build regression tests.
 
+<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->
+### Codex read-only diagnostics limited exception
+
+The preceding prohibition remains in force. Immediately before each diagnostic
+invocation, Codex must fetch GitHub `main` raw
+`docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md`,
+validate its single marked schema-version-1 JSON registry and exactly one active
+deployment, then compare that record's source SHA-256 with the returned
+`tool.source_sha256`.
+
+Only this complete command is eligible for a persistent argv-prefix permission:
+
+`wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /home/jinnouchi/.local/libexec/shogun-codex-diagnostics summary`
+
+The installed mode-`0555` snapshot may locally aggregate only its fixed,
+allowlisted Git/tmux/process/filesystem metadata and the counts of its four fixed
+watcher-log substrings from at most the final 1,048,576 bytes. Codex receives
+only schema-version-1 JSON. It does not directly read runtime files, logs, or
+panes.
+
+Before using any diagnostic field, Codex must require exit 0 and independently
+validate ASCII-only bytes plus the complete nested schema, exact key order,
+session/agent cardinality, enums, issue severity, count/state/applicability
+cross-field invariants, and a recomputed `overall` value.
+
+Do not persist a shorter `wsl.exe`, `bash -lc`, `python3`, or repo-script prefix.
+`cat`, `grep`, YAML bodies, log lines, pane capture, arbitrary paths, sessions,
+agents, regexes, shell commands, other scripts, suffix arguments, environment
+overrides, starts, stops, restarts, repairs, and writes remain forbidden.
+
+GitHub provenance retrieval or validation failure, no active deployment,
+multiple active deployments, and source-hash mismatch are
+`diagnostic_provenance_untrusted`. A nonzero exit, empty/non-JSON/partial output,
+nonempty stderr, or execution of 10 seconds or more is `diagnostic_process_failed`. In both cases, do
+not trust diagnostic fields and do not use any raw or direct-read fallback.
+Snapshot placement or update is a separate, explicitly approved Shogun
+deployment task and is not part of this exception.
+<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->
+
 ## Non-Goals
 
 - No queue schema migration
