@@ -148,6 +148,20 @@ setup() {
     done
 }
 
+@test "tracked instruction markdown is LF-normalized in the Git index" {
+    local rows bad
+
+    rows="$(git -C "$PROJECT_ROOT" ls-files --eol -- \
+        'instructions/*.md' 'instructions/**/*.md')"
+    [ -n "$rows" ]
+
+    bad="$(printf '%s\n' "$rows" | awk '$1 != "i/lf" { print }')"
+    if [ -n "$bad" ]; then
+        printf 'Non-LF instruction blobs:\n%s\n' "$bad" >&2
+        return 1
+    fi
+}
+
 # =============================================================================
 # ファイル生成テスト — Copilot (Phase 2+3 受入基準)
 # =============================================================================
