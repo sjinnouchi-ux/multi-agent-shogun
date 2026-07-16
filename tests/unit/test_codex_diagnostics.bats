@@ -5,24 +5,29 @@ setup() {
     export SCRIPT="$PROJECT_ROOT/scripts/codex_diagnostics.py"
 }
 
+assert_python_suite_passed() {
+    if [ "$status" -ne 0 ]; then
+        printf '%s\n' "$output"
+        return "$status"
+    fi
+    [[ "$output" != *"skipped="* ]]
+}
+
 @test "codex diagnostics unittest suite passes with zero skips" {
     run python3 -m unittest -v tests.unit.test_codex_diagnostics
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"skipped="* ]]
+    assert_python_suite_passed
 }
 
 @test "codex diagnostics consumer contract rejects every untrusted fixture" {
     run python3 -m unittest -v \
         tests.contract.test_codex_diagnostics_consumer
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"skipped="* ]]
+    assert_python_suite_passed
 }
 
 @test "codex diagnostics rollback primitive passes atomicity tests" {
     run python3 -m unittest -v \
         tests.unit.test_rollback_codex_diagnostics_snapshot
-    [ "$status" -eq 0 ]
-    [[ "$output" != *"skipped="* ]]
+    assert_python_suite_passed
 }
 
 @test "codex diagnostics source and tests compile" {
@@ -44,7 +49,11 @@ setup() {
     /usr/bin/python3 -I "$SCRIPT" summary unexpected >"$stdout" 2>"$stderr"
     rc="$?"
     set -e
-    [ "$rc" -eq 2 ]
+    if [ "$rc" -ne 2 ]; then
+        printf 'unexpected python exit status: %s\n' "$rc"
+        sed -n '1,40p' "$stderr"
+        return 1
+    fi
     [ ! -s "$stderr" ]
     run python3 - "$stdout" <<'PY'
 import json
