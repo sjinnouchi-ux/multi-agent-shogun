@@ -12,7 +12,7 @@
 
 - 実装開始時にオンライン `workspace/main/codex/CODEX_DESKTOP_STARTUP.md`、`workspace/main/PROJECTS.md`、対象repositoryのdefault branch、`AGENTS.md`、Primary Docsを再取得し、Canonical Entryを再確認する。
 - 実装worktreeは`superpowers:using-git-worktrees`で作る。live path `/home/jinnouchi/multi-agent-shogun`、tmux session、queue/report/log本文を実装workspaceとして使わない。
-- Canonical repoは`https://github.com/sjinnouchi-ux/multi-agent-shogun`、baseは実行時の最新`origin/main`、実装branchは`codex/add-readonly-diagnostics`である。
+- Canonical repoは`https://github.com/sjinnouchi-ux/multi-agent-shogun`、baseは実行時にfetchして40文字SHAへ固定した最新`origin/main`である。Tasks 1-8のlegacy/source branchは`codex/add-readonly-diagnostics`、公開・PR用branchはそのtrusted baseから再構成する`codex/add-readonly-diagnostics-clean`とし、legacy/source branchのremote履歴はrewriteもforce-pushもしない。
 - production sourceは`scripts/codex_diagnostics.py`一fileで、repository内module、plugin、base class、dynamic registryをimportしない。
 - Python runtimeは3.10以上とし、deployment preflightで不足をskipせず拒否する。
 - production executableは`/usr/bin/git`、`/usr/bin/tmux`、`/usr/bin/pgrep`だけ、`shell=False`、command timeout 2秒、overall deadline 10秒、各stream 65,536 byte・128 recordである。
@@ -1427,7 +1427,7 @@ class TmuxAndProcessCollectorTests(unittest.TestCase):
 
     def test_unknown_duplicate_wrong_session_dead_and_hostile_cli_are_sanitized(self) -> None:
         m = self.module
-        secret = "oauth-secret-customer"
+        secret = "fixture"
         runner = ScriptedRunner({
             m.TMUX_SESSIONS_ARGV: m.CommandResult("ok", 0, b"shogun\nmultiagent\n"),
             m.TMUX_PANES_ARGV: m.CommandResult(
@@ -4107,52 +4107,632 @@ Expected staged paths: exactly the eleven paths listed in `git add`.
 
 **Files:**
 
-- Modify only when a test exposes a defect: files already listed in Tasks 1-7
-- Verify: complete branch diff against the execution-time `origin/main`
+- Modify: `docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md`
+- Test: `tests/unit/test_rollback_codex_diagnostics_snapshot.py`
+- Modify only when a later review exposes a defect: files already listed in Tasks 1-7
+- Verify: the clean publication branch diff against one execution-time trusted `origin/main` SHA
 
 **Interfaces:**
 
-- Consumes: complete source branch.
-- Produces: frozen reviewed commit, sanitized verification evidence, draft PR; no live deployment.
+- Consumes: frozen legacy/source branch `codex/add-readonly-diagnostics` and execution-time trusted `origin/main`.
+- Produces: clean publication branch `codex/add-readonly-diagnostics-clean` rooted at trusted main without legacy history, sanitized verification evidence, independent review verdicts, and a draft PR; no live deployment.
 
-- [ ] **Step 1: Verify the exact branch scope**
+- [ ] **Step 1: Write and run the Task 8 publication-contract regression test**
 
-Run:
+Add this method to `AtomicRollbackTests` in
+`tests/unit/test_rollback_codex_diagnostics_snapshot.py`:
+
+```python
+    def test_plan_task8_uses_delta_gate_and_clean_publication_branch(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        task8 = plan.split(
+            "### Task 8: Run the Frozen Source Verification and Open the Shogun PR",
+            1,
+        )[1]
+        task9_marker = "### Task " "9:"
+        task8 = task8.split(task9_marker, 1)[0]
+        procedure_marker = (
+            "**Step 2: Reconstruct the clean publication branch "
+            "from trusted main**"
+        )
+        self.assertIn(procedure_marker, task8)
+        procedure = task8.split(procedure_marker, 1)[1]
+
+        def section(
+            start_parts: tuple[str, ...],
+            end_parts: tuple[str, ...],
+        ) -> str:
+            start = "".join(start_parts)
+            end = "".join(end_parts)
+            self.assertIn(start, procedure)
+            self.assertIn(end, procedure)
+            return procedure.split(start, 1)[1].split(end, 1)[0]
+
+        def bash_block(markdown: str) -> str:
+            opener = "`" * 3 + "bash"
+            closer = "`" * 3
+            self.assertIn(opener, markdown)
+            return markdown.split(opener, 1)[1].split(closer, 1)[0]
+
+        gitleaks_section = section(
+            (
+                "**Step 6: Run the pinned history-zero ",
+                "and tracked-tree delta Gitleaks gate**",
+            ),
+            (
+                "**Step 7: Obtain independent requirements ",
+                "and security/code-quality reviews**",
+            ),
+        )
+        gitleaks_bash = bash_block(gitleaks_section)
+        push_section = section(
+            (
+                "**Step 8: Push the clean branch ",
+                "and open a draft PR without merging**",
+            ),
+            (
+                "**Step 9: Stop for the source ",
+                "merge/deployment checkpoint**",
+            ),
+        )
+        push_bash = bash_block(push_section)
+        review_section = section(
+            (
+                "**Step 7: Obtain independent requirements ",
+                "and security/code-quality reviews**",
+            ),
+            (
+                "**Step 8: Push the clean branch ",
+                "and open a draft PR without merging**",
+            ),
+        )
+        review_bash = bash_block(review_section)
+        functional_section = section(
+            (
+                "**Step 4: Run fresh functional ",
+                "and generated-output verification**",
+            ),
+            (
+                "**Step 5: Verify tracking does not expand ",
+                "into runtime/private paths**",
+            ),
+        )
+        functional_bash = bash_block(functional_section)
+        ignore_section = section(
+            (
+                "**Step 5: Verify tracking does not expand ",
+                "into runtime/private paths**",
+            ),
+            (
+                "**Step 6: Run the pinned history-zero ",
+                "and tracked-tree delta Gitleaks gate**",
+            ),
+        )
+        ignore_bash = bash_block(ignore_section)
+        scope_section = section(
+            (
+                "**Step 3: Verify the exact clean ",
+                "publication scope**",
+            ),
+            (
+                "**Step 4: Run fresh functional ",
+                "and generated-output verification**",
+            ),
+        )
+        scope_bash = bash_block(scope_section)
+        step3_marker = "".join(
+            (
+                "**Step 3: Verify the exact clean ",
+                "publication scope**",
+            )
+        )
+        self.assertIn(step3_marker, procedure)
+        reconstruct_section = procedure.split(step3_marker, 1)[0]
+        reconstruct_bash = bash_block(reconstruct_section)
+
+        def shell_array(shell: str, name: str) -> tuple[str, ...]:
+            match = re.search(
+                rf"(?ms)^{re.escape(name)}=\(\n(?P<body>.*?)^\)",
+                shell,
+            )
+            self.assertIsNotNone(match)
+            assert match is not None
+            return tuple(
+                line.strip()
+                for line in match.group("body").splitlines()
+                if line.strip()
+            )
+
+        expected_paths = (
+            ".gitignore",
+            "Makefile",
+            "docs/codex-diagnostics.md",
+            "docs/github-boundary-operation.md",
+            "docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md",
+            "docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md",
+            "docs/superpowers/specs/2026-07-14-codex-readonly-diagnostics-design.md",
+            "scripts/codex_diagnostics.py",
+            "scripts/rollback_codex_diagnostics_snapshot.py",
+            "tests/contract/__init__.py",
+            "tests/contract/codex_diagnostics_consumer.py",
+            "tests/contract/test_codex_diagnostics_consumer.py",
+            "tests/integration/test_codex_diagnostics_tmux.bats",
+            "tests/integration/test_codex_diagnostics_tmux.py",
+            "tests/unit/test_codex_diagnostics.bats",
+            "tests/unit/test_codex_diagnostics.py",
+            "tests/unit/test_rollback_codex_diagnostics_snapshot.py",
+        )
+        for scope_contract in (reconstruct_bash, scope_bash):
+            actual_paths = shell_array(scope_contract, "expected_paths")
+            self.assertEqual(actual_paths, expected_paths)
+            self.assertEqual(len(set(actual_paths)), 17)
+            self.assertIn(
+                'test "${#expected_paths[@]}" -eq 17',
+                scope_contract,
+            )
+
+        required = (
+            "publication_branch=codex/add-readonly-diagnostics-clean",
+            'git diff --quiet "$base_sha"..."$head_sha" '
+            "-- .gitleaks.toml",
+            'git archive --format=tar "$base_sha"',
+            'git archive --format=tar "$head_sha"',
+            '--log-opts="$base_sha..$head_sha"',
+            "--redact=100",
+            '"RuleID"',
+            '"StartLine"',
+            '"EndLine"',
+            '"StartColumn"',
+            '"EndColumn"',
+            'git push origin "$reviewed_head:refs/heads/$publication_branch"',
+        )
+        for snippet in required:
+            self.assertIn(snippet, procedure)
+
+        forbidden = (
+            'gitleaks" git --redact --no-banner --config .gitleaks.toml .',
+            'gitleaks" dir --redact --no-banner --config .gitleaks.toml .',
+            "both scans exit 0",
+        )
+        for snippet in forbidden:
+            self.assertNotIn(snippet, procedure)
+
+        self.assertEqual(gitleaks_bash.count("--exit-code=42"), 2)
+        self.assertIn("0|42)", gitleaks_bash)
+        self.assertNotIn("0|1)", gitleaks_bash)
+        self.assertIn("(42 if count else 0)", gitleaks_bash)
+        self.assertIn(
+            "except (OSError, RuntimeError, ValueError):",
+            gitleaks_bash,
+        )
+        self.assertIn('or "\\\\" in raw', gitleaks_bash)
+        self.assertNotIn('raw.replace("\\\\", "/")', gitleaks_bash)
+        self.assertIn(
+            'git merge-base --is-ancestor "$base_sha" "$head_sha"',
+            gitleaks_bash,
+        )
+        self.assertNotIn("rev-parse HEAD^", gitleaks_bash)
+        self.assertIn(
+            'git diff --quiet "$base_sha"..."$head_sha" '
+            "-- .gitleaks.toml",
+            gitleaks_bash,
+        )
+        self.assertIn(
+            'test "$(git rev-parse HEAD)" = "$head_sha"',
+            gitleaks_bash,
+        )
+        for mutable_head_use in (
+            'git merge-base --is-ancestor "$base_sha" HEAD',
+            'git archive --format=tar HEAD',
+            '--log-opts="$base_sha..HEAD"',
+        ):
+            self.assertNotIn(mutable_head_use, gitleaks_bash)
+        self.assertIn(
+            "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+            gitleaks_bash,
+        )
+        self.assertEqual(
+            len(re.findall(r'"\$tool"\s+git\b', gitleaks_bash)),
+            1,
+        )
+        self.assertEqual(
+            len(re.findall(r'"\$tool"\s+dir\b', gitleaks_bash)),
+            1,
+        )
+        self.assertIn(
+            'cp "$base_tree/.gitleaks.toml" "$tmp_root/base-config.toml"',
+            gitleaks_bash,
+        )
+        self.assertIn(
+            'cmp "$tmp_root/base-config.toml" "$head_tree/.gitleaks.toml"',
+            gitleaks_bash,
+        )
+        self.assertEqual(
+            gitleaks_bash.count('>"$stdout_file" 2>"$stderr_file"'),
+            2,
+        )
+        self.assertIn("if history or introduced:", gitleaks_bash)
+        self.assertIn("raise SystemExit(1)", gitleaks_bash)
+        self.assertIn("legacy_remote_head=", reconstruct_bash)
+        self.assertEqual(
+            reconstruct_bash.count(
+                'git ls-remote --heads origin "$source_branch"'
+            ),
+            2,
+        )
+        self.assertIn("git fetch origin --prune", push_bash)
+        self.assertIn(
+            'git merge-base --is-ancestor "$reviewed_base" "$reviewed_head"',
+            push_bash,
+        )
+        self.assertNotIn(
+            "git merge-base --is-ancestor origin/main HEAD",
+            push_bash,
+        )
+        self.assertIn(
+            'test "$(git rev-parse HEAD)" = "$reviewed_head"',
+            push_bash,
+        )
+        self.assertIn(
+            'test "$(git rev-parse origin/main)" = "$reviewed_base"',
+            push_bash,
+        )
+        self.assertIn("task8-review-tuple", push_bash)
+        self.assertIn(
+            'test "$(sha256sum "$review_package" | awk',
+            push_bash,
+        )
+        self.assertLess(
+            push_bash.index("git fetch origin --prune"),
+            push_bash.index(
+                'test "$(git rev-parse origin/main)" = "$reviewed_base"'
+            ),
+        )
+        self.assertLess(
+            push_bash.index(
+                'test "$(git rev-parse origin/main)" = "$reviewed_base"'
+            ),
+            push_bash.index(
+                'git push origin '
+                '"$reviewed_head:refs/heads/$publication_branch"'
+            ),
+        )
+        self.assertEqual(
+            len(re.findall(r"(?m)^git push\b", push_bash)),
+            1,
+        )
+        self.assertNotRegex(push_bash, r"(?m)^git push[^\n]* \+")
+        for pr_field in (
+            "baseRefName",
+            "headRefName",
+            "headRefOid",
+            "isDraft",
+        ):
+            self.assertIn(pr_field, push_bash)
+        pr_binding_body = push_bash.split(
+            "verify_pr_binding() {",
+            1,
+        )[1].split("\n}\npr=", 1)[0]
+        remote_oid_guard = (
+            "  test \"$(git ls-remote --heads origin "
+            "\"$publication_branch\" | awk '{print $1}')\" = \\\n"
+            '    "$reviewed_head"'
+        )
+        self.assertIn(remote_oid_guard, pr_binding_body)
+        pr_binding_calls = tuple(
+            match.start()
+            for match in re.finditer(
+                r"(?m)^verify_pr_binding$",
+                push_bash,
+            )
+        )
+        self.assertEqual(len(pr_binding_calls), 2)
+        checks_index = push_bash.index("gh pr checks --watch")
+        self.assertLess(pr_binding_calls[0], checks_index)
+        self.assertLess(checks_index, pr_binding_calls[1])
+        for unsafe_push in (
+            "git push -f",
+            "git push --" "force",
+            "--force-with-lease",
+        ):
+            self.assertNotIn(unsafe_push, push_bash)
+        self.assertIn(
+            "subagent-driven-development/scripts/review-package",
+            review_bash,
+        )
+        self.assertIn(
+            "review_script_sha256="
+            "0c0629f6e2c46fc8bf68dcfb8a247ab24eb548b7004fe494035e6fcba9b5cdfb",
+            review_bash,
+        )
+        self.assertIn(
+            'test ! -e "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            'test ! -L "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            '/usr/bin/bash "$normalized_review_script" '
+            '"$base_sha" "$review_head" "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            'cmp "$expected_review_package" "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            'git diff -U10 "${base_sha}..${review_head}"',
+            review_bash,
+        )
+        self.assertIn("review_package_sha256=", review_bash)
+        self.assertIn(
+            'review_tuple_file="$review_dir/task8-review-tuple"',
+            review_bash,
+        )
+        self.assertIn(
+            'mv -T -- "$review_tuple_tmp" "$review_tuple_file"',
+            review_bash,
+        )
+        self.assertIn(
+            'git merge-base --is-ancestor "$base_sha" "$review_head"',
+            review_bash,
+        )
+        for review_boundary_bash in (review_bash, push_bash):
+            self.assertIn(
+                'test ! -L "$review_parent"',
+                review_boundary_bash,
+            )
+            self.assertIn(
+                'test ! -L "$review_dir"',
+                review_boundary_bash,
+            )
+            self.assertIn(
+                'test "$(realpath -e "$review_dir")" = "$review_dir"',
+                review_boundary_bash,
+            )
+        self.assertIn(
+            "create a focused commit before rerunning Steps 3-6",
+            review_section,
+        )
+        self.assertIn("make test-no-skip", functional_bash)
+        self.assertNotRegex(functional_bash, r"(?m)^make test$")
+        for strict_bash in (
+            reconstruct_bash,
+            scope_bash,
+            functional_bash,
+            ignore_bash,
+            gitleaks_bash,
+            review_bash,
+            push_bash,
+        ):
+            self.assertTrue(
+                strict_bash.lstrip().startswith("set -euo pipefail\n")
+            )
+        self.assertIn("\nset +e\n", ignore_bash)
+        self.assertIn("\nset -e\n", ignore_bash)
+        self.assertLess(
+            ignore_bash.index("\nset +e\n"),
+            ignore_bash.index("\nset -e\n"),
+        )
+        self.assertIn(
+            'git merge-base --is-ancestor "$base_sha" "$scope_head"',
+            scope_bash,
+        )
+        self.assertNotIn("rev-parse HEAD^", scope_bash)
+        self.assertNotIn("source_head=", scope_bash)
+        self.assertIn(
+            'test "$(git rev-parse HEAD)" = "$scope_head"',
+            scope_bash,
+        )
+        for mutable_scope_use in (
+            'git diff --name-only "$base_sha"...HEAD',
+            'git diff --check "$base_sha"...HEAD',
+            'git diff --quiet "$base_sha"...HEAD',
+        ):
+            self.assertNotIn(mutable_scope_use, scope_bash)
+
+        legacy_push_pattern = (
+            r"git push origin codex/add-readonly-"
+            r"diagnostics(?!-clean)\b"
+        )
+        legacy_head_pattern = (
+            r"--head codex/add-readonly-"
+            r"diagnostics(?!-clean)\b"
+        )
+        legacy_head_guard = (
+            "headRefName -ne 'codex/add-readonly-"
+            "diagnostics'"
+        )
+        self.assertNotRegex(plan, legacy_push_pattern)
+        self.assertNotRegex(plan, legacy_head_pattern)
+        self.assertNotIn(legacy_head_guard, plan)
+        self.assertNotIn("git push --" "force", procedure)
+```
+
+Run before changing the remaining Task 8 procedure:
 
 ```bash
+python3 -m unittest -v \
+  tests.unit.test_rollback_codex_diagnostics_snapshot.AtomicRollbackTests.test_plan_task8_uses_delta_gate_and_clean_publication_branch
+```
+
+Expected RED: one assertion fails because the clean publication procedure is absent. An import error, parse error, or immediately passing test is not an acceptable RED.
+
+- [ ] **Step 2: Reconstruct the clean publication branch from trusted main**
+
+First make the regression test GREEN, commit only its plan/test changes on the
+legacy/source branch, freeze the source head, and reconstruct one clean commit
+without cherry-picking the legacy history:
+
+```bash
+set -euo pipefail
+source_branch=codex/add-readonly-diagnostics
+publication_branch=codex/add-readonly-diagnostics-clean
+canonical_url=https://github.com/sjinnouchi-ux/multi-agent-shogun.git
+test "$(git branch --show-current)" = "$source_branch"
+python3 -m unittest -v \
+  tests.unit.test_rollback_codex_diagnostics_snapshot.AtomicRollbackTests.test_plan_sanitization_fixture_uses_inert_placeholder \
+  tests.unit.test_rollback_codex_diagnostics_snapshot.AtomicRollbackTests.test_plan_task8_uses_delta_gate_and_clean_publication_branch
+git add -- \
+  docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md \
+  tests/unit/test_rollback_codex_diagnostics_snapshot.py
+test "$(git diff --cached --name-only | sort)" = \
+  "$(printf '%s\n' \
+    docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md \
+    tests/unit/test_rollback_codex_diagnostics_snapshot.py | sort)"
+git commit -m "test: enforce clean gitleaks publication gate"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+test "$(git remote get-url origin)" = "$canonical_url"
 git fetch origin --prune
-git diff --name-only origin/main...HEAD | sort
-git status --short --branch
-git diff --check origin/main...HEAD
+base_sha="$(git rev-parse origin/main)"
+source_head="$(git rev-parse HEAD)"
+source_merge_base="$(git merge-base "$base_sha" "$source_head")"
+for sha in "$base_sha" "$source_head" "$source_merge_base"; do
+  printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'
+done
+legacy_remote_head="$(git ls-remote --heads origin "$source_branch" | awk '{print $1}')"
+printf '%s\n' "$legacy_remote_head" | grep -Eq '^[0-9a-f]{40}$'
+
+expected_paths=(
+  .gitignore
+  Makefile
+  docs/codex-diagnostics.md
+  docs/github-boundary-operation.md
+  docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
+  docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md
+  docs/superpowers/specs/2026-07-14-codex-readonly-diagnostics-design.md
+  scripts/codex_diagnostics.py
+  scripts/rollback_codex_diagnostics_snapshot.py
+  tests/contract/__init__.py
+  tests/contract/codex_diagnostics_consumer.py
+  tests/contract/test_codex_diagnostics_consumer.py
+  tests/integration/test_codex_diagnostics_tmux.bats
+  tests/integration/test_codex_diagnostics_tmux.py
+  tests/unit/test_codex_diagnostics.bats
+  tests/unit/test_codex_diagnostics.py
+  tests/unit/test_rollback_codex_diagnostics_snapshot.py
+)
+test "${#expected_paths[@]}" -eq 17
+git diff --quiet "$source_merge_base" "$base_sha" -- "${expected_paths[@]}"
+if git show-ref --verify --quiet "refs/heads/$publication_branch"; then
+  printf '%s\n' "publication_branch_exists_locally" >&2
+  exit 1
+fi
+set +e
+git ls-remote --exit-code --heads origin "$publication_branch" >/dev/null 2>&1
+remote_branch_rc=$?
+set -e
+case "$remote_branch_rc" in
+  2) ;;
+  0) printf '%s\n' "publication_branch_exists_remotely" >&2; exit 1 ;;
+  *) printf 'publication_branch_probe_exit=%s\n' "$remote_branch_rc" >&2; exit 1 ;;
+esac
+
+repo_root="$(git rev-parse --show-toplevel)"
+publication_root="$(dirname "$repo_root")/shogun-readonly-diagnostics-publication"
+test ! -e "$publication_root"
+patch_file="$(mktemp /tmp/shogun-readonly-publication.XXXXXX.patch)"
+expected_file="$(mktemp /tmp/shogun-readonly-expected.XXXXXX.txt)"
+actual_file="$(mktemp /tmp/shogun-readonly-actual.XXXXXX.txt)"
+cleanup_publication_inputs() {
+  rm -f -- "$patch_file" "$expected_file" "$actual_file"
+}
+trap cleanup_publication_inputs EXIT
+git diff --binary --full-index "$source_merge_base" "$source_head" \
+  -- "${expected_paths[@]}" >"$patch_file"
+test -s "$patch_file"
+printf '%s\n' "${expected_paths[@]}" | sort >"$expected_file"
+git worktree add -b "$publication_branch" "$publication_root" "$base_sha"
+git -C "$publication_root" apply --check "$patch_file"
+git -C "$publication_root" apply --index "$patch_file"
+git -C "$publication_root" diff --cached --name-only | sort >"$actual_file"
+cmp "$expected_file" "$actual_file"
+git -C "$publication_root" diff --check --cached
+git -C "$publication_root" commit -m "feat: add fail-closed readonly diagnostics"
+publication_head="$(git -C "$publication_root" rev-parse HEAD)"
+test "$(git -C "$publication_root" rev-parse HEAD^)" = "$base_sha"
+git -C "$publication_root" diff --quiet \
+  "$source_head" "$publication_head" -- "${expected_paths[@]}"
+test -z "$(git -C "$publication_root" status --porcelain=v1 --untracked-files=all)"
+test "$(git rev-parse "$source_branch")" = "$source_head"
+test "$(git ls-remote --heads origin "$source_branch" | awk '{print $1}')" = \
+  "$legacy_remote_head"
 ```
 
-Expected diff paths are limited to:
+Expected GREEN: both focused tests pass; the source branch is clean and committed;
+the sibling worktree is on `codex/add-readonly-diagnostics-clean` with exactly one
+commit whose parent is the frozen trusted base. The 17 feature paths match the
+legacy/source head byte-for-byte, newer main content outside those paths is
+preserved, and the existing remote legacy/source branch is unchanged. If trusted
+main changed any one of the 17 paths, or either clean branch name already exists,
+stop without overwriting or force-pushing anything.
 
-```text
-.gitignore
-Makefile
-docs/codex-diagnostics.md
-docs/github-boundary-operation.md
-docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
-docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md
-docs/superpowers/specs/2026-07-14-codex-readonly-diagnostics-design.md
-scripts/codex_diagnostics.py
-scripts/rollback_codex_diagnostics_snapshot.py
-tests/contract/__init__.py
-tests/contract/codex_diagnostics_consumer.py
-tests/contract/test_codex_diagnostics_consumer.py
-tests/integration/test_codex_diagnostics_tmux.bats
-tests/integration/test_codex_diagnostics_tmux.py
-tests/unit/test_codex_diagnostics.bats
-tests/unit/test_codex_diagnostics.py
-tests/unit/test_rollback_codex_diagnostics_snapshot.py
-```
+- [ ] **Step 3: Verify the exact clean publication scope**
 
-Expected status: clean branch with no uncommitted/untracked files. Any instruction EOL-only path is a blocker and must not be staged.
-
-- [ ] **Step 2: Run fresh functional and generated-output verification**
+Continue only inside the publication worktree and assert the scope mechanically:
 
 ```bash
+set -euo pipefail
+source_branch=codex/add-readonly-diagnostics
+publication_branch=codex/add-readonly-diagnostics-clean
+if test "$(git branch --show-current)" = "$source_branch"; then
+  publication_root="$(dirname "$(git rev-parse --show-toplevel)")/shogun-readonly-diagnostics-publication"
+  cd "$publication_root"
+fi
+test "$(git branch --show-current)" = "$publication_branch"
+test "$(git remote get-url origin)" = \
+  https://github.com/sjinnouchi-ux/multi-agent-shogun.git
+git fetch origin --prune
+base_sha="$(git rev-parse origin/main)"
+scope_head="$(git rev-parse HEAD)"
+for sha in "$base_sha" "$scope_head"; do
+  printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'
+done
+git merge-base --is-ancestor "$base_sha" "$scope_head"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+expected_paths=(
+  .gitignore
+  Makefile
+  docs/codex-diagnostics.md
+  docs/github-boundary-operation.md
+  docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
+  docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md
+  docs/superpowers/specs/2026-07-14-codex-readonly-diagnostics-design.md
+  scripts/codex_diagnostics.py
+  scripts/rollback_codex_diagnostics_snapshot.py
+  tests/contract/__init__.py
+  tests/contract/codex_diagnostics_consumer.py
+  tests/contract/test_codex_diagnostics_consumer.py
+  tests/integration/test_codex_diagnostics_tmux.bats
+  tests/integration/test_codex_diagnostics_tmux.py
+  tests/unit/test_codex_diagnostics.bats
+  tests/unit/test_codex_diagnostics.py
+  tests/unit/test_rollback_codex_diagnostics_snapshot.py
+)
+test "${#expected_paths[@]}" -eq 17
+expected_file="$(mktemp /tmp/shogun-readonly-scope-expected.XXXXXX)"
+actual_file="$(mktemp /tmp/shogun-readonly-scope-actual.XXXXXX)"
+trap 'rm -f -- "$expected_file" "$actual_file"' EXIT
+printf '%s\n' "${expected_paths[@]}" | sort >"$expected_file"
+git diff --name-only "$base_sha"..."$scope_head" | sort >"$actual_file"
+cmp "$expected_file" "$actual_file"
+git diff --check "$base_sha"..."$scope_head"
+git diff --quiet "$base_sha"..."$scope_head" -- .gitleaks.toml
+test "$(git rev-parse HEAD)" = "$scope_head"
+```
+
+Expected: exactly the listed 17 paths, trusted main is an ancestor of the clean
+branch, no uncommitted/index/untracked files, no whitespace error, no instruction
+EOL-only path, and no `.gitleaks.toml` change. Step 2 separately proves the
+initial reconstructed commit matches the legacy/source head; this reusable gate
+also accepts later focused review-fix commits without importing legacy history.
+
+- [ ] **Step 4: Run fresh functional and generated-output verification**
+
+```bash
+set -euo pipefail
 python3 -m unittest -v tests.unit.test_codex_diagnostics
 python3 -m unittest -v tests.contract.test_codex_diagnostics_consumer
 python3 -m unittest -v tests.unit.test_rollback_codex_diagnostics_snapshot
@@ -4167,25 +4747,30 @@ PYTHONPYCACHEPREFIX=/tmp/shogun-diagnostics-pycache \
   tests/contract/codex_diagnostics_consumer.py \
   tests/contract/test_codex_diagnostics_consumer.py \
   tests/integration/test_codex_diagnostics_tmux.py
-make test
+make test-no-skip
 make lint
 make build
 git diff --exit-code -- instructions/generated/ .opencode/agents/ \
   instructions/shogun.md instructions/karo.md instructions/ashigaru.md \
   instructions/gunshi.md instructions/oometsuke.md AGENTS.md \
   .github/copilot-instructions.md agents/default/system.md agents/default/agent.yaml
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
 ```
 
-Expected: every command exit 0; unittest/Bats report no skips; generated diff is empty.
+Expected: every command exits 0; `make test-no-skip` emits a machine-checked
+`tests=N skips=0 exit=0` line with N greater than zero; generated diff is empty;
+the worktree remains clean.
 
-- [ ] **Step 3: Verify tracking does not expand into runtime/private paths**
+- [ ] **Step 5: Verify tracking does not expand into runtime/private paths**
 
 ```bash
+set -euo pipefail
 git check-ignore -q logs/inbox_watcher_ashigaru1.log
 git check-ignore -q status/handoff_watchdog/ashigaru1.yaml
 git check-ignore -q queue/shogun_to_karo.yaml
 git check-ignore -q projects/private.yaml
-git check-ignore -v \
+set +e
+ignore_output="$(git check-ignore -v \
   scripts/codex_diagnostics.py \
   scripts/rollback_codex_diagnostics_snapshot.py \
   tests/unit/test_codex_diagnostics.py \
@@ -4193,71 +4778,422 @@ git check-ignore -v \
   tests/contract/codex_diagnostics_consumer.py \
   tests/contract/test_codex_diagnostics_consumer.py \
   tests/integration/test_codex_diagnostics_tmux.py \
-  docs/codex-diagnostics.md
+  docs/codex-diagnostics.md 2>&1)"
+ignore_rc=$?
+set -e
+test "$ignore_rc" -eq 1
+test -z "$ignore_output"
 ```
 
-Expected: first four commands exit 0; final command exits 1 with no output.
+Expected: the first four commands exit 0; the tracked feature paths return
+exit 1 with empty output.
 
-- [ ] **Step 4: Run pinned, redacted Gitleaks v8.30.1**
+- [ ] **Step 6: Run the pinned history-zero and tracked-tree delta Gitleaks gate**
 
-Use the [official Gitleaks v8.30.1 GitHub release](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1), Linux x64 asset, and its published SHA-256 `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`. Download only to `/tmp`; do not install system-wide:
+Use only the [official Gitleaks v8.30.1 GitHub release](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1),
+Linux x64 asset, and published SHA-256
+`551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb`.
+The reports, captured scanner output, tool, and extracted tracked trees stay
+under one verified `/tmp` directory and are removed without displaying raw
+finding fields:
 
 ```bash
-set -eu
-archive=/tmp/gitleaks_8.30.1_linux_x64.tar.gz
-tool_dir=/tmp/gitleaks-8.30.1
+set -euo pipefail
+test "$(git branch --show-current)" = codex/add-readonly-diagnostics-clean
+test "$(git remote get-url origin)" = \
+  https://github.com/sjinnouchi-ux/multi-agent-shogun.git
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git fetch origin --prune
+base_sha="$(git rev-parse origin/main)"
+head_sha="$(git rev-parse HEAD)"
+for sha in "$base_sha" "$head_sha"; do
+  printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'
+done
+git merge-base --is-ancestor "$base_sha" "$head_sha"
+git diff --quiet "$base_sha"..."$head_sha" -- .gitleaks.toml
+
+tmp_root="$(mktemp -d /tmp/shogun-gitleaks-delta.XXXXXX)"
+case "$tmp_root" in
+  /tmp/shogun-gitleaks-delta.??????) ;;
+  *) printf '%s\n' "unsafe_temp_root" >&2; exit 1 ;;
+esac
+cleanup_gitleaks() {
+  case "$tmp_root" in
+    /tmp/shogun-gitleaks-delta.??????)
+      test ! -e "$tmp_root" || rm -r -- "$tmp_root"
+      ;;
+    *) return 1 ;;
+  esac
+}
+trap cleanup_gitleaks EXIT
+archive="$tmp_root/gitleaks_8.30.1_linux_x64.tar.gz"
+tool_dir="$tmp_root/tool"
+base_tree="$tmp_root/base"
+head_tree="$tmp_root/head"
+mkdir -p "$tool_dir" "$base_tree" "$head_tree"
 curl -fsSLo "$archive" \
   https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
 printf '%s  %s\n' \
   551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb \
   "$archive" | sha256sum -c -
-mkdir -p "$tool_dir"
 tar -xzf "$archive" -C "$tool_dir" gitleaks
-"$tool_dir/gitleaks" version
-"$tool_dir/gitleaks" git --redact --no-banner --config .gitleaks.toml .
-"$tool_dir/gitleaks" dir --redact --no-banner --config .gitleaks.toml .
+tool="$tool_dir/gitleaks"
+version="$("$tool" version | tr -d '\r')"
+case "$version" in
+  *8.30.1*) printf '%s\n' "gitleaks_version=8.30.1" ;;
+  *) printf '%s\n' "gitleaks_version_mismatch" >&2; exit 1 ;;
+esac
+git archive --format=tar "$base_sha" | tar -xf - -C "$base_tree"
+git archive --format=tar "$head_sha" | tar -xf - -C "$head_tree"
+cp "$base_tree/.gitleaks.toml" "$tmp_root/base-config.toml"
+cmp "$tmp_root/base-config.toml" "$head_tree/.gitleaks.toml"
+
+run_scan() {
+  surface="$1"
+  target="$2"
+  report="$tmp_root/$surface.json"
+  stdout_file="$tmp_root/$surface.stdout"
+  stderr_file="$tmp_root/$surface.stderr"
+  set +e
+  if test "$surface" = history; then
+    "$tool" git --no-banner --redact=100 --exit-code=42 \
+      --config "$tmp_root/base-config.toml" \
+      --report-format json --report-path "$report" \
+      --log-opts="$base_sha..$head_sha" . >"$stdout_file" 2>"$stderr_file"
+  else
+    (
+      cd "$target" || exit 2
+      "$tool" dir --no-banner --redact=100 --exit-code=42 \
+        --config "$tmp_root/base-config.toml" \
+        --report-format json --report-path "$report" \
+        . >"$stdout_file" 2>"$stderr_file"
+    )
+  fi
+  scan_rc=$?
+  set -e
+  case "$scan_rc" in
+    0|42) printf '%s' "$scan_rc" >"$tmp_root/$surface.rc" ;;
+    *) printf '%s_scan_exit=%s\n' "$surface" "$scan_rc" >&2; exit 1 ;;
+  esac
+}
+run_scan history .
+run_scan base "$base_tree"
+run_scan head "$head_tree"
+
+python3 - \
+  "$tmp_root/history.json" "$tmp_root/base.json" "$tmp_root/head.json" \
+  "$base_tree" "$head_tree" \
+  "$(cat "$tmp_root/history.rc")" \
+  "$(cat "$tmp_root/base.rc")" \
+  "$(cat "$tmp_root/head.rc")" <<'PY'
+from collections import Counter
+import json
+from pathlib import Path, PurePosixPath
+import sys
+
+
+def stop(label: str) -> None:
+    print(label, file=sys.stderr)
+    raise SystemExit(1)
+
+
+def load_report(path_text: str) -> list[dict[str, object]]:
+    try:
+        value = json.loads(Path(path_text).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        stop("invalid_redacted_report")
+    if not isinstance(value, list) or not all(
+        isinstance(item, dict) for item in value
+    ):
+        stop("invalid_redacted_report")
+    return value
+
+
+def normalize_path(raw: object, root_text: str) -> str:
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or "\x00" in raw
+        or "\\" in raw
+    ):
+        stop("invalid_finding_identity")
+    try:
+        root = Path(root_text).resolve()
+    except (OSError, RuntimeError):
+        stop("invalid_archive_root")
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        try:
+            relative = candidate.resolve(strict=False).relative_to(root)
+        except (OSError, RuntimeError, ValueError):
+            stop("finding_path_outside_archive")
+        return relative.as_posix()
+    pure = PurePosixPath(raw)
+    parts = tuple(part for part in pure.parts if part != ".")
+    if not parts or any(part in ("", "..") for part in parts):
+        stop("invalid_finding_identity")
+    return PurePosixPath(*parts).as_posix()
+
+
+def identity(item: dict[str, object], root_text: str) -> tuple[object, ...]:
+    rule = item.get("RuleID")
+    coordinates = (
+        item.get("StartLine"),
+        item.get("EndLine"),
+        item.get("StartColumn"),
+        item.get("EndColumn"),
+    )
+    if not isinstance(rule, str) or not rule:
+        stop("invalid_finding_identity")
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        for value in coordinates
+    ):
+        stop("invalid_finding_identity")
+    return (
+        rule,
+        normalize_path(item.get("File"), root_text),
+        *coordinates,
+    )
+
+
+history = load_report(sys.argv[1])
+base = load_report(sys.argv[2])
+head = load_report(sys.argv[3])
+base_root, head_root = sys.argv[4], sys.argv[5]
+history_rc, base_rc, head_rc = (int(value) for value in sys.argv[6:9])
+for count, scan_rc in (
+    (len(history), history_rc),
+    (len(base), base_rc),
+    (len(head), head_rc),
+):
+    if scan_rc != (42 if count else 0):
+        stop("scan_exit_count_mismatch")
+
+base_identities = Counter(identity(item, base_root) for item in base)
+head_identities = Counter(identity(item, head_root) for item in head)
+introduced = head_identities - base_identities
+print(f"history_findings={len(history)}")
+print(f"base_tree_findings={len(base)}")
+print(f"head_tree_findings={len(head)}")
+print(f"introduced_identities={sum(introduced.values())}")
+if history or introduced:
+    raise SystemExit(1)
+PY
+test "$(git rev-parse HEAD)" = "$head_sha"
 ```
 
-Expected: checksum `OK`, version `8.30.1`, both scans exit 0. Do not paste findings; any nonzero scan is a blocker.
+Expected: checksum and version gates pass; history finding count is 0;
+tracked-tree introduced identity count is 0. Base and head baseline counts may
+be nonzero. The comparison identity is exactly detector `RuleID`, normalized
+repo-relative path, `StartLine`, `EndLine`, `StartColumn`, and `EndColumn`;
+`Counter` preserves duplicate identities and a line move fails safely as a new
+identity. The history scan remains mandatory for same-location value
+replacement. Never display or persist outside `/tmp` any raw report, match,
+secret, fingerprint, entropy, captured stdout, or captured stderr. Do not add a
+docs/assets allowlist, rule-wide allowlist, or branch-specific config change.
 
-- [ ] **Step 5: Obtain independent requirements and security/code-quality reviews**
+- [ ] **Step 7: Obtain independent requirements and security/code-quality reviews**
 
-Use `superpowers:requesting-code-review` twice on the frozen diff:
-
-```text
-Review A: compare every design-spec section with code/tests/docs; report missing behavior, schema drift, and unexpected coupling.
-Review B: inspect source-hash boundary, dir-FD traversal, subprocess bounds, raw-data leakage, serialization fallback, consumer fail-closed fixtures, atomic rollback TOCTOU checks, and deployment policy; report exploitable or fail-open behavior.
-```
-
-Expected: both reviews return PASS. For any finding, use `superpowers:receiving-code-review`, reproduce it with a RED test, implement the smallest fix, rerun Steps 1-4, and create a focused commit.
-
-- [ ] **Step 6: Push and open a draft PR without merging**
+Generate one frozen review package from the trusted base to the clean
+publication head, then use `superpowers:requesting-code-review` twice:
 
 ```bash
-git status --short --branch
-git push origin codex/add-readonly-diagnostics
+set -euo pipefail
+test "$(git branch --show-current)" = codex/add-readonly-diagnostics-clean
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+git fetch origin --prune
+base_sha="$(git rev-parse origin/main)"
+review_head="$(git rev-parse HEAD)"
+for sha in "$base_sha" "$review_head"; do
+  printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'
+done
+git merge-base --is-ancestor "$base_sha" "$review_head"
+git diff --check "$base_sha"..."$review_head"
+
+review_script=/mnt/c/Users/jinnouchi/.codex/superpowers/skills/subagent-driven-development/scripts/review-package
+review_script_sha256=0c0629f6e2c46fc8bf68dcfb8a247ab24eb548b7004fe494035e6fcba9b5cdfb
+test -f "$review_script"
+repo_root="$(git rev-parse --show-toplevel)"
+test "$(realpath -e "$repo_root")" = "$repo_root"
+review_parent="$repo_root/.superpowers"
+review_dir="$review_parent/sdd"
+for directory in "$review_parent" "$review_dir"; do
+  if test -e "$directory" || test -L "$directory"; then
+    test -d "$directory"
+    test ! -L "$directory"
+  else
+    mkdir -- "$directory"
+  fi
+done
+test ! -L "$review_parent"
+test ! -L "$review_dir"
+test "$(realpath -e "$review_dir")" = "$review_dir"
+review_package="$review_dir/review-${base_sha:0:12}..${review_head:0:12}.diff"
+test ! -e "$review_package"
+test ! -L "$review_package"
+normalized_review_script="$(mktemp /tmp/shogun-review-package-script.XXXXXX)"
+review_status="$(mktemp /tmp/shogun-review-package-status.XXXXXX)"
+expected_review_package="$(mktemp /tmp/shogun-review-package-expected.XXXXXX)"
+review_tuple_tmp=
+cleanup_review_inputs() {
+  rm -f -- \
+    "$normalized_review_script" "$review_status" "$expected_review_package"
+  if test -n "$review_tuple_tmp"; then
+    rm -f -- "$review_tuple_tmp"
+  fi
+}
+trap cleanup_review_inputs EXIT
+tr -d '\r' <"$review_script" >"$normalized_review_script"
+chmod 700 "$normalized_review_script"
+printf '%s  %s\n' "$review_script_sha256" "$normalized_review_script" | \
+  sha256sum -c -
+/usr/bin/bash "$normalized_review_script" "$base_sha" "$review_head" "$review_package" >"$review_status"
+{
+  echo "# Review package: ${base_sha}..${review_head}"
+  echo
+  echo "## Commits"
+  git log --oneline "${base_sha}..${review_head}"
+  echo
+  echo "## Files changed"
+  git diff --stat "${base_sha}..${review_head}"
+  echo
+  echo "## Diff"
+  git diff -U10 "${base_sha}..${review_head}"
+} >"$expected_review_package"
+test -s "$review_package"
+cmp "$expected_review_package" "$review_package"
+grep -Fq "wrote $review_package:" "$review_status"
+review_package_sha256="$(sha256sum "$review_package" | awk '{print $1}')"
+printf '%s\n' "$review_package_sha256" | grep -Eq '^[0-9a-f]{64}$'
+review_tuple_file="$review_dir/task8-review-tuple"
+review_tuple_tmp="$(mktemp "$review_dir/.task8-review-tuple.XXXXXX")"
+printf '%s\n%s\n%s\n' \
+  "$base_sha" "$review_head" "$review_package_sha256" >"$review_tuple_tmp"
+chmod 600 "$review_tuple_tmp"
+mv -T -- "$review_tuple_tmp" "$review_tuple_file"
+review_tuple_tmp=
+test -f "$review_tuple_file"
+test ! -L "$review_tuple_file"
+printf 'review_base=%s\nreview_head=%s\nreview_package_sha256=%s\n' \
+  "$base_sha" "$review_head" "$review_package_sha256"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+```
+
+```text
+Review A: compare every design-spec section with code/tests/docs; verify the exact 17-path scope, clean publication ancestry, legacy branch preservation, missing behavior, schema drift, and unexpected coupling.
+Review B: inspect source-hash boundary, dir-FD traversal, subprocess bounds, raw-data leakage, serialization fallback, consumer fail-closed fixtures, atomic rollback TOCTOU checks, base-config-pinned Gitleaks history/tree gates, nonsecret identity comparison, and no-force publication policy; report exploitable or fail-open behavior.
+```
+
+Expected: both reviews return requirements PASS and code-quality/security PASS
+with Critical 0 and Important 0. Both reviewers must read the same
+`review_package` path and report the identical `review_base`, `review_head`,
+and `review_package_sha256` tuple without quoting package contents. The ignored
+`task8-review-tuple` records those exact three nonsecret values but is not an
+approval by itself; execute Step 8 only after both reviewers pass that tuple.
+For any
+finding, use
+`superpowers:receiving-code-review`, reproduce behavior defects with a RED
+test, implement the smallest clean-branch fix, and run its focused tests. Then
+create a focused commit before rerunning Steps 3-6; rerun this package command
+to obtain a new head-specific path/hash, and obtain both verdicts again.
+
+- [ ] **Step 8: Push the clean branch and open a draft PR without merging**
+
+```bash
+set -euo pipefail
+publication_branch=codex/add-readonly-diagnostics-clean
+test "$(git branch --show-current)" = "$publication_branch"
+test -z "$(git status --porcelain=v1 --untracked-files=all)"
+repo_root="$(git rev-parse --show-toplevel)"
+test "$(realpath -e "$repo_root")" = "$repo_root"
+review_parent="$repo_root/.superpowers"
+review_dir="$review_parent/sdd"
+test -d "$review_parent"
+test ! -L "$review_parent"
+test -d "$review_dir"
+test ! -L "$review_dir"
+test "$(realpath -e "$review_dir")" = "$review_dir"
+review_tuple_file="$review_dir/task8-review-tuple"
+test -f "$review_tuple_file"
+test ! -L "$review_tuple_file"
+review_tuple_sha256="$(sha256sum "$review_tuple_file" | awk '{print $1}')"
+mapfile -t review_tuple <"$review_tuple_file"
+test "${#review_tuple[@]}" -eq 3
+reviewed_base="${review_tuple[0]}"
+reviewed_head="${review_tuple[1]}"
+reviewed_package_sha256="${review_tuple[2]}"
+for sha in "$reviewed_base" "$reviewed_head"; do
+  printf '%s\n' "$sha" | grep -Eq '^[0-9a-f]{40}$'
+done
+printf '%s\n' "$reviewed_package_sha256" | grep -Eq '^[0-9a-f]{64}$'
+test "$(git rev-parse HEAD)" = "$reviewed_head"
+git fetch origin --prune
+test "$(git rev-parse origin/main)" = "$reviewed_base"
+git merge-base --is-ancestor "$reviewed_base" "$reviewed_head"
+git diff --check "$reviewed_base"..."$reviewed_head"
+review_package="$review_dir/review-${reviewed_base:0:12}..${reviewed_head:0:12}.diff"
+test -f "$review_package"
+test ! -L "$review_package"
+test "$(sha256sum "$review_package" | awk '{print $1}')" = \
+  "$reviewed_package_sha256"
+test "$(sha256sum "$review_tuple_file" | awk '{print $1}')" = \
+  "$review_tuple_sha256"
+test "$(git rev-parse HEAD)" = "$reviewed_head"
+git push origin "$reviewed_head:refs/heads/$publication_branch"
+test "$(git ls-remote --heads origin "$publication_branch" | awk '{print $1}')" = \
+  "$reviewed_head"
+verify_pr_binding() {
+  local pr_base pr_head pr_oid pr_draft
+  IFS=$'\t' read -r pr_base pr_head pr_oid pr_draft < <(
+    gh pr view "$pr" \
+      --repo sjinnouchi-ux/multi-agent-shogun \
+      --json baseRefName,headRefName,headRefOid,isDraft \
+      --jq '[.baseRefName, .headRefName, .headRefOid, (.isDraft | tostring)] | @tsv'
+  )
+  test "$pr_base" = main
+  test "$pr_head" = "$publication_branch"
+  test "$pr_oid" = "$reviewed_head"
+  test "$pr_draft" = true
+  test "$(git ls-remote --heads origin "$publication_branch" | awk '{print $1}')" = \
+    "$reviewed_head"
+}
 pr="$(gh pr list --repo sjinnouchi-ux/multi-agent-shogun \
-  --head codex/add-readonly-diagnostics --state open --json number --jq '.[0].number')"
+  --head codex/add-readonly-diagnostics-clean \
+  --state open --json number --jq '.[0].number')"
 if test -z "$pr"; then
   gh pr create \
     --repo sjinnouchi-ux/multi-agent-shogun \
     --base main \
-    --head codex/add-readonly-diagnostics \
+    --head codex/add-readonly-diagnostics-clean \
     --draft \
     --title "Add fail-closed Codex read-only diagnostics" \
     --body-file docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md
   pr="$(gh pr list --repo sjinnouchi-ux/multi-agent-shogun \
-    --head codex/add-readonly-diagnostics --state open --json number --jq '.[0].number')"
+    --head codex/add-readonly-diagnostics-clean \
+    --state open --json number --jq '.[0].number')"
 fi
-gh pr checks --watch --repo sjinnouchi-ux/multi-agent-shogun \
-  "$pr"
+printf '%s\n' "$pr" | grep -Eq '^[1-9][0-9]*$'
+verify_pr_binding
+gh pr checks --watch --repo sjinnouchi-ux/multi-agent-shogun "$pr"
+verify_pr_binding
 ```
 
-Expected: branch push succeeds; draft PR targets `main`; all checks pass. The PR body contains only the initial sanitized work-log text and no runtime evidence.
+Expected: the tuple and review package still hash to the independently reviewed
+values, local `HEAD` and the explicit non-force push refspec both equal that
+reviewed commit, the draft PR targets `main` from
+`codex/add-readonly-diagnostics-clean`, and all configured checks pass. The PR
+metadata and remote head are rechecked before and after check monitoring, the PR
+body contains only the initial sanitized work-log text and no runtime evidence,
+and the legacy remote branch remains unchanged.
 
-- [ ] **Step 7: Stop for the source merge/deployment checkpoint**
+- [ ] **Step 9: Stop for the source merge/deployment checkpoint**
 
-Report the PR URL, head commit, check state, test counts, skip count, and review verdicts. Do not merge, touch the live WSL repo, place the snapshot, or relax Workspace/host policy until the user explicitly approves the next phase.
+Report the PR URL, trusted base SHA, preserved legacy/source head, clean
+publication head, check state, test counts, skip count, Gitleaks history count,
+tree introduced identity count, and both review verdicts. Do not merge, touch
+the live WSL repo, place the snapshot, or relax Workspace/host policy until the
+user explicitly approves the next phase.
 
 ### Task 9: Merge the Approved Source and Deploy the Immutable WSL Snapshot
 
@@ -4278,7 +5214,7 @@ Derive the PR number from the branch, then verify it is approved and green:
 
 ```powershell
 $Repo = 'sjinnouchi-ux/multi-agent-shogun'
-$Pr = gh pr list --repo $Repo --head codex/add-readonly-diagnostics `
+$Pr = gh pr list --repo $Repo --head codex/add-readonly-diagnostics-clean `
   --state open --json number --jq '.[0].number'
 if (-not $Pr) { throw 'approved diagnostics PR not found' }
 gh pr checks $Pr --repo $Repo
@@ -4286,7 +5222,7 @@ if ($LASTEXITCODE -ne 0) { throw 'PR checks are not green' }
 $Meta = gh pr view $Pr --repo $Repo `
   --json isDraft,baseRefName,headRefName,reviewDecision | ConvertFrom-Json
 if ($Meta.isDraft -or $Meta.baseRefName -ne 'main' -or
-    $Meta.headRefName -ne 'codex/add-readonly-diagnostics' -or
+    $Meta.headRefName -ne 'codex/add-readonly-diagnostics-clean' -or
     $Meta.reviewDecision -ne 'APPROVED') { throw 'PR approval gate failed' }
 gh pr merge $Pr --repo $Repo --merge --delete-branch=false
 if ($LASTEXITCODE -ne 0) { throw 'PR merge failed' }
@@ -4515,7 +5451,7 @@ In the clean WSL work-log worktree, derive the three variable values with:
 ```bash
 export SOURCE_COMMIT="$(gh pr list \
   --repo sjinnouchi-ux/multi-agent-shogun \
-  --head codex/add-readonly-diagnostics \
+  --head codex/add-readonly-diagnostics-clean \
   --state merged --json mergeCommit --jq '.[0].mergeCommit.oid')"
 export SOURCE_SHA256="$(sha256sum scripts/codex_diagnostics.py | awk '{print $1}')"
 git merge-base --is-ancestor "$SOURCE_COMMIT" origin/main

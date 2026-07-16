@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -1195,6 +1196,448 @@ class AtomicRollbackTests(unittest.TestCase):
                 "--target-blob", str(self.target),
             ))
         self.assertEqual(result, 4)
+
+    def test_plan_sanitization_fixture_uses_inert_placeholder(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        has_realistic_assignment = re.search(
+            r"(?i)(password|passwd|pwd|secret)\s*[=:]\s*['\"][^'\"]{8,}['\"]",
+            plan,
+        ) is not None
+        self.assertFalse(
+            has_realistic_assignment,
+            "plan contains a realistic credential-shaped fixture",
+        )
+        self.assertTrue(
+            'secret = "fixture"' in plan,
+            "plan sanitization fixture does not use the inert placeholder",
+        )
+
+    def test_plan_task8_uses_delta_gate_and_clean_publication_branch(self) -> None:
+        plan = PLAN.read_text(encoding="utf-8")
+        task8 = plan.split(
+            "### Task 8: Run the Frozen Source Verification and Open the Shogun PR",
+            1,
+        )[1]
+        task9_marker = "### Task " "9:"
+        task8 = task8.split(task9_marker, 1)[0]
+        procedure_marker = (
+            "**Step 2: Reconstruct the clean publication branch "
+            "from trusted main**"
+        )
+        self.assertIn(procedure_marker, task8)
+        procedure = task8.split(procedure_marker, 1)[1]
+
+        def section(
+            start_parts: tuple[str, ...],
+            end_parts: tuple[str, ...],
+        ) -> str:
+            start = "".join(start_parts)
+            end = "".join(end_parts)
+            self.assertIn(start, procedure)
+            self.assertIn(end, procedure)
+            return procedure.split(start, 1)[1].split(end, 1)[0]
+
+        def bash_block(markdown: str) -> str:
+            opener = "`" * 3 + "bash"
+            closer = "`" * 3
+            self.assertIn(opener, markdown)
+            return markdown.split(opener, 1)[1].split(closer, 1)[0]
+
+        gitleaks_section = section(
+            (
+                "**Step 6: Run the pinned history-zero ",
+                "and tracked-tree delta Gitleaks gate**",
+            ),
+            (
+                "**Step 7: Obtain independent requirements ",
+                "and security/code-quality reviews**",
+            ),
+        )
+        gitleaks_bash = bash_block(gitleaks_section)
+        push_section = section(
+            (
+                "**Step 8: Push the clean branch ",
+                "and open a draft PR without merging**",
+            ),
+            (
+                "**Step 9: Stop for the source ",
+                "merge/deployment checkpoint**",
+            ),
+        )
+        push_bash = bash_block(push_section)
+        review_section = section(
+            (
+                "**Step 7: Obtain independent requirements ",
+                "and security/code-quality reviews**",
+            ),
+            (
+                "**Step 8: Push the clean branch ",
+                "and open a draft PR without merging**",
+            ),
+        )
+        review_bash = bash_block(review_section)
+        functional_section = section(
+            (
+                "**Step 4: Run fresh functional ",
+                "and generated-output verification**",
+            ),
+            (
+                "**Step 5: Verify tracking does not expand ",
+                "into runtime/private paths**",
+            ),
+        )
+        functional_bash = bash_block(functional_section)
+        ignore_section = section(
+            (
+                "**Step 5: Verify tracking does not expand ",
+                "into runtime/private paths**",
+            ),
+            (
+                "**Step 6: Run the pinned history-zero ",
+                "and tracked-tree delta Gitleaks gate**",
+            ),
+        )
+        ignore_bash = bash_block(ignore_section)
+        scope_section = section(
+            (
+                "**Step 3: Verify the exact clean ",
+                "publication scope**",
+            ),
+            (
+                "**Step 4: Run fresh functional ",
+                "and generated-output verification**",
+            ),
+        )
+        scope_bash = bash_block(scope_section)
+        step3_marker = "".join(
+            (
+                "**Step 3: Verify the exact clean ",
+                "publication scope**",
+            )
+        )
+        self.assertIn(step3_marker, procedure)
+        reconstruct_section = procedure.split(step3_marker, 1)[0]
+        reconstruct_bash = bash_block(reconstruct_section)
+
+        def shell_array(shell: str, name: str) -> tuple[str, ...]:
+            match = re.search(
+                rf"(?ms)^{re.escape(name)}=\(\n(?P<body>.*?)^\)",
+                shell,
+            )
+            self.assertIsNotNone(match)
+            assert match is not None
+            return tuple(
+                line.strip()
+                for line in match.group("body").splitlines()
+                if line.strip()
+            )
+
+        expected_paths = (
+            ".gitignore",
+            "Makefile",
+            "docs/codex-diagnostics.md",
+            "docs/github-boundary-operation.md",
+            "docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md",
+            "docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics.md",
+            "docs/superpowers/specs/2026-07-14-codex-readonly-diagnostics-design.md",
+            "scripts/codex_diagnostics.py",
+            "scripts/rollback_codex_diagnostics_snapshot.py",
+            "tests/contract/__init__.py",
+            "tests/contract/codex_diagnostics_consumer.py",
+            "tests/contract/test_codex_diagnostics_consumer.py",
+            "tests/integration/test_codex_diagnostics_tmux.bats",
+            "tests/integration/test_codex_diagnostics_tmux.py",
+            "tests/unit/test_codex_diagnostics.bats",
+            "tests/unit/test_codex_diagnostics.py",
+            "tests/unit/test_rollback_codex_diagnostics_snapshot.py",
+        )
+        for scope_contract in (reconstruct_bash, scope_bash):
+            actual_paths = shell_array(scope_contract, "expected_paths")
+            self.assertEqual(actual_paths, expected_paths)
+            self.assertEqual(len(set(actual_paths)), 17)
+            self.assertIn(
+                'test "${#expected_paths[@]}" -eq 17',
+                scope_contract,
+            )
+
+        required = (
+            "publication_branch=codex/add-readonly-diagnostics-clean",
+            'git diff --quiet "$base_sha"..."$head_sha" '
+            "-- .gitleaks.toml",
+            'git archive --format=tar "$base_sha"',
+            'git archive --format=tar "$head_sha"',
+            '--log-opts="$base_sha..$head_sha"',
+            "--redact=100",
+            '"RuleID"',
+            '"StartLine"',
+            '"EndLine"',
+            '"StartColumn"',
+            '"EndColumn"',
+            'git push origin "$reviewed_head:refs/heads/$publication_branch"',
+        )
+        for snippet in required:
+            self.assertIn(snippet, procedure)
+
+        forbidden = (
+            'gitleaks" git --redact --no-banner --config .gitleaks.toml .',
+            'gitleaks" dir --redact --no-banner --config .gitleaks.toml .',
+            "both scans exit 0",
+        )
+        for snippet in forbidden:
+            self.assertNotIn(snippet, procedure)
+
+        self.assertEqual(gitleaks_bash.count("--exit-code=42"), 2)
+        self.assertIn("0|42)", gitleaks_bash)
+        self.assertNotIn("0|1)", gitleaks_bash)
+        self.assertIn("(42 if count else 0)", gitleaks_bash)
+        self.assertIn(
+            "except (OSError, RuntimeError, ValueError):",
+            gitleaks_bash,
+        )
+        self.assertIn('or "\\\\" in raw', gitleaks_bash)
+        self.assertNotIn('raw.replace("\\\\", "/")', gitleaks_bash)
+        self.assertIn(
+            'git merge-base --is-ancestor "$base_sha" "$head_sha"',
+            gitleaks_bash,
+        )
+        self.assertNotIn("rev-parse HEAD^", gitleaks_bash)
+        self.assertIn(
+            'git diff --quiet "$base_sha"..."$head_sha" '
+            "-- .gitleaks.toml",
+            gitleaks_bash,
+        )
+        self.assertIn(
+            'test "$(git rev-parse HEAD)" = "$head_sha"',
+            gitleaks_bash,
+        )
+        for mutable_head_use in (
+            'git merge-base --is-ancestor "$base_sha" HEAD',
+            'git archive --format=tar HEAD',
+            '--log-opts="$base_sha..HEAD"',
+        ):
+            self.assertNotIn(mutable_head_use, gitleaks_bash)
+        self.assertIn(
+            "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+            gitleaks_bash,
+        )
+        self.assertEqual(
+            len(re.findall(r'"\$tool"\s+git\b', gitleaks_bash)),
+            1,
+        )
+        self.assertEqual(
+            len(re.findall(r'"\$tool"\s+dir\b', gitleaks_bash)),
+            1,
+        )
+        self.assertIn(
+            'cp "$base_tree/.gitleaks.toml" "$tmp_root/base-config.toml"',
+            gitleaks_bash,
+        )
+        self.assertIn(
+            'cmp "$tmp_root/base-config.toml" "$head_tree/.gitleaks.toml"',
+            gitleaks_bash,
+        )
+        self.assertEqual(
+            gitleaks_bash.count('>"$stdout_file" 2>"$stderr_file"'),
+            2,
+        )
+        self.assertIn("if history or introduced:", gitleaks_bash)
+        self.assertIn("raise SystemExit(1)", gitleaks_bash)
+        self.assertIn("legacy_remote_head=", reconstruct_bash)
+        self.assertEqual(
+            reconstruct_bash.count(
+                'git ls-remote --heads origin "$source_branch"'
+            ),
+            2,
+        )
+        self.assertIn("git fetch origin --prune", push_bash)
+        self.assertIn(
+            'git merge-base --is-ancestor "$reviewed_base" "$reviewed_head"',
+            push_bash,
+        )
+        self.assertNotIn(
+            "git merge-base --is-ancestor origin/main HEAD",
+            push_bash,
+        )
+        self.assertIn(
+            'test "$(git rev-parse HEAD)" = "$reviewed_head"',
+            push_bash,
+        )
+        self.assertIn(
+            'test "$(git rev-parse origin/main)" = "$reviewed_base"',
+            push_bash,
+        )
+        self.assertIn("task8-review-tuple", push_bash)
+        self.assertIn(
+            'test "$(sha256sum "$review_package" | awk',
+            push_bash,
+        )
+        self.assertLess(
+            push_bash.index("git fetch origin --prune"),
+            push_bash.index(
+                'test "$(git rev-parse origin/main)" = "$reviewed_base"'
+            ),
+        )
+        self.assertLess(
+            push_bash.index(
+                'test "$(git rev-parse origin/main)" = "$reviewed_base"'
+            ),
+            push_bash.index(
+                'git push origin '
+                '"$reviewed_head:refs/heads/$publication_branch"'
+            ),
+        )
+        self.assertEqual(
+            len(re.findall(r"(?m)^git push\b", push_bash)),
+            1,
+        )
+        self.assertNotRegex(push_bash, r"(?m)^git push[^\n]* \+")
+        for pr_field in (
+            "baseRefName",
+            "headRefName",
+            "headRefOid",
+            "isDraft",
+        ):
+            self.assertIn(pr_field, push_bash)
+        pr_binding_body = push_bash.split(
+            "verify_pr_binding() {",
+            1,
+        )[1].split("\n}\npr=", 1)[0]
+        remote_oid_guard = (
+            "  test \"$(git ls-remote --heads origin "
+            "\"$publication_branch\" | awk '{print $1}')\" = \\\n"
+            '    "$reviewed_head"'
+        )
+        self.assertIn(remote_oid_guard, pr_binding_body)
+        pr_binding_calls = tuple(
+            match.start()
+            for match in re.finditer(
+                r"(?m)^verify_pr_binding$",
+                push_bash,
+            )
+        )
+        self.assertEqual(len(pr_binding_calls), 2)
+        checks_index = push_bash.index("gh pr checks --watch")
+        self.assertLess(pr_binding_calls[0], checks_index)
+        self.assertLess(checks_index, pr_binding_calls[1])
+        for unsafe_push in (
+            "git push -f",
+            "git push --" "force",
+            "--force-with-lease",
+        ):
+            self.assertNotIn(unsafe_push, push_bash)
+        self.assertIn(
+            "subagent-driven-development/scripts/review-package",
+            review_bash,
+        )
+        self.assertIn(
+            "review_script_sha256="
+            "0c0629f6e2c46fc8bf68dcfb8a247ab24eb548b7004fe494035e6fcba9b5cdfb",
+            review_bash,
+        )
+        self.assertIn(
+            'test ! -e "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            'test ! -L "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            '/usr/bin/bash "$normalized_review_script" '
+            '"$base_sha" "$review_head" "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            'cmp "$expected_review_package" "$review_package"',
+            review_bash,
+        )
+        self.assertIn(
+            'git diff -U10 "${base_sha}..${review_head}"',
+            review_bash,
+        )
+        self.assertIn("review_package_sha256=", review_bash)
+        self.assertIn(
+            'review_tuple_file="$review_dir/task8-review-tuple"',
+            review_bash,
+        )
+        self.assertIn(
+            'mv -T -- "$review_tuple_tmp" "$review_tuple_file"',
+            review_bash,
+        )
+        self.assertIn(
+            'git merge-base --is-ancestor "$base_sha" "$review_head"',
+            review_bash,
+        )
+        for review_boundary_bash in (review_bash, push_bash):
+            self.assertIn(
+                'test ! -L "$review_parent"',
+                review_boundary_bash,
+            )
+            self.assertIn(
+                'test ! -L "$review_dir"',
+                review_boundary_bash,
+            )
+            self.assertIn(
+                'test "$(realpath -e "$review_dir")" = "$review_dir"',
+                review_boundary_bash,
+            )
+        self.assertIn(
+            "create a focused commit before rerunning Steps 3-6",
+            review_section,
+        )
+        self.assertIn("make test-no-skip", functional_bash)
+        self.assertNotRegex(functional_bash, r"(?m)^make test$")
+        for strict_bash in (
+            reconstruct_bash,
+            scope_bash,
+            functional_bash,
+            ignore_bash,
+            gitleaks_bash,
+            review_bash,
+            push_bash,
+        ):
+            self.assertTrue(
+                strict_bash.lstrip().startswith("set -euo pipefail\n")
+            )
+        self.assertIn("\nset +e\n", ignore_bash)
+        self.assertIn("\nset -e\n", ignore_bash)
+        self.assertLess(
+            ignore_bash.index("\nset +e\n"),
+            ignore_bash.index("\nset -e\n"),
+        )
+        self.assertIn(
+            'git merge-base --is-ancestor "$base_sha" "$scope_head"',
+            scope_bash,
+        )
+        self.assertNotIn("rev-parse HEAD^", scope_bash)
+        self.assertNotIn("source_head=", scope_bash)
+        self.assertIn(
+            'test "$(git rev-parse HEAD)" = "$scope_head"',
+            scope_bash,
+        )
+        for mutable_scope_use in (
+            'git diff --name-only "$base_sha"...HEAD',
+            'git diff --check "$base_sha"...HEAD',
+            'git diff --quiet "$base_sha"...HEAD',
+        ):
+            self.assertNotIn(mutable_scope_use, scope_bash)
+
+        legacy_push_pattern = (
+            r"git push origin codex/add-readonly-"
+            r"diagnostics(?!-clean)\b"
+        )
+        legacy_head_pattern = (
+            r"--head codex/add-readonly-"
+            r"diagnostics(?!-clean)\b"
+        )
+        legacy_head_guard = (
+            "headRefName -ne 'codex/add-readonly-"
+            "diagnostics'"
+        )
+        self.assertNotRegex(plan, legacy_push_pattern)
+        self.assertNotRegex(plan, legacy_head_pattern)
+        self.assertNotIn(legacy_head_guard, plan)
+        self.assertNotIn("git push --" "force", procedure)
 
     def test_plan_marks_obsolete_rollback_listings_non_executable(self) -> None:
         plan = PLAN.read_text(encoding="utf-8")
