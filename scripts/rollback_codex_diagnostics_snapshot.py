@@ -188,6 +188,24 @@ def _parent_still_bound(
         raise RollbackRefused
 
 
+def _require_trusted_snapshot_parent(
+    path: Path,
+    directory_fd: int,
+    expected: os.stat_result,
+) -> None:
+    _parent_still_bound(path, directory_fd, expected)
+    try:
+        opened = os.fstat(directory_fd)
+    except (OSError, TypeError, NotImplementedError) as exc:
+        raise RollbackRefused from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or opened.st_uid != os.geteuid()
+        or stat.S_IMODE(opened.st_mode) & 0o022
+    ):
+        raise RollbackRefused
+
+
 def _open_regular_at(
     directory_fd: int,
     name: str,
@@ -275,6 +293,26 @@ def _require_leaf_matches_fd(
         or stat.S_IMODE(visible.st_mode) != required_mode
         or _identity(opened) != _identity(visible)
     ):
+        raise RollbackRefused
+
+
+def _require_owned_snapshot_leaf_matches_fd(
+    directory_fd: int,
+    name: str,
+    fd: int,
+) -> None:
+    _require_leaf_matches_fd(directory_fd, name, fd, 0o555)
+    try:
+        opened = os.fstat(fd)
+        visible = os.stat(
+            name,
+            dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except (OSError, TypeError, NotImplementedError) as exc:
+        raise RollbackRefused from exc
+    effective_uid = os.geteuid()
+    if opened.st_uid != effective_uid or visible.st_uid != effective_uid:
         raise RollbackRefused
 
 
@@ -660,6 +698,32 @@ def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _cleanup_temp_and_reconcile_old_snapshot(
+    *,
+    snapshot: Path,
+    parent_fd: int,
+    parent_identity: os.stat_result,
+    snapshot_name: str,
+    snapshot_fd: int,
+    failing_sha256: str,
+    temp_name: str,
+    temp_fd: int,
+) -> None:
+    _cleanup_exact_temp_at(parent_fd, temp_name, temp_fd)
+    try:
+        _require_trusted_snapshot_parent(snapshot.parent, parent_fd, parent_identity)
+        _require_owned_snapshot_leaf_matches_fd(
+            parent_fd, snapshot_name, snapshot_fd
+        )
+        if _digest(_read_regular_fd(snapshot_fd, 0o555)) != failing_sha256:
+            raise RollbackRefused
+        _require_owned_snapshot_leaf_matches_fd(
+            parent_fd, snapshot_name, snapshot_fd
+        )
+    except (OSError, RollbackRefused, TypeError, NotImplementedError) as exc:
+        raise RollbackCommitOrCleanupIndeterminate from exc
+
+
 def atomic_rollback(
     *,
     snapshot: Path,
@@ -683,7 +747,9 @@ def atomic_rollback(
     cleanup_indeterminate: RollbackCommitOrCleanupIndeterminate | None = None
     try:
         parent_fd, parent_identity = _open_parent(snapshot.parent)
-        _parent_still_bound(snapshot.parent, parent_fd, parent_identity)
+        _require_trusted_snapshot_parent(
+            snapshot.parent, parent_fd, parent_identity
+        )
         target_parent_fd, target_parent_identity = _open_parent(target_blob.parent)
         _parent_still_bound(
             target_blob.parent,
@@ -693,8 +759,13 @@ def atomic_rollback(
 
         snapshot_fd = _open_regular_at(parent_fd, snapshot_name, 0o555)
         _lock_exclusive(snapshot_fd)
-        _require_leaf_matches_fd(parent_fd, snapshot_name, snapshot_fd, 0o555)
+        _require_owned_snapshot_leaf_matches_fd(
+            parent_fd, snapshot_name, snapshot_fd
+        )
         current = _read_regular_fd(snapshot_fd, 0o555)
+        _require_owned_snapshot_leaf_matches_fd(
+            parent_fd, snapshot_name, snapshot_fd
+        )
         if _digest(current) != failing_sha256:
             raise RollbackRefused
 
@@ -709,14 +780,22 @@ def atomic_rollback(
 
         temp_fd, temp_name = _create_temp_at(parent_fd)
         _write_temp(temp_fd, target)
-        _require_leaf_matches_fd(parent_fd, temp_name, temp_fd, 0o555)
+        _require_owned_snapshot_leaf_matches_fd(parent_fd, temp_name, temp_fd)
         if _digest(_read_regular_fd(temp_fd, 0o555)) != target_sha256:
             raise RollbackRefused
+        _require_owned_snapshot_leaf_matches_fd(parent_fd, temp_name, temp_fd)
 
-        _parent_still_bound(snapshot.parent, parent_fd, parent_identity)
-        _require_leaf_matches_fd(parent_fd, snapshot_name, snapshot_fd, 0o555)
+        _require_trusted_snapshot_parent(
+            snapshot.parent, parent_fd, parent_identity
+        )
+        _require_owned_snapshot_leaf_matches_fd(
+            parent_fd, snapshot_name, snapshot_fd
+        )
         if _digest(_read_regular_fd(snapshot_fd, 0o555)) != failing_sha256:
             raise RollbackRefused
+        _require_owned_snapshot_leaf_matches_fd(
+            parent_fd, snapshot_name, snapshot_fd
+        )
 
         try:
             os.replace(
@@ -737,12 +816,21 @@ def atomic_rollback(
             if destination == "new":
                 temp_name = None
                 raise RollbackCommitOrCleanupIndeterminate from exc
-            try:
-                _parent_still_bound(snapshot.parent, parent_fd, parent_identity)
-            except RollbackRefused as binding_exc:
-                raise RollbackCommitOrCleanupIndeterminate from binding_exc
             if destination != "old":
                 raise RollbackCommitOrCleanupIndeterminate from exc
+            try:
+                _cleanup_temp_and_reconcile_old_snapshot(
+                    snapshot=snapshot,
+                    parent_fd=parent_fd,
+                    parent_identity=parent_identity,
+                    snapshot_name=snapshot_name,
+                    snapshot_fd=snapshot_fd,
+                    failing_sha256=failing_sha256,
+                    temp_name=temp_name,
+                    temp_fd=temp_fd,
+                )
+            finally:
+                temp_name = None
             if isinstance(exc, OSError):
                 raise
             raise RollbackRefused from exc
@@ -750,16 +838,35 @@ def atomic_rollback(
 
         try:
             os.fsync(parent_fd)
-            _parent_still_bound(snapshot.parent, parent_fd, parent_identity)
-            _require_leaf_matches_fd(parent_fd, snapshot_name, temp_fd, 0o555)
+            _require_trusted_snapshot_parent(
+                snapshot.parent, parent_fd, parent_identity
+            )
+            _require_owned_snapshot_leaf_matches_fd(
+                parent_fd, snapshot_name, temp_fd
+            )
             if _digest(_read_regular_fd(temp_fd, 0o555)) != target_sha256:
                 raise RollbackRefused
+            _require_owned_snapshot_leaf_matches_fd(
+                parent_fd, snapshot_name, temp_fd
+            )
         except (OSError, RollbackRefused) as exc:
             raise RollbackCommitOrCleanupIndeterminate from exc
     finally:
         if temp_name is not None and temp_fd >= 0 and parent_fd >= 0:
             try:
-                _cleanup_exact_temp_at(parent_fd, temp_name, temp_fd)
+                try:
+                    _cleanup_temp_and_reconcile_old_snapshot(
+                        snapshot=snapshot,
+                        parent_fd=parent_fd,
+                        parent_identity=parent_identity,
+                        snapshot_name=snapshot_name,
+                        snapshot_fd=snapshot_fd,
+                        failing_sha256=failing_sha256,
+                        temp_name=temp_name,
+                        temp_fd=temp_fd,
+                    )
+                finally:
+                    temp_name = None
             except RollbackCommitOrCleanupIndeterminate as exc:
                 cleanup_indeterminate = exc
         for fd in (temp_fd, snapshot_fd, target_parent_fd, parent_fd):

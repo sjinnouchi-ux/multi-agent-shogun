@@ -3,7 +3,9 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 
@@ -79,6 +81,9 @@ SHA40 = re.compile(r"[0-9a-f]{40}")
 SHA64 = re.compile(r"[0-9a-f]{64}")
 TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 MAX_CONSUMER_BYTES = 1_048_576
+# Bound attacker-controlled traversal before opening one FD per component.
+MAX_REGISTRY_PATH_BYTES = 4_096
+MAX_REGISTRY_PATH_COMPONENTS = 64
 
 
 class ContractRejected(Exception):
@@ -671,7 +676,7 @@ def _output_source_hash(raw: bytes) -> str:
 
 
 def _valid_elapsed_seconds(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         return False
     try:
         return math.isfinite(value) and 0 <= value < 10.0
@@ -690,14 +695,20 @@ def evaluate_consumer(
 ) -> ConsumerDecision:
     if fetch_ok is not True:
         return _failure("diagnostic_provenance_untrusted")
-    if not registry or len(registry) > MAX_CONSUMER_BYTES:
+    if (
+        type(registry) is not bytes
+        or not registry
+        or len(registry) > MAX_CONSUMER_BYTES
+    ):
         return _failure("diagnostic_provenance_untrusted")
     try:
         active = _active_record(registry)
     except Exception:
         return _failure("diagnostic_provenance_untrusted")
     if (
-        stderr
+        type(stdout) is not bytes
+        or type(stderr) is not bytes
+        or stderr
         or not stdout
         or len(stdout) > MAX_CONSUMER_BYTES
         or type(exit_code) is not int
@@ -714,14 +725,160 @@ def evaluate_consumer(
     return ConsumerDecision(True, None, "use_sanitized_diagnostic")
 
 
+def _stable_metadata(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+        value.st_mode,
+    )
+
+
+def _secure_registry_bytes(path: str) -> bytes:
+    required_flags = ("O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC", "O_DIRECTORY")
+    if (
+        os.name != "posix"
+        or type(path) is not str
+        or not path
+        or any(not hasattr(os, name) for name in required_flags)
+        or os.open not in os.supports_dir_fd
+        or os.stat not in os.supports_dir_fd
+        or os.stat not in os.supports_follow_symlinks
+    ):
+        raise ContractRejected
+
+    try:
+        encoded_path = os.fsencode(path)
+    except Exception as exc:
+        raise ContractRejected from exc
+    if len(encoded_path) > MAX_REGISTRY_PATH_BYTES:
+        raise ContractRejected
+
+    absolute = os.path.isabs(path)
+    parts: list[str] = []
+    for part in path.split(os.sep):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            raise ContractRejected
+        parts.append(part)
+    if not parts or len(parts) > MAX_REGISTRY_PATH_COMPONENTS:
+        raise ContractRejected
+
+    directory_flags = (
+        os.O_RDONLY
+        | os.O_DIRECTORY
+        | os.O_NOFOLLOW
+        | os.O_NONBLOCK
+        | os.O_CLOEXEC
+    )
+    leaf_flags = (
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    )
+    descriptors: list[int] = []
+    directory_bindings: list[tuple[int, str, int, os.stat_result]] = []
+    close_failed = False
+    raw: bytes
+    try:
+        base_name = os.sep if absolute else "."
+        base_fd = os.open(base_name, directory_flags)
+        descriptors.append(base_fd)
+        base_before = os.fstat(base_fd)
+        if not stat.S_ISDIR(base_before.st_mode):
+            raise ContractRejected
+
+        parent_fd = base_fd
+        for component in parts[:-1]:
+            child_fd = os.open(component, directory_flags, dir_fd=parent_fd)
+            descriptors.append(child_fd)
+            child_before = os.fstat(child_fd)
+            if not stat.S_ISDIR(child_before.st_mode):
+                raise ContractRejected
+            directory_bindings.append(
+                (parent_fd, component, child_fd, child_before)
+            )
+            parent_fd = child_fd
+
+        leaf_name = parts[-1]
+        leaf_fd = os.open(leaf_name, leaf_flags, dir_fd=parent_fd)
+        descriptors.append(leaf_fd)
+        leaf_before = os.fstat(leaf_fd)
+        if (
+            not stat.S_ISREG(leaf_before.st_mode)
+            or leaf_before.st_size < 0
+            or leaf_before.st_size > MAX_CONSUMER_BYTES
+        ):
+            raise ContractRejected
+
+        remaining = leaf_before.st_size
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(leaf_fd, min(65_536, remaining))
+            if type(chunk) is not bytes or not chunk or len(chunk) > remaining:
+                raise ContractRejected
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(leaf_fd, 1) != b"":
+            raise ContractRejected
+        raw = b"".join(chunks)
+        if len(raw) != leaf_before.st_size:
+            raise ContractRejected
+
+        leaf_after = os.fstat(leaf_fd)
+        visible_leaf = os.stat(
+            leaf_name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(visible_leaf.st_mode)
+            or _stable_metadata(leaf_after) != _stable_metadata(leaf_before)
+            or _stable_metadata(visible_leaf) != _stable_metadata(leaf_before)
+        ):
+            raise ContractRejected
+
+        base_after = os.fstat(base_fd)
+        visible_base = os.stat(base_name, follow_symlinks=False)
+        if (
+            _stable_metadata(base_after) != _stable_metadata(base_before)
+            or _stable_metadata(visible_base) != _stable_metadata(base_before)
+        ):
+            raise ContractRejected
+        for ancestor_fd, component, directory_fd, directory_before in (
+            directory_bindings
+        ):
+            directory_after = os.fstat(directory_fd)
+            visible_directory = os.stat(
+                component, dir_fd=ancestor_fd, follow_symlinks=False
+            )
+            if (
+                not stat.S_ISDIR(visible_directory.st_mode)
+                or _stable_metadata(directory_after)
+                != _stable_metadata(directory_before)
+                or _stable_metadata(visible_directory)
+                != _stable_metadata(directory_before)
+            ):
+                raise ContractRejected
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                close_failed = True
+    if close_failed:
+        raise ContractRejected
+    return raw
+
+
 def registry_cli(argv: tuple[str, ...]) -> int:
     if len(argv) != 2 or argv[0] != "validate-active-registry":
         return 2
     try:
-        with open(argv[1], "rb") as handle:
-            raw = handle.read(MAX_CONSUMER_BYTES + 1)
+        raw = _secure_registry_bytes(argv[1])
         validate_registry(raw, require_active=True)
-    except (ContractRejected, OSError):
+    except Exception:
         return 1
     print("deployment_registry=pass")
     return 0

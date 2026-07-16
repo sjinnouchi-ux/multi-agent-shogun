@@ -42,6 +42,12 @@ def sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def stat_with_uid(value: os.stat_result, uid: int) -> os.stat_result:
+    fields = list(value)
+    fields[4] = uid
+    return os.stat_result(fields)
+
+
 class AtomicRollbackTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
@@ -864,6 +870,81 @@ class AtomicRollbackTests(unittest.TestCase):
             )
         self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
 
+    def test_snapshot_parent_rejects_group_or_world_writable_mode(self) -> None:
+        for unsafe_mode in (0o720, 0o702):
+            with self.subTest(mode=oct(unsafe_mode)):
+                self.root.chmod(unsafe_mode)
+                with self.assertRaises(self.module.RollbackRefused):
+                    self.rollback()
+                self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+                self.root.chmod(0o700)
+
+    def test_snapshot_parent_must_be_owned_by_effective_user(self) -> None:
+        real_fstat = os.fstat
+        parent_identity = (
+            self.snapshot.parent.stat().st_dev,
+            self.snapshot.parent.stat().st_ino,
+        )
+
+        def nonowner_parent(fd):
+            metadata = real_fstat(fd)
+            if (
+                stat.S_ISDIR(metadata.st_mode)
+                and (metadata.st_dev, metadata.st_ino) == parent_identity
+            ):
+                return stat_with_uid(metadata, os.geteuid() + 1)
+            return metadata
+
+        with mock.patch.object(
+            self.module.os, "fstat", side_effect=nonowner_parent
+        ):
+            with self.assertRaises(self.module.RollbackRefused):
+                self.rollback()
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+
+    def test_snapshot_leaf_must_be_owned_by_effective_user(self) -> None:
+        real_fstat = os.fstat
+        snapshot_identity = (
+            self.snapshot.stat().st_dev,
+            self.snapshot.stat().st_ino,
+        )
+
+        def nonowner_snapshot(fd):
+            metadata = real_fstat(fd)
+            if (
+                stat.S_ISREG(metadata.st_mode)
+                and (metadata.st_dev, metadata.st_ino) == snapshot_identity
+            ):
+                return stat_with_uid(metadata, os.geteuid() + 1)
+            return metadata
+
+        with mock.patch.object(
+            self.module.os, "fstat", side_effect=nonowner_snapshot
+        ):
+            with self.assertRaises(self.module.RollbackRefused):
+                self.rollback()
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+
+    def test_read_regular_fd_accepts_exact_maximum_source_size(self) -> None:
+        boundary = self.root / "exact-source-boundary"
+        expected = b"x" * self.module.MAX_SOURCE_BYTES
+        boundary.write_bytes(expected)
+        fd = os.open(boundary, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            self.assertEqual(self.module._read_regular_fd(fd, None), expected)
+        finally:
+            os.close(fd)
+
+    def test_read_regular_fd_rejects_one_byte_over_source_limit(self) -> None:
+        boundary = self.root / "over-source-boundary"
+        boundary.write_bytes(b"x" * (self.module.MAX_SOURCE_BYTES + 1))
+        fd = os.open(boundary, os.O_RDONLY | os.O_CLOEXEC)
+        try:
+            with self.assertRaises(self.module.RollbackRefused):
+                self.module._read_regular_fd(fd, None)
+        finally:
+            os.close(fd)
+
     def test_target_hash_mismatch_refuses_without_changing_snapshot(self) -> None:
         with self.assertRaises(self.module.RollbackRefused):
             self.module.atomic_rollback(
@@ -991,7 +1072,7 @@ class AtomicRollbackTests(unittest.TestCase):
         self.assertEqual(observed_locked, [True])
         self.assertEqual(self.snapshot.read_bytes(), self.target_bytes)
 
-    def test_parent_swap_before_replace_refuses_and_cleans_pinned_directory(
+    def test_parent_swap_before_replace_is_indeterminate_after_cleanup(
         self,
     ) -> None:
         parent, moved, snapshot, target = self.make_parent_swap_fixture()
@@ -1014,7 +1095,9 @@ class AtomicRollbackTests(unittest.TestCase):
         with mock.patch.object(
             self.module.os, "fsync", side_effect=swap_after_temp_fsync
         ):
-            with self.assertRaises(self.module.RollbackRefused):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
                 self.rollback_paths(snapshot, target)
         self.assertEqual((moved / snapshot.name).read_bytes(), self.current_bytes)
         self.assertEqual((parent / snapshot.name).read_bytes(), decoy)
@@ -1023,6 +1106,82 @@ class AtomicRollbackTests(unittest.TestCase):
         )
         self.assertEqual(
             list(parent.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
+    def test_snapshot_parent_trust_drift_is_indeterminate_after_cleanup(
+        self,
+    ) -> None:
+        real_fsync = os.fsync
+        drifted = False
+
+        def make_parent_unsafe_after_temp_fsync(fd):
+            nonlocal drifted
+            result = real_fsync(fd)
+            if not drifted and stat.S_ISREG(os.fstat(fd).st_mode):
+                drifted = True
+                self.snapshot.parent.chmod(0o777)
+            return result
+
+        with mock.patch.object(
+            self.module.os,
+            "fsync",
+            side_effect=make_parent_unsafe_after_temp_fsync,
+        ):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
+                self.rollback()
+        self.assertTrue(drifted)
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
+    def test_snapshot_leaf_owner_drift_is_indeterminate_after_cleanup(
+        self,
+    ) -> None:
+        real_fstat = os.fstat
+        real_fsync = os.fsync
+        snapshot_identity = (
+            self.snapshot.stat().st_dev,
+            self.snapshot.stat().st_ino,
+        )
+        drifted = False
+
+        def mark_owner_drift_after_temp_fsync(fd):
+            nonlocal drifted
+            result = real_fsync(fd)
+            if not drifted and stat.S_ISREG(real_fstat(fd).st_mode):
+                drifted = True
+            return result
+
+        def drifted_snapshot_owner(fd):
+            metadata = real_fstat(fd)
+            if (
+                drifted
+                and stat.S_ISREG(metadata.st_mode)
+                and (metadata.st_dev, metadata.st_ino) == snapshot_identity
+            ):
+                return stat_with_uid(metadata, os.geteuid() + 1)
+            return metadata
+
+        with mock.patch.object(
+            self.module.os,
+            "fsync",
+            side_effect=mark_owner_drift_after_temp_fsync,
+        ), mock.patch.object(
+            self.module.os,
+            "fstat",
+            side_effect=drifted_snapshot_owner,
+        ):
+            with self.assertRaises(
+                self.module.RollbackCommitOrCleanupIndeterminate
+            ):
+                self.rollback()
+        self.assertTrue(drifted)
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
         )
 
     def test_parent_swap_during_replace_is_commit_or_cleanup_indeterminate(
@@ -1091,10 +1250,193 @@ class AtomicRollbackTests(unittest.TestCase):
                 self.rollback()
         self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
 
+    def test_general_precommit_refusal_with_reconciled_old_leaf_is_exit_three(
+        self,
+    ) -> None:
+        real_write_temp = self.module._write_temp
+
+        def write_temp_then_refuse(fd, value):
+            real_write_temp(fd, value)
+            raise self.module.RollbackRefused
+
+        with mock.patch.object(
+            self.module, "SNAPSHOT_PATH", self.snapshot
+        ), mock.patch.object(
+            self.module,
+            "_write_temp",
+            side_effect=write_temp_then_refuse,
+        ):
+            result = self.module.main((
+                "--failing-sha256", sha(self.current_bytes),
+                "--target-sha256", sha(self.target_bytes),
+                "--target-blob", str(self.target),
+            ))
+
+        self.assertEqual(result, 3)
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
+    def test_general_precommit_parent_drift_during_cleanup_is_exit_four(
+        self,
+    ) -> None:
+        real_write_temp = self.module._write_temp
+        real_unlink = os.unlink
+        drifted = False
+
+        def write_temp_then_refuse(fd, value):
+            real_write_temp(fd, value)
+            raise self.module.RollbackRefused
+
+        def unlink_temp_then_drift_parent(path, *, dir_fd=None):
+            nonlocal drifted
+            result = real_unlink(path, dir_fd=dir_fd)
+            if not drifted and os.fspath(path).startswith(self.module.TEMP_PREFIX):
+                drifted = True
+                self.snapshot.parent.chmod(0o777)
+            return result
+
+        with mock.patch.object(
+            self.module, "SNAPSHOT_PATH", self.snapshot
+        ), mock.patch.object(
+            self.module,
+            "_write_temp",
+            side_effect=write_temp_then_refuse,
+        ), mock.patch.object(
+            self.module.os,
+            "unlink",
+            side_effect=unlink_temp_then_drift_parent,
+        ):
+            result = self.module.main((
+                "--failing-sha256", sha(self.current_bytes),
+                "--target-sha256", sha(self.target_bytes),
+                "--target-blob", str(self.target),
+            ))
+
+        self.snapshot.parent.chmod(0o700)
+        self.assertTrue(drifted)
+        self.assertEqual(result, 4)
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
+    def test_general_precommit_old_leaf_swap_during_cleanup_is_exit_four(
+        self,
+    ) -> None:
+        real_write_temp = self.module._write_temp
+        real_replace = os.replace
+        real_unlink = os.unlink
+        swapped = False
+
+        def write_temp_then_refuse(fd, value):
+            real_write_temp(fd, value)
+            raise self.module.RollbackRefused
+
+        def unlink_temp_then_swap_old_leaf(path, *, dir_fd=None):
+            nonlocal swapped
+            result = real_unlink(path, dir_fd=dir_fd)
+            if not swapped and os.fspath(path).startswith(self.module.TEMP_PREFIX):
+                swapped = True
+                replacement = self.root / "same-hash-general-cleanup-swap"
+                replacement.write_bytes(self.current_bytes)
+                replacement.chmod(0o555)
+                real_replace(replacement, self.snapshot)
+            return result
+
+        with mock.patch.object(
+            self.module, "SNAPSHOT_PATH", self.snapshot
+        ), mock.patch.object(
+            self.module,
+            "_write_temp",
+            side_effect=write_temp_then_refuse,
+        ), mock.patch.object(
+            self.module.os,
+            "unlink",
+            side_effect=unlink_temp_then_swap_old_leaf,
+        ):
+            result = self.module.main((
+                "--failing-sha256", sha(self.current_bytes),
+                "--target-sha256", sha(self.target_bytes),
+                "--target-blob", str(self.target),
+            ))
+
+        self.assertTrue(swapped)
+        self.assertEqual(result, 4)
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
     def test_replace_failure_preserves_current_and_removes_temp(self) -> None:
         with mock.patch.object(self.module.os, "replace", side_effect=OSError):
             with self.assertRaises(OSError):
                 self.rollback()
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
+    def test_destination_swap_during_old_temp_cleanup_is_indeterminate(
+        self,
+    ) -> None:
+        real_replace = os.replace
+        real_unlink = os.unlink
+        swapped = False
+
+        def unlink_temp_then_swap_destination(path, *, dir_fd=None):
+            nonlocal swapped
+            result = real_unlink(path, dir_fd=dir_fd)
+            if not swapped and os.fspath(path).startswith(self.module.TEMP_PREFIX):
+                swapped = True
+                replacement = self.root / "same-hash-cleanup-swap"
+                replacement.write_bytes(self.current_bytes)
+                replacement.chmod(0o555)
+                real_replace(replacement, self.snapshot)
+            return result
+
+        with mock.patch.object(self.module.os, "replace", side_effect=OSError), (
+            mock.patch.object(
+                self.module.os,
+                "unlink",
+                side_effect=unlink_temp_then_swap_destination,
+            )
+        ):
+            self.assert_commit_or_cleanup_indeterminate(self.rollback)
+        self.assertTrue(swapped)
+        self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
+        self.assertEqual(
+            list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []
+        )
+
+    def test_destination_swap_after_old_cleanup_durability_is_indeterminate(
+        self,
+    ) -> None:
+        real_fsync = os.fsync
+        real_replace = os.replace
+        swapped = False
+
+        def swap_destination_after_directory_fsync(fd):
+            nonlocal swapped
+            result = real_fsync(fd)
+            if not swapped and stat.S_ISDIR(os.fstat(fd).st_mode):
+                swapped = True
+                replacement = self.root / "same-hash-post-cleanup-swap"
+                replacement.write_bytes(self.current_bytes)
+                replacement.chmod(0o555)
+                real_replace(replacement, self.snapshot)
+            return result
+
+        with mock.patch.object(self.module.os, "replace", side_effect=OSError), (
+            mock.patch.object(
+                self.module.os,
+                "fsync",
+                side_effect=swap_destination_after_directory_fsync,
+            )
+        ):
+            self.assert_commit_or_cleanup_indeterminate(self.rollback)
+        self.assertTrue(swapped)
         self.assertEqual(self.snapshot.read_bytes(), self.current_bytes)
         self.assertEqual(
             list(self.root.glob(".shogun-codex-diagnostics.rollback.*")), []

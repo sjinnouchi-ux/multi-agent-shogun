@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,19 @@ from unittest import mock
 import tests.contract.codex_diagnostics_consumer as consumer
 
 SOURCE_SHA = "a" * 64
+
+
+class ExplodingBoundary:
+    def __bool__(self):
+        raise RuntimeError("boundary coercion must not run")
+
+    def __len__(self):
+        raise RuntimeError("boundary length must not run")
+
+
+class ExplodingElapsed(float):
+    def __ge__(self, _other):
+        raise RuntimeError("elapsed subclass comparison must not run")
 
 
 def record(status: str = "active") -> dict[str, object]:
@@ -199,12 +213,65 @@ class ConsumerContractTests(unittest.TestCase):
         values.update(overrides)
         return consumer.evaluate_consumer(**values)
 
+    def assert_registry_cli_rejects_silently(self, path: Path) -> None:
+        with mock.patch("builtins.print") as output_capture:
+            result = consumer.registry_cli(
+                ("validate-active-registry", str(path))
+            )
+        self.assertEqual(result, 1)
+        output_capture.assert_not_called()
+
     def test_valid_envelope_is_the_only_trusted_decision(self) -> None:
         decision = self.evaluate()
         self.assertTrue(decision.trusted)
         self.assertIsNone(decision.code)
         self.assertEqual(decision.action, "use_sanitized_diagnostic")
         self.assertFalse(decision.fallback_allowed)
+
+    def test_registry_boundary_requires_exact_bytes_and_never_raises(self) -> None:
+        for name, value in (
+            ("none", None),
+            ("text", registry([record()]).decode("ascii")),
+            ("bytearray", bytearray(registry([record()]))),
+            ("memoryview", memoryview(registry([record()]))),
+            ("hostile", ExplodingBoundary()),
+        ):
+            with self.subTest(name=name):
+                try:
+                    decision = self.evaluate(registry=value)
+                except BaseException as exc:  # pragma: no cover - regression guard
+                    self.fail(f"registry boundary leaked {type(exc).__name__}")
+                self.assertFalse(decision.trusted)
+                self.assertEqual(
+                    decision.code, "diagnostic_provenance_untrusted"
+                )
+                self.assertEqual(decision.action, "stop_without_fallback")
+                self.assertFalse(decision.fallback_allowed)
+
+    def test_process_stream_boundaries_require_exact_bytes_and_never_raise(
+        self,
+    ) -> None:
+        cases = (
+            ("stdout_none", {"stdout": None}),
+            ("stdout_bytearray", {"stdout": bytearray(output())}),
+            ("stdout_memoryview", {"stdout": memoryview(output())}),
+            ("stdout_hostile", {"stdout": ExplodingBoundary()}),
+            ("stderr_none", {"stderr": None}),
+            ("stderr_bytearray", {"stderr": bytearray()}),
+            ("stderr_memoryview", {"stderr": memoryview(b"")}),
+            ("stderr_hostile", {"stderr": ExplodingBoundary()}),
+            ("elapsed_subclass", {"elapsed_seconds": ExplodingElapsed(0.1)}),
+        )
+        for name, overrides in cases:
+            with self.subTest(name=name):
+                try:
+                    decision = self.evaluate(**overrides)
+                except BaseException as exc:  # pragma: no cover - regression guard
+                    self.fail(f"process boundary leaked {type(exc).__name__}")
+                self.assertFalse(decision.trusted)
+                self.assertEqual(decision.code, "diagnostic_process_failed")
+                self.assertEqual(decision.action, "stop_without_fallback")
+                self.assertFalse(decision.fallback_allowed)
 
     def test_missing_optional_supervisor_is_trusted_when_everything_else_is_healthy(
         self,
@@ -469,6 +536,216 @@ class ConsumerContractTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(consumer.registry_cli(("other", str(path))), 2)
+
+    def test_registry_cli_rejects_leaf_and_parent_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            real_parent = root / "real"
+            real_parent.mkdir()
+            real_leaf = real_parent / "work-log.md"
+            real_leaf.write_bytes(registry([record()]))
+
+            leaf_link = real_parent / "leaf-link.md"
+            leaf_link.symlink_to(real_leaf)
+            self.assert_registry_cli_rejects_silently(leaf_link)
+
+            parent_link = root / "parent-link"
+            parent_link.symlink_to(real_parent, target_is_directory=True)
+            self.assert_registry_cli_rejects_silently(
+                parent_link / real_leaf.name
+            )
+
+    def test_registry_cli_rejects_fifo_device_and_oversized_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fifo = root / "registry.fifo"
+            os.mkfifo(fifo)
+            try:
+                completed = subprocess.run(
+                    (
+                        sys.executable,
+                        "-I",
+                        str(Path(consumer.__file__).resolve()),
+                        "validate-active-registry",
+                        str(fifo),
+                    ),
+                    check=False,
+                    capture_output=True,
+                    timeout=2,
+                )
+            except subprocess.TimeoutExpired:
+                self.fail("FIFO registry read blocked instead of failing closed")
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(completed.stdout, b"")
+            self.assertEqual(completed.stderr, b"")
+
+            self.assert_registry_cli_rejects_silently(Path("/dev/null"))
+
+            oversized = root / "oversized.md"
+            valid = registry([record()])
+            oversized.write_bytes(
+                valid + b" " * (consumer.MAX_CONSUMER_BYTES - len(valid) + 1)
+            )
+            self.assert_registry_cli_rejects_silently(oversized)
+
+    def test_registry_cli_rejects_parent_traversal_component(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            child = root / "child"
+            child.mkdir()
+            path = root / "work-log.md"
+            path.write_bytes(registry([record()]))
+            self.assert_registry_cli_rejects_silently(
+                Path(f"{child}/../{path.name}")
+            )
+
+    def test_registry_cli_rejects_overlong_encoded_path_before_opening(
+        self,
+    ) -> None:
+        path = Path("x" * 4_097)
+        self.assertEqual(len(os.fsencode(str(path))), 4_097)
+        with mock.patch.object(
+            os, "open", side_effect=OSError("path limit must run first")
+        ) as open_file, mock.patch.object(
+            os, "supports_dir_fd", os.supports_dir_fd | {open_file}
+        ):
+            self.assert_registry_cli_rejects_silently(path)
+        open_file.assert_not_called()
+
+    def test_registry_cli_rejects_too_many_components_before_opening(
+        self,
+    ) -> None:
+        path = Path(*(["x"] * 65))
+        self.assertEqual(len(str(path).split(os.sep)), 65)
+        with mock.patch.object(
+            os, "open", side_effect=OSError("component limit must run first")
+        ) as open_file, mock.patch.object(
+            os, "supports_dir_fd", os.supports_dir_fd | {open_file}
+        ):
+            self.assert_registry_cli_rejects_silently(path)
+        open_file.assert_not_called()
+
+    def test_registry_cli_rejects_leaf_swap_after_read(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            path = root / "work-log.md"
+            moved = root / "moved.md"
+            replacement = root / "replacement.md"
+            path.write_bytes(registry([record()]))
+            replacement.write_bytes(registry([record()]))
+            original_read = os.read
+            swapped = False
+
+            def read_then_swap(fd, count):
+                nonlocal swapped
+                data = original_read(fd, count)
+                if not swapped:
+                    swapped = True
+                    path.rename(moved)
+                    replacement.rename(path)
+                return data
+
+            with mock.patch.object(os, "read", side_effect=read_then_swap):
+                self.assert_registry_cli_rejects_silently(path)
+            self.assertTrue(swapped)
+
+    def test_registry_cli_rejects_parent_swap_after_read(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            parent = root / "parent"
+            moved = root / "moved-parent"
+            replacement = root / "replacement-parent"
+            parent.mkdir()
+            replacement.mkdir()
+            path = parent / "work-log.md"
+            path.write_bytes(registry([record()]))
+            (replacement / path.name).write_bytes(registry([record()]))
+            original_read = os.read
+            swapped = False
+
+            def read_then_swap(fd, count):
+                nonlocal swapped
+                data = original_read(fd, count)
+                if not swapped:
+                    swapped = True
+                    parent.rename(moved)
+                    replacement.rename(parent)
+                return data
+
+            with mock.patch.object(os, "read", side_effect=read_then_swap):
+                self.assert_registry_cli_rejects_silently(path)
+            self.assertTrue(swapped)
+
+    def test_registry_cli_rejects_in_place_metadata_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "work-log.md"
+            path.write_bytes(registry([record()]))
+            path.chmod(0o640)
+            original_read = os.read
+            mutated = False
+
+            def read_then_mutate(fd, count):
+                nonlocal mutated
+                data = original_read(fd, count)
+                if not mutated:
+                    mutated = True
+                    path.chmod(0o600)
+                return data
+
+            with mock.patch.object(os, "read", side_effect=read_then_mutate):
+                self.assert_registry_cli_rejects_silently(path)
+            self.assertTrue(mutated)
+
+    def test_registry_cli_rejects_same_size_rewrite_with_restored_metadata(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "work-log.md"
+            expected = registry([record()])
+            replacement = b"!" + expected[1:]
+            self.assertEqual(len(replacement), len(expected))
+            path.write_bytes(expected)
+            original = path.stat()
+            original_read = os.read
+            rewritten = False
+
+            def read_then_rewrite(fd, count):
+                nonlocal rewritten
+                data = original_read(fd, count)
+                if not rewritten:
+                    rewritten = True
+                    path.write_bytes(replacement)
+                path.chmod(original.st_mode & 0o7777)
+                os.utime(
+                    path,
+                    ns=(original.st_atime_ns, original.st_mtime_ns),
+                    follow_symlinks=False,
+                )
+                return data
+
+            with mock.patch.object(os, "read", side_effect=read_then_rewrite):
+                self.assert_registry_cli_rejects_silently(path)
+            self.assertTrue(rewritten)
+            final = path.stat()
+            self.assertEqual(final.st_size, original.st_size)
+            self.assertEqual(final.st_atime_ns, original.st_atime_ns)
+            self.assertEqual(final.st_mtime_ns, original.st_mtime_ns)
+            self.assertEqual(final.st_mode, original.st_mode)
+            self.assertNotEqual(final.st_ctime_ns, original.st_ctime_ns)
+
+    def test_registry_cli_accepts_exact_stable_bounded_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            path = Path(raw) / "work-log.md"
+            expected = registry([record()])
+            path.write_bytes(expected)
+            with mock.patch("builtins.print") as output_capture:
+                self.assertEqual(
+                    consumer.registry_cli(
+                        ("validate-active-registry", str(path))
+                    ),
+                    0,
+                )
+            output_capture.assert_called_once_with("deployment_registry=pass")
 
     def test_every_process_failure_stops_without_fallback(self) -> None:
         def missing_session_with_nonzero_counts(value):

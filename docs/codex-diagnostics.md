@@ -76,8 +76,14 @@ only when the current bytes equal the failing active hash and the blob equals th
 selected target hash. Record the restored deployment as the sole active record
 through a separate Shogun work-log PR before any later re-enablement. The
 legacy rollback mode is invoked without `install-initial`; that deployment-only
-subcommand is forbidden in the rollback procedure. Exit 3 is a
-verified pre-commit refusal only when exact temporary cleanup also succeeds.
+subcommand is forbidden in the rollback procedure. During rollback maintenance,
+the pinned snapshot parent must remain owned by the effective user and must not
+be group- or world-writable; the fixed snapshot leaf must remain effective-user
+owned, regular, mode `0555`, and hash-matched. Stop all cooperating same-UID
+maintenance writers for the whole operation. A malicious noncooperating same-UID
+writer remains outside this v1 trust boundary. Exit 3 is a verified pre-commit
+refusal only when exact temporary cleanup and directory durability succeed and
+the trusted parent binding plus the same pinned old leaf are revalidated.
 Exit 4 means snapshot commit state or exact temporary-artifact cleanup/durability
 state is indeterminate; it requires external reconciliation plus a new explicit
 recovery task, with no record update or automatic retry.
