@@ -3,6 +3,9 @@
 setup() {
     export PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
     export SCRIPT="$PROJECT_ROOT/scripts/codex_diagnostics.py"
+    if [ "$(uname -s)" != "Linux" ]; then
+        skip "CI environment: diagnostics deployment contract is Linux/WSL-only"
+    fi
 }
 
 assert_python_suite_passed() {
