@@ -1,6 +1,6 @@
 # Instruction Markdown EOL Normalization Design
 
-**Status:** Approved in principle by the user on 2026-07-16; written-spec review pending.
+**Status:** Approved by the user on 2026-07-16.
 
 ## Context
 
