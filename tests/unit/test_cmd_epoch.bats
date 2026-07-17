@@ -48,6 +48,20 @@ YAML
     [[ "$output" != *"cmd_010"* ]]
 }
 
+@test "cmd epoch generation sanitizes invalid encoding failures" {
+    cat > "$TEST_ROOT/active.yaml" <<'YAML'
+commands:
+  - id: cmd_009
+YAML
+    printf '\377\376' > "$TEST_ROOT/archive.yaml"
+
+    run "$PYTHON" "$CMD_EPOCH" next \
+        "$TEST_ROOT/active.yaml" "$TEST_ROOT/archive.yaml"
+
+    [ "$status" -ne 0 ]
+    [ "$output" = "cmd_epoch: unreadable command source" ]
+}
+
 @test "cmd epoch comparison matches an exact formal command and task identity" {
     cat > "$TEST_ROOT/task.yaml" <<'YAML'
 task:

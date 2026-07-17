@@ -93,7 +93,7 @@ def next_command_id(paths: Iterable[Path]) -> str:
             raise OSError("command source unavailable")
         try:
             document = load_yaml(path)
-        except (OSError, yaml.YAMLError) as exc:
+        except (OSError, UnicodeError, yaml.YAMLError) as exc:
             raise OSError("command source unavailable") from exc
         for value in iter_command_values(document):
             match = NUMERIC_CMD.fullmatch(value)
