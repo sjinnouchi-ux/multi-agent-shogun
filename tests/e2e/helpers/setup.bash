@@ -29,6 +29,7 @@ setup_e2e_session() {
     cp "$PROJECT_ROOT/scripts/inbox_write.sh" "$E2E_QUEUE/scripts/"
     cp "$PROJECT_ROOT/scripts/inbox_watcher.sh" "$E2E_QUEUE/scripts/"
     cp "$PROJECT_ROOT/scripts/handoff_watchdog.py" "$E2E_QUEUE/scripts/"
+    cp "$PROJECT_ROOT/scripts/cmd_epoch.py" "$E2E_QUEUE/scripts/"
     chmod +x "$E2E_QUEUE/scripts/inbox_write.sh"
     chmod +x "$E2E_QUEUE/scripts/inbox_watcher.sh"
 

@@ -484,6 +484,34 @@ YAML
     grep -q "acknowledged_at:" "$INBOX"
 }
 
+@test "formal task does not consume a legacy receipt even when task_id matches" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_legacy_for_formal
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    task_id: subtask_formal
+    content: "sanitized old receipt"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_010
+  task_id: subtask_formal
+  parent_cmd: cmd_010
+  status: assigned
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+    [ "$(json_field "$output" state)" = "healthy" ]
+    grep -q "handoff_state: none" "$STATUS_FILE"
+}
+
 @test "redo selects the exact formal task receipt instead of an older task in the same cmd" {
     cat > "$INBOX" <<'YAML'
 messages:
@@ -619,7 +647,7 @@ YAML
     [ "$(json_field "$output" state)" = "execution_retry_sent" ]
 }
 
-@test "legacy report without cmd can close a formal task during migration" {
+@test "legacy report without cmd cannot close a formal current task" {
     cat > "$INBOX" <<'YAML'
 messages:
   - id: msg_current_formal
@@ -647,6 +675,6 @@ YAML
 
     run_watchdog 2000
     [ "$status" -eq 0 ]
-    [ "$(json_field "$output" action)" = "none" ]
-    [ "$(json_field "$output" state)" = "healthy" ]
+    [ "$(json_field "$output" action)" = "task_retry" ]
+    [ "$(json_field "$output" state)" = "execution_retry_sent" ]
 }

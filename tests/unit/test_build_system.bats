@@ -79,6 +79,10 @@ setup() {
     grep -q "cmd: cmd_XXX" "$PROJECT_ROOT/CLAUDE.md"
     grep -q "Formal Command Epoch" "$PROJECT_ROOT/instructions/common/task_flow.md"
     grep -q '\[cmd\] \[task_id\]' "$PROJECT_ROOT/instructions/common/protocol.md"
+    grep -q 'report_received ashigaru{N} cmd_XXX subtask_XXX' \
+        "$PROJECT_ROOT/instructions/common/protocol.md"
+    ! grep -q 'report_received ashigaru{N}$' \
+        "$PROJECT_ROOT/instructions/common/protocol.md"
 
     for role in karo ashigaru gunshi oometsuke; do
         grep -q "cmd:" "$PROJECT_ROOT/instructions/roles/${role}_role.md"

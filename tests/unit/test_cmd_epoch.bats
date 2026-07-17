@@ -87,3 +87,34 @@ YAML
     [ "$status" -eq 0 ]
     [ "$output" = "legacy" ]
 }
+
+@test "formal current task does not downgrade an identity-less message to legacy" {
+    cat > "$TEST_ROOT/task.yaml" <<'YAML'
+task:
+  cmd: cmd_014
+  task_id: subtask_014a
+  parent_cmd: cmd_014
+  status: assigned
+YAML
+
+    run "$PYTHON" "$CMD_EPOCH" compare \
+        --task-file "$TEST_ROOT/task.yaml"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "stale" ]
+}
+
+@test "malformed declared cmd is invalid even when the other side has no cmd" {
+    cat > "$TEST_ROOT/task.yaml" <<'YAML'
+task:
+  cmd: malformed
+  task_id: subtask_015a
+  status: assigned
+YAML
+
+    run "$PYTHON" "$CMD_EPOCH" compare \
+        --task-file "$TEST_ROOT/task.yaml"
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "invalid" ]
+}

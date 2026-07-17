@@ -499,10 +499,11 @@ bash scripts/inbox_write.sh <target> "<message>" <type> <from>
 After writing report YAML, Ashigaru notifies Gunshi:
 
 ```bash
-bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N}
+bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N} cmd_XXX subtask_XXX
 ```
 
-That's it. No state checking, no retry, no delivery verification.
+Copy the current task YAML's formal `cmd` and `task_id`; legacy tasks may omit
+both. No state checking, retry, or delivery verification is required here.
 The inbox_write guarantees persistence. inbox_watcher handles delivery.
 
 # Task Flow

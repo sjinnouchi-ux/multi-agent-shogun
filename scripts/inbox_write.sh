@@ -30,6 +30,14 @@ if [ -n "$TASK_ID" ] && { [ -z "$CMD_EPOCH" ] || ! [[ "$TASK_ID" =~ ^[A-Za-z0-9]
     echo "[inbox_write] REJECTED: invalid task identity" >&2
     exit 1
 fi
+case "$TYPE" in
+    task_assigned|clear_command|report_received)
+        if [ -n "$CMD_EPOCH" ] && [ -z "$TASK_ID" ]; then
+            echo "[inbox_write] REJECTED: invalid task identity" >&2
+            exit 1
+        fi
+        ;;
+esac
 if [ -n "$DEDUP_REF" ] && ! [[ "$DEDUP_REF" =~ ^[a-f0-9]{12}$ ]]; then
     echo "[inbox_write] REJECTED: invalid dedup reference" >&2
     exit 1

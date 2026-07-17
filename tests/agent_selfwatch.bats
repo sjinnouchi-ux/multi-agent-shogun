@@ -245,6 +245,12 @@ PY
     rm -f "$PROJECT_ROOT/queue/inbox/test_agent.yaml" "$PROJECT_ROOT/queue/inbox/test_agent.yaml.lock"
 }
 
+@test "TC-CMD-EPOCH-002: task-scoped formal inbox write rejects missing task_id" {
+    run bash "$INBOX_WRITE_SCRIPT" test_agent "partial-formal" task_assigned karo cmd_022
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"invalid task identity"* ]]
+}
+
 @test "TC-NFR-003 [RED]: no-idle-full-read helper exists" {
     grep -q "no_idle_full_read" "$WATCHER_SCRIPT"
 }

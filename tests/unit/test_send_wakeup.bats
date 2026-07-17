@@ -2506,7 +2506,14 @@ YAML
         [ "$(clear_command_epoch_state cmd_031 subtask_031b)" = "match" ] || exit 81
         [ "$(clear_command_epoch_state cmd_030 subtask_031b)" = "stale" ] || exit 82
         [ "$(clear_command_epoch_state cmd_031 subtask_031a)" = "stale" ] || exit 83
-        [ "$(clear_command_epoch_state "" "")" = "legacy" ] || exit 84
+        [ "$(clear_command_epoch_state "" "")" = "stale" ] || exit 84
+        cat > "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<YAML
+task:
+  task_id: subtask_legacy
+  parent_cmd: cmd_legacy
+  status: assigned
+YAML
+        [ "$(clear_command_epoch_state "" "")" = "legacy" ] || exit 85
     '
     [ "$status" -eq 0 ]
 }
@@ -2573,7 +2580,13 @@ task:
   status: assigned
 YAML
         cat > "$INBOX" <<YAML
-messages: []
+messages:
+  - id: msg_legacy_recovery
+    from: inbox_watcher
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: task_assigned
+    content: "[auto-recovery] legacy hint"
+    read: false
 YAML
         first=$(enqueue_recovery_task_assigned)
         duplicate=$(enqueue_recovery_task_assigned)
@@ -2594,11 +2607,12 @@ import os, sys, yaml
 with open(sys.argv[1], encoding="utf-8") as handle:
     messages = yaml.safe_load(handle)["messages"]
 auto = [m for m in messages if m.get("from") == "inbox_watcher"]
-assert len(auto) == 2, auto
-assert [(m.get("cmd"), m.get("task_id")) for m in auto] == [
+formal = [m for m in auto if m.get("cmd")]
+assert len(auto) == 3, auto
+assert [(m.get("cmd"), m.get("task_id")) for m in formal] == [
     ("cmd_040", "subtask_040a"),
     ("cmd_040", "subtask_040a2"),
-], auto
+], formal
 assert os.environ["FIRST"].startswith("msg_auto_recovery_"), os.environ
 assert os.environ["DUPLICATE"] == "SKIP_DUPLICATE", os.environ
 assert os.environ["REDO"].startswith("msg_auto_recovery_"), os.environ

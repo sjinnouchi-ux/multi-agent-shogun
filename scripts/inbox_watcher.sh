@@ -939,8 +939,8 @@ try:
         except Exception:
             pass  # If task YAML is unreadable, proceed with auto-recovery as safety net
 
-    # Dedup only the same formal identity. Legacy hints retain the previous
-    # single-pending-message behavior during rolling migration.
+    # A formal current task is deduplicated only by its exact identity. A
+    # legacy pending hint must not suppress recovery for a newer formal task.
     for m in reversed(messages):
         if not (
             m.get("from") == "inbox_watcher"
@@ -951,10 +951,10 @@ try:
             continue
         existing_cmd = str(m.get("cmd") or "")
         existing_task_id = str(m.get("task_id") or "")
-        if not current_cmd or not existing_cmd:
+        if not current_cmd:
             print("SKIP_DUPLICATE")
             raise SystemExit(0)
-        if existing_cmd == current_cmd and existing_task_id == current_task_id:
+        if existing_cmd and existing_cmd == current_cmd and existing_task_id == current_task_id:
             print("SKIP_DUPLICATE")
             raise SystemExit(0)
 
@@ -1114,19 +1114,15 @@ PY
     ) 200>"$LOCKFILE" 2>/dev/null
 }
 
-# Compare a special command against the current task identity. Missing cmd on
-# either an existing legacy task or message follows the compatibility path;
-# once both sides are formal, cmd + task_id must match exactly.
+# Compare a special command against the current task identity. Only a legacy
+# current task follows the compatibility path; formal tasks require an exact
+# cmd + task_id match.
 clear_command_epoch_state() {
     local message_cmd="${1:-}"
     local message_task_id="${2:-}"
     local task_file
     task_file="$(dirname "$(dirname "$INBOX")")/tasks/${AGENT_ID}.yaml"
 
-    if [ -z "$message_cmd" ]; then
-        printf 'legacy\n'
-        return 0
-    fi
     if [ ! -f "$SCRIPT_DIR/scripts/cmd_epoch.py" ]; then
         printf 'invalid\n'
         return 0

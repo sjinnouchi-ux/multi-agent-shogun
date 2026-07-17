@@ -139,12 +139,11 @@ def task_finished(
     if report.get("task_id") != task_id:
         return False
     report_cmd = report.get("cmd")
-    if task_cmd not in (None, "") and report_cmd not in (None, ""):
-        if compare_identity(
-            {"cmd": task_cmd, "task_id": task_id},
-            {"cmd": report_cmd, "task_id": report.get("task_id")},
-        ) != "match":
-            return False
+    if task_cmd not in (None, "") and compare_identity(
+        {"cmd": task_cmd, "task_id": task_id},
+        {"cmd": report_cmd, "task_id": report.get("task_id")},
+    ) != "match":
+        return False
     return report.get("status") in {
         "done",
         "failed",
@@ -172,13 +171,7 @@ def select_task_message(
     for message in candidates:
         if compare_identity(task_data, message) == "match":
             return message
-
-    # A formal task can consume a legacy receipt during rolling migration only
-    # when there is no formal task receipt to contradict it.  Once a formal
-    # receipt exists, mismatches are stale and must not acknowledge this task.
-    if any(message.get("cmd") not in (None, "") for message in candidates):
-        return None
-    return candidates[0]
+    return None
 
 
 def reconcile(args: argparse.Namespace) -> dict[str, Any]:

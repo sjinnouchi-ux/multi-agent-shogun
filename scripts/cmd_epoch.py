@@ -48,17 +48,21 @@ def valid_task_id(value: Any) -> bool:
 def compare_identity(task: dict[str, Any], message: dict[str, Any]) -> str:
     """Compare formal ``cmd`` + ``task_id`` identities.
 
-    If either side has no ``cmd`` field, preserve the legacy compatibility
-    path.  If both sides declare a formal epoch, both fields must be valid and
-    equal; partial or malformed formal data is invalid rather than legacy.
+    Legacy compatibility is selected by the current task, not by the incoming
+    message.  Once a task declares a formal epoch, an identity-less message is
+    stale and malformed formal data is invalid rather than legacy.
     """
 
     task_cmd = task.get("cmd")
     message_cmd = message.get("cmd")
-    if task_cmd in (None, "") or message_cmd in (None, ""):
-        return "legacy"
-    if not valid_cmd(task_cmd) or not valid_cmd(message_cmd):
+    if task_cmd not in (None, "") and not valid_cmd(task_cmd):
         return "invalid"
+    if message_cmd not in (None, "") and not valid_cmd(message_cmd):
+        return "invalid"
+    if task_cmd in (None, ""):
+        return "legacy"
+    if message_cmd in (None, ""):
+        return "stale"
 
     task_id = task.get("task_id")
     message_task_id = message.get("task_id")
