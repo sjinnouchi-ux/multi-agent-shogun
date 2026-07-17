@@ -1,13 +1,39 @@
 # Shogun運用の残留リスクと次フェーズ必須TODO
 
-更新日: 2026-07-10
+更新日: 2026-07-17
 
-本書はntfy listener standby基盤の完了時点で未解消のリスクと、エージェント本番起動
-またはUI/スマホフェーズへ進む前に必要な作業を引き継ぐ。秘密値、Inbox本文、認証情報は
-記載しない。
+本書はntfy listener standby基盤とP0任務引き継ぎhardeningの実装・回帰確認時点で
+未解消のリスクを引き継ぐ。秘密値、Inbox本文、認証情報は記載しない。
+
+## P0で解消した項目
+
+次のP0項目はdraft PRへ実装済みで、関連unit・integration・既存mock E2Eの回帰確認と
+独立レビューを完了した。mainへ未マージの間は、各変更の導入可否をPR単位で判断する。
+
+- PR #14: Hookのcwd解決を `${CLAUDE_PROJECT_DIR:-.}` に統一し、裸の相対パスと
+  `args` 使用をlintで検出する。oometsukeのPhase-3 `/clear` を抑止し、既存のkaro・
+  gunshiと同じEscape+nudgeへフォールバックする。
+- PR #15: `get_pane_cli_state` の7状態分類を追加し、blocked優先、positive marker優先、
+  shell promptとshell processの両条件、test overrideの二重条件を実装する。
+- PR #16: 起動・CLI切替時のreadiness確認を追加し、ready未達paneへstartup promptを
+  送らず、CLI切替失敗時は設定をロールバックする。
+- PR #17: inbox通知の集約入口へliveness guardを追加し、unsafe stateでは送信せず、
+  `cli_state_at_notify` と `delivery_blocked_reason` だけを追加記録する。既存の
+  busy/idle、idle flag、watcher throttle、self-watch、ack/receiptは維持する。
+
+`clear_command` の配送時dropはP1であり、P0解消済みには含めない。
 
 ## 残留リスク
 
+- CLI分類はterminal末尾のsanitized markerに基づく。判定不能時は `unknown` として
+  fail-closedに送信を止めるため、未知のCLI表示変更は手動確認が必要になる。
+- permission/login promptは自動承認せず、startup promptやinbox番号も送らない。
+  P0では自動restartを行わないため、blocked状態の解消は利用者操作に依存する。
+- deployment hostを必要とするBloom E2E 6件はSKIPであり、成功扱いにしていない。
+  `make test-no-skip` も未実行である。
+- 本番Shogunへの配置、切替、起動、停止、再起動は実施していない。P0の確認は隔離した
+  clone/worktree、一時 `IDLE_FLAG_DIR`、sanitized fixtureだけで行った。
+- P2のauto restartは対象外であり、未実装である。
 - systemd実挙動は未検証。standby作業ではunitを意図的にstartしていないため、
   journalの秘匿性とrestart挙動は `docs/listener_standby.md` の再開初回チェックリストに
   従って実機確認する。
@@ -21,15 +47,17 @@
 
 実タスクを投入する前に、次の優先度順で着手する。
 
-### 1.【高】`clear_command` のdefer→drop修正
+### 1.【高 / P1】`clear_command` のdefer→明示的drop修正
 
-special messageが取得時にread済み化され、busy時にdeferされた `clear_command` が
-次周期に残らず、実質的にdropされる問題を解消する。
+現在はbusy時など安全に配送できない `clear_command` がdeferされ、状態回復後に古い
+commandが実行され得る。配送試行時点でready以外（busyを含む）なら後刻の再実行を
+予定せず、fail-closedな明示的dropへ変更する。
 
 修正方針:
 
-- 実送信成功後にreadへ更新する、または
-- `deferred` 状態を導入して再試行可能にする
+- `delivery_blocked_reason` にsanitizedなdrop理由を記録する
+- 送信元エージェントへ `watchdog_alert` を1回通知する
+- 同一dropの無制限な重複alertを防ぎ、後から発行された新しいcommandは独立して扱う
 
 ### 2.【高】stale-busy 5分判定と正当な長考の分離
 
@@ -68,4 +96,5 @@ Claudeのidle flagが5分間更新されない場合、正当な長考中でも 
 ## 変更管理
 
 本書に記載した項目は引き継ぎ記録であり、このdocs PRでは機能変更を行わない。
-各項目は別タスク・別ブランチで実装し、テストとレビューを経て反映する。
+P0解消項目の記載はPR #14〜#17へ依存する。残存項目は別タスク・別ブランチで実装し、
+テストとレビューを経て反映する。
