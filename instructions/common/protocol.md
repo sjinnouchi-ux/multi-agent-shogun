@@ -123,7 +123,7 @@ re-reads YAML with the new task identity.
 ### Sending Messages
 
 ```bash
-bash scripts/inbox_write.sh <target> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 **No sleep interval needed.** No delivery confirmation needed. Multiple sends can be done in rapid succession — flock handles concurrency.

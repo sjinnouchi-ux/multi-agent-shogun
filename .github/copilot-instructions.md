@@ -147,8 +147,10 @@ New commands use the same freshly generated token in both `id` and `cmd`:
 Generate it with `python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml
 queue/shogun_to_karo_archive.yaml`. Propagate `cmd` through tasks, task-scoped
 inbox messages, delivery receipts, and reports while retaining `parent_cmd` for
-legacy readers. Formal records match on `(cmd, task_id)`; missing `cmd` uses the
-legacy compatibility path. Do not create a new transaction state machine.
+legacy readers. Formal records match on `(cmd, task_id)`. Only when the current
+task has no `cmd` may legacy compatibility be used; an identity-less incoming
+message for a formal current task is stale. Do not create a new transaction
+state machine.
 
 Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 **Agents NEVER call tmux send-keys directly.**

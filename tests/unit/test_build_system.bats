@@ -83,6 +83,14 @@ setup() {
         "$PROJECT_ROOT/instructions/common/protocol.md"
     ! grep -q 'report_received ashigaru{N}$' \
         "$PROJECT_ROOT/instructions/common/protocol.md"
+    grep -q 'inbox_write.sh <target> "<message>" <type> <from> \[cmd\] \[task_id\]' \
+        "$PROJECT_ROOT/instructions/common/protocol.md"
+    ! grep -q 'either side lacks `cmd`' \
+        "$PROJECT_ROOT/instructions/common/task_flow.md"
+    grep -q 'current task has no `cmd`' \
+        "$PROJECT_ROOT/instructions/common/task_flow.md"
+    tr '\n' ' ' < "$PROJECT_ROOT/CLAUDE.md" | \
+        grep -q 'current task has no `cmd`'
 
     for role in karo ashigaru gunshi oometsuke; do
         grep -q "cmd:" "$PROJECT_ROOT/instructions/roles/${role}_role.md"

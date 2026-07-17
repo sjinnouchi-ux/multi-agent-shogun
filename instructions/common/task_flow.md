@@ -58,7 +58,8 @@ readers. A task-scoped identity is the pair `(cmd, task_id)`:
 - redo in the same parent command: preserve `cmd`, create a new `task_id`;
 - parallel tasks: may share `cmd`, must use distinct `task_id` values;
 - stale or malformed formal identity: do not execute, retry, or close it as the current task;
-- either side lacks `cmd`: use the legacy compatibility path without inventing a value.
+- current task has no `cmd`: use the legacy compatibility path without inventing a value;
+- current task is formal but the incoming identity is missing: treat it as stale.
 
 This is an identity guard on the existing ack/receipt model, not a new
 transaction state machine.

@@ -2620,3 +2620,60 @@ PY
     '
     [ "$status" -eq 0 ]
 }
+
+@test "T-CMD-EPOCH-RECOVERY-002: legacy recovery never invents a partial identity" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        mkdir -p "'"$TEST_TMPDIR"'/queue/tasks"
+        cat > "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<YAML
+task:
+  task_id: subtask_legacy
+  parent_cmd: cmd_legacy
+  status: assigned
+YAML
+        echo "messages: []" > "$INBOX"
+        result=$(enqueue_recovery_task_assigned)
+        RESULT="$result" "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import os, sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = yaml.safe_load(handle)["messages"]
+assert len(messages) == 1, messages
+message = messages[0]
+assert "cmd" not in message, message
+assert "task_id" not in message, message
+assert os.environ["RESULT"].startswith("msg_auto_recovery_"), os.environ
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CMD-EPOCH-RECOVERY-003: malformed formal recovery fails closed" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        mkdir -p "'"$TEST_TMPDIR"'/queue/tasks"
+        echo "messages: []" > "$INBOX"
+        cat > "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<YAML
+task:
+  cmd: cmd_041
+  status: assigned
+YAML
+        missing_task_id=$(enqueue_recovery_task_assigned)
+        cat > "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<YAML
+task:
+  cmd: malformed
+  task_id: subtask_041a
+  status: assigned
+YAML
+        malformed_cmd=$(enqueue_recovery_task_assigned)
+        MISSING_TASK_ID="$missing_task_id" MALFORMED_CMD="$malformed_cmd" \
+            "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import os, sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = (yaml.safe_load(handle) or {}).get("messages", []) or []
+assert messages == [], messages
+assert os.environ["MISSING_TASK_ID"] == "SKIP_INVALID_IDENTITY", os.environ
+assert os.environ["MALFORMED_CMD"] == "SKIP_INVALID_IDENTITY", os.environ
+PY
+    '
+    [ "$status" -eq 0 ]
+}

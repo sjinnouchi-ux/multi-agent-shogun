@@ -901,6 +901,7 @@ enqueue_recovery_task_assigned() {
         INBOX_PATH="$INBOX" AGENT_ID="$AGENT_ID" "$SCRIPT_DIR/.venv/bin/python3" - << 'PY'
 import datetime
 import os
+import re
 import uuid
 import yaml
 
@@ -939,6 +940,19 @@ try:
         except Exception:
             pass  # If task YAML is unreadable, proceed with auto-recovery as safety net
 
+    current_formal = False
+    if current_cmd:
+        valid_cmd = re.fullmatch(r"cmd_[A-Za-z0-9][A-Za-z0-9._:-]*", current_cmd)
+        valid_task_id = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", current_task_id)
+        if not valid_cmd or not valid_task_id:
+            print("SKIP_INVALID_IDENTITY")
+            raise SystemExit(0)
+        current_formal = True
+    else:
+        # Preserve legacy format by omitting both fields. A task_id without a
+        # cmd must not become a newly generated partial formal identity.
+        current_task_id = ""
+
     # A formal current task is deduplicated only by its exact identity. A
     # legacy pending hint must not suppress recovery for a newer formal task.
     for m in reversed(messages):
@@ -951,7 +965,7 @@ try:
             continue
         existing_cmd = str(m.get("cmd") or "")
         existing_task_id = str(m.get("task_id") or "")
-        if not current_cmd:
+        if not current_formal:
             print("SKIP_DUPLICATE")
             raise SystemExit(0)
         if existing_cmd and existing_cmd == current_cmd and existing_task_id == current_task_id:
@@ -973,9 +987,8 @@ try:
         "timestamp": now.replace(microsecond=0).isoformat(),
         "type": "task_assigned",
     }
-    if current_cmd:
+    if current_formal:
         msg["cmd"] = current_cmd
-    if current_task_id:
         msg["task_id"] = current_task_id
     messages.append(msg)
     data["messages"] = messages

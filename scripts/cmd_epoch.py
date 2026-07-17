@@ -2,8 +2,9 @@
 """Generate and compare the optional formal command epoch.
 
 New records use ``cmd`` as an immutable command identifier and pair it with
-``task_id`` for task-scoped messages.  Missing ``cmd`` remains a supported
-legacy format; once both sides are formal, comparison is fail-closed.
+``task_id`` for task-scoped messages.  Missing ``cmd`` on the current task
+remains a supported legacy format; once the current task is formal, comparison
+is fail-closed.
 """
 
 from __future__ import annotations
@@ -88,11 +89,12 @@ def iter_command_values(value: Any) -> Iterable[str]:
 def next_command_id(paths: Iterable[Path]) -> str:
     highest = 0
     for path in paths:
+        if not path.is_file():
+            raise OSError("command source unavailable")
         try:
             document = load_yaml(path)
-        except (OSError, yaml.YAMLError):
-            print("cmd_epoch: ignored unreadable command source", file=sys.stderr)
-            continue
+        except (OSError, yaml.YAMLError) as exc:
+            raise OSError("command source unavailable") from exc
         for value in iter_command_values(document):
             match = NUMERIC_CMD.fullmatch(value)
             if match:
@@ -117,8 +119,12 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     if args.action == "next":
-        print(next_command_id(args.sources))
-        return 0
+        try:
+            print(next_command_id(args.sources))
+            return 0
+        except OSError:
+            print("cmd_epoch: unreadable command source", file=sys.stderr)
+            return 1
 
     try:
         task = unwrap_task(load_yaml(args.task_file))

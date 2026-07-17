@@ -33,6 +33,21 @@ YAML
     [ "$output" = "cmd_010" ]
 }
 
+@test "cmd epoch generation fails closed when any command source is unreadable" {
+    cat > "$TEST_ROOT/active.yaml" <<'YAML'
+commands:
+  - id: cmd_009
+YAML
+    printf 'commands: [\n' > "$TEST_ROOT/archive.yaml"
+
+    run "$PYTHON" "$CMD_EPOCH" next \
+        "$TEST_ROOT/active.yaml" "$TEST_ROOT/archive.yaml"
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"unreadable command source"* ]]
+    [[ "$output" != *"cmd_010"* ]]
+}
+
 @test "cmd epoch comparison matches an exact formal command and task identity" {
     cat > "$TEST_ROOT/task.yaml" <<'YAML'
 task:
