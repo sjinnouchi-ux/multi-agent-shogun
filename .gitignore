@@ -132,6 +132,7 @@ scripts/seo_qc.sh
 !scripts/shogun_completion_summary.py
 !scripts/handoff_watchdog.py
 !scripts/cmd_epoch.py
+!scripts/verify_cmd_closed.sh
 !scripts/skill_registry.py
 !scripts/skill_registry.sh
 !scripts/codex_diagnostics.py
