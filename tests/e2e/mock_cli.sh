@@ -10,6 +10,9 @@
 #   MOCK_PROCESSING_DELAY  — seconds to simulate processing (default: 2)
 #   MOCK_AGENT_ID          — agent identifier (e.g., karo, ashigaru1)
 #   MOCK_PROJECT_ROOT      — project root with queue/ directory
+#   MOCK_STARTUP_BEHAVIOR  — ready | busy | permission_prompt | login_prompt |
+#                            shell_prompt | never_ready | delay_ready
+#   MOCK_READY_DELAY       — delay before ready for delay_ready (default: 2)
 #
 # State machine:
 #   IDLE → (input received) → BUSY → (processing done) → IDLE
@@ -28,6 +31,8 @@ MOCK_CLI_TYPE="${MOCK_CLI_TYPE:-claude}"
 MOCK_PROCESSING_DELAY="${MOCK_PROCESSING_DELAY:-2}"
 MOCK_AGENT_ID="${MOCK_AGENT_ID:-unknown}"
 MOCK_PROJECT_ROOT="${MOCK_PROJECT_ROOT:-.}"
+MOCK_STARTUP_BEHAVIOR="${MOCK_STARTUP_BEHAVIOR:-ready}"
+MOCK_READY_DELAY="${MOCK_READY_DELAY:-2}"
 
 # Resolve script directory for behavior imports
 MOCK_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +52,54 @@ REPORT_DIR="$MOCK_PROJECT_ROOT/queue/reports"
 
 # ─── Startup ───
 echo "[mock_cli] Starting as $MOCK_AGENT_ID (type=$MOCK_CLI_TYPE, delay=${MOCK_PROCESSING_DELAY}s)"
+
+blocked_input_loop() {
+    local input=""
+    while IFS= read -r input || true; do
+        [ -n "$input" ] && echo "[mock] unexpected input while $MOCK_STARTUP_BEHAVIOR: $input"
+    done
+}
+
+case "$MOCK_STARTUP_BEHAVIOR" in
+    permission_prompt)
+        echo "Claude Code"
+        echo "Do you want to allow this command?"
+        blocked_input_loop
+        exit 0
+        ;;
+    login_prompt)
+        echo "Claude Code"
+        echo "Please sign in to continue"
+        blocked_input_loop
+        exit 0
+        ;;
+    shell_prompt)
+        echo 'mock-shell$'
+        exit 0
+        ;;
+    never_ready)
+        echo "[mock_state] never_ready"
+        blocked_input_loop
+        exit 0
+        ;;
+    delay_ready)
+        echo "[mock_state] delay_ready"
+        sleep "$MOCK_READY_DELAY"
+        ;;
+    busy)
+        claude_startup_banner
+        while true; do
+            show_busy "$MOCK_CLI_TYPE" 0
+            sleep 1
+        done
+        ;;
+    ready) ;;
+    *)
+        echo "[mock_state] invalid startup behavior"
+        blocked_input_loop
+        exit 0
+        ;;
+esac
 
 case "$MOCK_CLI_TYPE" in
     claude) claude_startup_banner ;;

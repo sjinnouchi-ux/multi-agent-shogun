@@ -49,7 +49,13 @@ SCRIPT_DIR="$PROJECT_ROOT"
 tmux() {
     echo "tmux $*" >> "$MOCK_LOG"
     if echo "$*" | grep -q "capture-pane"; then
-        echo "${MOCK_CAPTURE_PANE:-}"
+        if [ -n "${MOCK_CAPTURE_PANE:-}" ]; then
+            echo "$MOCK_CAPTURE_PANE"
+        elif [ "$CLI_TYPE" = "codex" ]; then
+            echo "? for shortcuts"
+        else
+            echo "❯"
+        fi
         return 0
     fi
     if echo "$*" | grep -q "send-keys"; then

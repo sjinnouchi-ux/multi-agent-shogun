@@ -166,6 +166,9 @@ handoff_watchdog_active() {
 
 reconcile_handoff_watchdog() {
     local can_notify="${1:-1}"
+    local cli_state_at_notify="${2:-unknown}"
+    local delivery_blocked_reason="${3:-none}"
+    local record_notification="${4:-1}"
     local helper="${SCRIPT_DIR}/scripts/handoff_watchdog.py"
 
     if ! handoff_watchdog_active; then
@@ -190,6 +193,9 @@ reconcile_handoff_watchdog() {
             --task-retry-after "$HANDOFF_TASK_RETRY_AFTER" \
             --task-stall-after "$HANDOFF_TASK_STALL_AFTER" \
             --can-notify "$can_notify" \
+            --cli-state-at-notify "$cli_state_at_notify" \
+            --delivery-blocked-reason "$delivery_blocked_reason" \
+            --record-notification "$record_notification" \
             2>/dev/null || echo '{"action":"none","escalate":false,"state":"error","unread_count":0}'
     ) 200>"$LOCKFILE"
 }
@@ -232,6 +238,16 @@ watchdog_escalate() {
 }
 
 send_task_resume() {
+    DELIVERY_NOTIFY_RESULT="not_sent"
+    if ! delivery_liveness_gate task_resume; then
+        return 1
+    fi
+    if [ "$AGENT_ID" != "shogun" ] && agent_is_busy; then
+        DELIVERY_BLOCKED_REASON="busy"
+        echo "[$(date)] [SKIP] Agent $AGENT_ID is busy, deferring task-resume notification" >&2
+        return 1
+    fi
+
     local effective_cli
     effective_cli=$(get_effective_cli_type)
     local prompt="handoff watchdog: queue/tasks/${AGENT_ID}.yaml の assigned 任務を再開し、完了時に状態と報告を更新せよ。"
@@ -243,9 +259,16 @@ send_task_resume() {
         timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
         sleep 0.3
     fi
-    timeout 5 tmux send-keys -l -t "$PANE_TARGET" "$prompt" 2>/dev/null || true
+    if ! timeout 5 tmux send-keys -l -t "$PANE_TARGET" "$prompt" 2>/dev/null; then
+        echo "[$(date)] [WATCHDOG] WARNING: task-resume prompt send failed for $AGENT_ID" >&2
+        return 1
+    fi
     sleep 0.3
-    timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+    if ! timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null; then
+        echo "[$(date)] [WATCHDOG] WARNING: task-resume Enter send failed for $AGENT_ID" >&2
+        return 1
+    fi
+    DELIVERY_NOTIFY_RESULT="sent"
 }
 
 # ─── Context reset tracking ───
@@ -402,6 +425,59 @@ get_effective_cli_type() {
     # Fail-closed: when CLI is unknown, take codex-safe path (no C-c, /clear->/new)
     echo "[$(date)] [WARN] CLI unresolved for $AGENT_ID (pane='${pane_cli:-<empty>}', arg='${CLI_TYPE:-<empty>}'). Fallback=codex-safe." >&2
     echo "codex"
+}
+
+# ─── CLI liveness gate ───
+# This gate is deliberately separate from agent_is_busy()/agent_is_busy_check().
+# ready and busy both mean that the expected CLI is alive; the existing busy/idle
+# logic remains responsible for deciding whether an alive CLI may be notified.
+CLI_STATE_AT_NOTIFY=${CLI_STATE_AT_NOTIFY:-unknown}
+DELIVERY_BLOCKED_REASON=${DELIVERY_BLOCKED_REASON:-}
+DELIVERY_NOTIFY_RESULT=${DELIVERY_NOTIFY_RESULT:-not_sent}
+
+get_delivery_cli_state() {
+    local effective_cli=""
+    local state="unknown"
+
+    effective_cli=$(get_effective_cli_type)
+    if type get_pane_cli_state &>/dev/null; then
+        state=$(get_pane_cli_state "$PANE_TARGET" "$effective_cli")
+    fi
+    case "$state" in
+        ready|busy|permission_prompt|login_prompt|shell_prompt|absent|unknown)
+            printf '%s\n' "$state"
+            ;;
+        *)
+            printf '%s\n' unknown
+            ;;
+    esac
+}
+
+delivery_liveness_gate() {
+    local entry="${1:-delivery}"
+    local state="unknown"
+    local agent_label="${AGENT_ID:-unknown}"
+
+    state=$(get_delivery_cli_state)
+    CLI_STATE_AT_NOTIFY="$state"
+    DELIVERY_BLOCKED_REASON=""
+
+    case "$state" in
+        ready|busy)
+            return 0
+            ;;
+    esac
+
+    DELIVERY_BLOCKED_REASON="$state"
+    case "$entry" in
+        task_resume|cli_command|startup_prompt|context_reset|wakeup|escape_wakeup|idle_input_cleanup|delivery) ;;
+        *) entry="delivery" ;;
+    esac
+    if ! [[ "$agent_label" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+        agent_label="unknown"
+    fi
+    echo "[$(date)] [DELIVERY-BLOCKED] agent=$agent_label entry=$entry cli_state=$state" >&2
+    return 1
 }
 
 normalize_special_command() {
@@ -607,6 +683,11 @@ PY
 # 実行時にtmux paneの @agent_cli を再確認し、ドリフト時はpane値を優先する。
 send_cli_command() {
     local cmd="$1"
+
+    if ! delivery_liveness_gate cli_command; then
+        return 1
+    fi
+
     local effective_cli
     effective_cli=$(get_effective_cli_type)
 
@@ -666,7 +747,7 @@ send_cli_command() {
                 timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
                 sleep 3
                 # Send startup prompt immediately (don't defer to context-reset cycle)
-                send_startup_prompt
+                send_startup_prompt || true
                 NEW_CONTEXT_SENT=1
                 return 0
             fi
@@ -761,7 +842,7 @@ send_cli_command() {
         sleep 3
         # Claude: send startup prompt so agent re-runs Session Start after /clear
         if [[ "$effective_cli" == "claude" ]]; then
-            send_startup_prompt
+            send_startup_prompt || true
         fi
     else
         sleep 1
@@ -774,6 +855,10 @@ send_cli_command() {
 # Codex uses a typed `x` to dismiss its suggestion UI.
 # Called from both send_cli_command (clear_command) and send_context_reset.
 send_startup_prompt() {
+    if ! delivery_liveness_gate startup_prompt; then
+        return 1
+    fi
+
     # Poll until agent becomes idle (prompt ready) instead of fixed sleep.
     # Max 15s (3 attempts × 5s). If still busy after 15s, proceed anyway.
     local attempt
@@ -787,6 +872,11 @@ send_startup_prompt() {
     done
     if agent_is_busy; then
         echo "[$(date)] [STARTUP] $AGENT_ID still busy after 15s — proceeding with startup prompt anyway" >&2
+    fi
+
+    # The pane can transition to a blocked/login/shell state while polling.
+    if ! delivery_liveness_gate startup_prompt; then
+        return 1
     fi
 
     local startup_prompt=""
@@ -832,6 +922,10 @@ send_context_reset() {
         return 0
     fi
 
+    if ! delivery_liveness_gate context_reset; then
+        return 1
+    fi
+
     local reset_cmd
     case "$effective_cli" in
         codex)    reset_cmd="/new" ;;
@@ -866,7 +960,7 @@ send_context_reset() {
         # Codex: send startup prompt (agent has no auto-loaded instructions).
         # OpenCode: skip — agent definition is auto-loaded via --agent flag.
         if [[ "$effective_cli" == "codex" ]]; then
-            send_startup_prompt
+            send_startup_prompt || true
         fi
         return 0
     fi
@@ -972,6 +1066,21 @@ session_has_client() {
     [ -n "$session_name" ] && [ "$(tmux list-clients -t "$session_name" 2>/dev/null | wc -l)" -gt 0 ]
 }
 
+# Clear stale input only when the expected CLI is alive and the existing idle
+# checks also permit it. This centralizes the two all-read cleanup call sites.
+clear_idle_input() {
+    if ! delivery_liveness_gate idle_input_cleanup; then
+        return 0
+    fi
+    if agent_is_busy; then
+        return 0
+    fi
+    if [ "$AGENT_ID" = "shogun" ] && pane_is_active; then
+        return 0
+    fi
+    timeout 2 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
+}
+
 # ─── Send wake-up nudge ───
 # Layered approach:
 #   1. If agent has active inotifywait self-watch → skip (agent wakes itself)
@@ -981,6 +1090,11 @@ send_wakeup() {
     local unread_count="$1"
     local force="${2:-0}"
     local nudge="inbox${unread_count}"
+    DELIVERY_NOTIFY_RESULT="not_sent"
+
+    if ! delivery_liveness_gate wakeup; then
+        return 0
+    fi
 
     if [ "${FINAL_ESCALATION_ONLY:-0}" = "1" ]; then
         echo "[$(date)] [SKIP] FINAL_ESCALATION_ONLY=1, suppressing normal nudge for $AGENT_ID" >&2
@@ -997,6 +1111,7 @@ send_wakeup() {
     # Claude Code: Stop hook catches unread at turn end. Skip nudge to avoid Enter loss.
     # Exception: shogun — ntfy must be delivered immediately regardless of busy state.
     if agent_is_busy && [[ "$AGENT_ID" != "shogun" ]]; then
+        DELIVERY_BLOCKED_REASON="busy"
         local busy_cli_wakeup
         busy_cli_wakeup=$(get_effective_cli_type)
         if [[ "$busy_cli_wakeup" == "claude" ]]; then
@@ -1043,12 +1158,17 @@ send_wakeup() {
             continue
         fi
         sleep 0.3
-        timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+        if ! timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null; then
+            echo "[$(date)] WARNING: send-keys Enter failed for $AGENT_ID (attempt $((attempt+1)))" >&2
+            attempt=$((attempt+1))
+            continue
+        fi
         sleep 0.5
         if [[ "$effective_cli_for_nudge" == "codex" ]]; then
             # Codex echoes submitted text in the transcript; seeing inboxN after
             # Enter does not mean it is still stuck in the input field.
             echo "[$(date)] Wake-up sent to $AGENT_ID (${unread_count} unread, attempt $((attempt+1)), cli=codex)" >&2
+            DELIVERY_NOTIFY_RESULT="sent"
             return 0
         fi
         # 送信確認: capture-pane でプロンプトにnudgeテキストが残っていないか確認
@@ -1067,6 +1187,7 @@ send_wakeup() {
         # フラグを消すと agent_is_busy()=true → 以降のnudge全スキップ → デッドロック。
         # フラグはエージェントが実際に作業開始した時に自然消滅する（stop_hook設計と整合）。
         echo "[$(date)] Wake-up sent to $AGENT_ID (${unread_count} unread, attempt $((attempt+1)))" >&2
+        DELIVERY_NOTIFY_RESULT="sent"
         return 0
     done
     echo "[$(date)] WARNING: send-keys failed after $max_retries retries for $AGENT_ID" >&2
@@ -1079,6 +1200,12 @@ send_wakeup() {
 send_wakeup_with_escape() {
     local unread_count="$1"
     local nudge="inbox${unread_count}"
+    DELIVERY_NOTIFY_RESULT="not_sent"
+
+    if ! delivery_liveness_gate escape_wakeup; then
+        return 0
+    fi
+
     local effective_cli
     effective_cli=$(get_effective_cli_type)
 
@@ -1124,6 +1251,7 @@ send_wakeup_with_escape() {
 
     # Phase 2 still skips if agent is busy — Escape during Working would interrupt
     if agent_is_busy; then
+        DELIVERY_BLOCKED_REASON="busy"
         echo "[$(date)] [SKIP] Agent $AGENT_ID is busy (Working), deferring Phase 2 nudge" >&2
         return 0
     fi
@@ -1140,6 +1268,7 @@ send_wakeup_with_escape() {
         sleep 0.3
         timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
         echo "[$(date)] Escape+nudge sent to $AGENT_ID (${unread_count} unread, cli=$effective_cli)" >&2
+        DELIVERY_NOTIFY_RESULT="sent"
         return 0
     fi
 
@@ -1170,14 +1299,7 @@ process_unread() {
         reset_nudge_throttle
         # Ensure idle flag exists (fast-path recovery)
         touch "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || true
-        if ! agent_is_busy; then
-            # Shogun: only clear input when pane is not active (Lord is away)
-            if [ "$AGENT_ID" = "shogun" ] && pane_is_active; then
-                : # Lord may be typing — skip C-u
-            else
-                timeout 2 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
-            fi
-        fi
+        clear_idle_input
         return 0
     fi
 
@@ -1252,12 +1374,24 @@ for s in data.get('specials', []):
     local has_task_assigned
     has_task_assigned=$(echo "$info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(1 if json.load(sys.stdin).get('has_task_assigned') else 0)" 2>/dev/null)
 
-    local watchdog_can_notify=1
-    if [ "$AGENT_ID" != "shogun" ] && agent_is_busy; then
+    local watchdog_cli_state watchdog_blocked_reason watchdog_can_notify=1
+    watchdog_cli_state=$(get_delivery_cli_state)
+    watchdog_blocked_reason="none"
+    case "$watchdog_cli_state" in
+        ready|busy) ;;
+        *)
+            watchdog_can_notify=0
+            watchdog_blocked_reason="$watchdog_cli_state"
+            ;;
+    esac
+    if [ "$watchdog_can_notify" = "1" ] && [ "$AGENT_ID" != "shogun" ] && agent_is_busy; then
         watchdog_can_notify=0
+        watchdog_blocked_reason="busy"
     fi
     local watchdog_info watchdog_action watchdog_escalation watchdog_state
-    watchdog_info=$(reconcile_handoff_watchdog "$watchdog_can_notify")
+    # Plan first. notification_count/timestamps are committed only after the
+    # guarded send entry confirms that it actually emitted a notification.
+    watchdog_info=$(reconcile_handoff_watchdog "$watchdog_can_notify" "$watchdog_cli_state" "$watchdog_blocked_reason" 0)
     watchdog_action=$(echo "$watchdog_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(json.load(sys.stdin).get('action','none'))" 2>/dev/null || echo none)
     watchdog_escalation=$(echo "$watchdog_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(1 if json.load(sys.stdin).get('escalate') else 0)" 2>/dev/null || echo 0)
     watchdog_state=$(echo "$watchdog_info" | "$SCRIPT_DIR/.venv/bin/python3" -c "import sys,json; print(json.load(sys.stdin).get('state','unknown'))" 2>/dev/null || echo unknown)
@@ -1308,8 +1442,9 @@ for s in data.get('specials', []):
         # Skip if: (1) already sent this batch, (2) clear_command already handled above,
         #          (3) agent is shogun (human-controlled).
         if [ "$has_task_assigned" = "1" ] && [ "$NEW_CONTEXT_SENT" -eq 0 ] && [ "$clear_seen" -eq 0 ]; then
-            send_context_reset
-            NEW_CONTEXT_SENT=1
+            if send_context_reset; then
+                NEW_CONTEXT_SENT=1
+            fi
         fi
 
         # If startup prompt was just sent (Codex), skip follow-up nudge this cycle.
@@ -1330,10 +1465,20 @@ for s in data.get('specials', []):
             case "$watchdog_action" in
                 notify)
                     send_wakeup "$normal_count"
+                    if [ "$DELIVERY_NOTIFY_RESULT" = "sent" ]; then
+                        reconcile_handoff_watchdog 1 "$CLI_STATE_AT_NOTIFY" none 1 >/dev/null
+                    else
+                        reconcile_handoff_watchdog 0 "$CLI_STATE_AT_NOTIFY" "${DELIVERY_BLOCKED_REASON:-none}" 1 >/dev/null
+                    fi
                     ;;
                 retry)
                     echo "[$(date)] [WATCHDOG] One retry for $AGENT_ID" >&2
                     send_wakeup "$normal_count" 1
+                    if [ "$DELIVERY_NOTIFY_RESULT" = "sent" ]; then
+                        reconcile_handoff_watchdog 1 "$CLI_STATE_AT_NOTIFY" none 1 >/dev/null
+                    else
+                        reconcile_handoff_watchdog 0 "$CLI_STATE_AT_NOTIFY" "${DELIVERY_BLOCKED_REASON:-none}" 1 >/dev/null
+                    fi
                     ;;
             esac
             if [ "$watchdog_escalation" = "1" ]; then
@@ -1383,10 +1528,13 @@ for s in data.get('specials', []):
                     send_wakeup_with_escape "$normal_count"
                 else
                     echo "[$(date)] ESCALATION Phase 3: Agent $AGENT_ID unresponsive for ${age}s. Sending /clear." >&2
-                    send_cli_command "/clear"
-                    LAST_CLEAR_TS=$now
-                    FIRST_UNREAD_SEEN=0  # Reset — will re-detect on next cycle
-                    NEW_CONTEXT_SENT=0
+                    if send_cli_command "/clear"; then
+                        LAST_CLEAR_TS=$now
+                        FIRST_UNREAD_SEEN=0  # Reset — will re-detect on next cycle
+                        NEW_CONTEXT_SENT=0
+                    else
+                        echo "[$(date)] [SKIP] ESCALATION Phase 3 delivery blocked for $AGENT_ID" >&2
+                    fi
                 fi
             else
                 # Cooldown active — fall back to Escape+nudge
@@ -1398,7 +1546,12 @@ for s in data.get('specials', []):
         # No unread messages — reset escalation tracker
         if handoff_watchdog_active; then
             if [ "$watchdog_action" = "task_retry" ]; then
-                send_task_resume
+                send_task_resume || true
+                if [ "$DELIVERY_NOTIFY_RESULT" = "sent" ]; then
+                    reconcile_handoff_watchdog 1 "$CLI_STATE_AT_NOTIFY" none 1 >/dev/null
+                else
+                    reconcile_handoff_watchdog 0 "$CLI_STATE_AT_NOTIFY" "${DELIVERY_BLOCKED_REASON:-none}" 1 >/dev/null
+                fi
             fi
             if [ "$watchdog_escalation" = "1" ]; then
                 watchdog_escalate "$watchdog_state"
@@ -1415,14 +1568,7 @@ for s in data.get('specials', []):
         touch "${IDLE_FLAG_DIR:-/tmp}/shogun_idle_${AGENT_ID}" 2>/dev/null || true
         # Clear stale nudge text from input field (Codex CLI prefills last input on idle).
         # Only send C-u when agent is idle — during Working it would be disruptive.
-        if ! agent_is_busy; then
-            # Shogun: only clear input when pane is not active (Lord is away)
-            if [ "$AGENT_ID" = "shogun" ] && pane_is_active; then
-                : # Lord may be typing — skip C-u
-            else
-                timeout 2 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
-            fi
-        fi
+        clear_idle_input
     fi
 }
 

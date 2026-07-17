@@ -150,7 +150,10 @@ show_prompt() {
         touch "${_flag_dir}/shogun_idle_${MOCK_AGENT_ID}" 2>/dev/null || true
     fi
     case "$cli_type" in
-        claude) echo -e "\n\$ " ;;
+        # Keep a positive Claude marker adjacent to every prompt. The mock is
+        # launched as `bash mock_cli.sh`, so pane_current_command alone looks
+        # like a shell and must never be the readiness signal.
+        claude) echo -e "\nClaude Code (mock prompt)\n\$ " ;;
         codex)  echo -e "\n? for shortcuts                100% context left\n\$ " ;;
         opencode) echo -e "\n  ┃\n  ┃  Ask anything...\n  ┃\n\n                                                ctrl+p commands\n" ;;
         *)      echo -e "\n\$ " ;;

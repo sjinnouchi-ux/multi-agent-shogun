@@ -31,6 +31,35 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--task-retry-after", type=int, default=300)
     parser.add_argument("--task-stall-after", type=int, default=600)
     parser.add_argument("--can-notify", choices=("0", "1"), default="1")
+    parser.add_argument(
+        "--cli-state-at-notify",
+        choices=(
+            "ready",
+            "busy",
+            "permission_prompt",
+            "login_prompt",
+            "shell_prompt",
+            "absent",
+            "unknown",
+        ),
+        default="unknown",
+    )
+    parser.add_argument(
+        "--delivery-blocked-reason",
+        choices=(
+            "none",
+            "busy",
+            "permission_prompt",
+            "login_prompt",
+            "shell_prompt",
+            "absent",
+            "unknown",
+        ),
+        default="none",
+    )
+    parser.add_argument(
+        "--record-notification", choices=("0", "1"), default="1"
+    )
     return parser.parse_args()
 
 
@@ -86,6 +115,8 @@ def delivery_for(message: dict[str, Any]) -> dict[str, Any]:
     delivery.setdefault("acknowledged_at", None)
     delivery.setdefault("stalled_at", None)
     delivery.setdefault("escalation_sent_at", None)
+    delivery.setdefault("cli_state_at_notify", None)
+    delivery.setdefault("delivery_blocked_reason", None)
     return delivery
 
 
@@ -111,6 +142,13 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
 
     now_iso = iso_now(args.now)
     can_notify = args.can_notify == "1"
+    record_notification = args.record_notification == "1"
+    cli_state_at_notify = args.cli_state_at_notify
+    delivery_blocked_reason = (
+        None
+        if args.delivery_blocked_reason == "none"
+        else args.delivery_blocked_reason
+    )
     action = "none"
     escalation = False
     unread: list[dict[str, Any]] = []
@@ -128,20 +166,24 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
 
     for message in unread:
         delivery = delivery_for(message)
+        delivery["cli_state_at_notify"] = cli_state_at_notify
+        delivery["delivery_blocked_reason"] = delivery_blocked_reason
         created = to_epoch(delivery.get("created_at"), args.now)
         count = int(delivery.get("notification_count") or 0)
         last_notified = to_epoch(delivery.get("last_notified_at"), created)
 
         if can_notify and count == 0:
-            delivery["notification_count"] = 1
-            delivery["first_notified_at"] = now_iso
-            delivery["last_notified_at"] = now_iso
             if action == "none":
                 action = "notify"
+            if record_notification:
+                delivery["notification_count"] = 1
+                delivery["first_notified_at"] = now_iso
+                delivery["last_notified_at"] = now_iso
         elif can_notify and count == 1 and args.now - last_notified >= args.retry_after:
-            delivery["notification_count"] = 2
-            delivery["last_notified_at"] = now_iso
             action = "retry"
+            if record_notification:
+                delivery["notification_count"] = 2
+                delivery["last_notified_at"] = now_iso
 
         count = int(delivery.get("notification_count") or 0)
         stall_wait = max(1, args.stall_after - args.retry_after)
@@ -190,9 +232,12 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
             acknowledged_age >= args.task_retry_after
             and not delivery.get("execution_retry_at")
         ):
-            delivery["execution_retry_at"] = now_iso
             action = "task_retry"
-            execution_state = "retry_sent"
+            if record_notification:
+                delivery["cli_state_at_notify"] = cli_state_at_notify
+                delivery["delivery_blocked_reason"] = delivery_blocked_reason
+                delivery["execution_retry_at"] = now_iso
+                execution_state = "retry_sent"
         elif delivery.get("execution_retry_at"):
             execution_state = "retry_sent"
 
@@ -219,6 +264,15 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
         and not task_finished(report_file, task_id)
     ):
         execution_state = "in_progress"
+        delivery = delivery_for(task_message)
+        acknowledged = to_epoch(delivery.get("acknowledged_at"), args.now)
+        acknowledged_age = args.now - acknowledged
+        if (
+            acknowledged_age >= args.task_retry_after
+            and not delivery.get("execution_retry_at")
+        ):
+            delivery["cli_state_at_notify"] = cli_state_at_notify
+            delivery["delivery_blocked_reason"] = delivery_blocked_reason
 
     inbox["messages"] = messages
     if inbox != original_inbox:
@@ -262,6 +316,8 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
         "state": state,
         "updated_at": now_iso,
         "unread_count": len(unread),
+        "cli_state_at_notify": cli_state_at_notify,
+        "delivery_blocked_reason": delivery_blocked_reason,
     }
     if oldest:
         projection["oldest_unread"] = {

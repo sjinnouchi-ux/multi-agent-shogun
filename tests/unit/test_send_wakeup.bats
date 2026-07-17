@@ -97,10 +97,13 @@ MOCK
     mkdir -p "$TEST_INBOX_DIR"
 
     # Default mock control variables
-    export MOCK_CAPTURE_PANE=""
+    export MOCK_CAPTURE_PANE="__AUTO_READY__"
     export MOCK_SENDKEYS_RC=0
+    export MOCK_SENDKEYS_ENTER_RC=0
     export MOCK_PANE_CLI=""
     export MOCK_PANE_ACTIVE=""
+    export MOCK_PANE_COMMAND="node"
+    export MOCK_PANE_EXISTS=1
     export MOCK_LIST_CLIENTS=""
 
     # Test harness: sets up mocks, then sources the REAL inbox_watcher.sh
@@ -122,10 +125,25 @@ export IDLE_FLAG_DIR="$TEST_TMPDIR"
 tmux() {
     echo "tmux \$*" >> "$MOCK_LOG"
     if echo "\$*" | grep -q "capture-pane"; then
-        echo "\${MOCK_CAPTURE_PANE:-}"
+        if [ "\${MOCK_CAPTURE_PANE:-__AUTO_READY__}" != "__AUTO_READY__" ]; then
+            echo "\${MOCK_CAPTURE_PANE:-}"
+            return 0
+        fi
+        local mock_cli="\${MOCK_PANE_CLI:-\${CLI_TYPE:-claude}}"
+        case "\$mock_cli" in
+            codex) echo "? for shortcuts" ;;
+            opencode) echo "Ask anything" ;;
+            copilot) echo "GitHub Copilot" ;;
+            kimi) echo "Kimi CLI" ;;
+            antigravity|gemini|agy) echo "Antigravity CLI" ;;
+            *) echo "❯" ;;
+        esac
         return 0
     fi
     if echo "\$*" | grep -q "send-keys"; then
+        if echo "\$*" | grep -q " Enter\$"; then
+            return \${MOCK_SENDKEYS_ENTER_RC:-0}
+        fi
         return \${MOCK_SENDKEYS_RC:-0}
     fi
     if echo "\$*" | grep -q "show-options"; then
@@ -139,6 +157,14 @@ tmux() {
     if echo "\$*" | grep -q "display-message"; then
         if echo "\$*" | grep -q "pane_active"; then
             echo "\${MOCK_PANE_ACTIVE:-0}"
+        elif echo "\$*" | grep -q "pane_current_command"; then
+            echo "\${MOCK_PANE_COMMAND:-node}"
+        elif echo "\$*" | grep -q "pane_id"; then
+            if [ "\${MOCK_PANE_EXISTS:-1}" = "1" ]; then
+                echo "%1"
+            else
+                return 1
+            fi
         else
             echo "mock_session"
         fi
@@ -501,7 +527,7 @@ MOCK
 
 @test "T-OPENCODE-001: send_cli_command converts /clear to /new for opencode" {
     run bash -c '
-        MOCK_CAPTURE_PANE="first line\nsecond line\nthird line\n"
+        MOCK_CAPTURE_PANE="OpenCode\nAsk anything\n"
         MOCK_PANE_CLI="opencode"
         source "'"$TEST_HARNESS"'"
         CLI_TYPE="opencode"
@@ -687,18 +713,19 @@ MOCK
 
 # --- T-CODEX-010: unresolved cli falls back to codex-safe ---
 
-@test "T-CODEX-010: unresolved CLI type falls back to codex-safe (/clear->/new, no C-c)" {
+@test "T-CODEX-010: unresolved CLI type is fail-closed before codex-safe command mapping" {
     run bash -c '
         MOCK_PANE_CLI=""
         source "'"$TEST_HARNESS"'"
         CLI_TYPE="unknown_cli"
         send_cli_command "/clear"
     '
-    [ "$status" -eq 0 ]
+    [ "$status" -eq 1 ]
 
-    grep -q "send-keys.*/new" "$MOCK_LOG"
+    ! grep -q "send-keys.*/new" "$MOCK_LOG"
     ! grep -q "send-keys.*/clear" "$MOCK_LOG"
     ! grep -q "send-keys.*C-c" "$MOCK_LOG"
+    echo "$output" | grep -q "cli_state=unknown"
 }
 
 # --- T-CODEX-011: clear_command auto-recovery injection ---
@@ -800,7 +827,7 @@ PY
 
 @test "T-OPENCODE-003: send_wakeup_with_escape falls back to plain nudge for OpenCode" {
     run bash -c '
-        MOCK_CAPTURE_PANE="first line\nsecond line\nthird line\n"
+        MOCK_CAPTURE_PANE="OpenCode\nAsk anything\n"
         MOCK_PANE_CLI="opencode"
         source "'"$TEST_HARNESS"'"
         CLI_TYPE="opencode"
@@ -1284,7 +1311,7 @@ YAML
 
 @test "T-CODEX-016: send_wakeup codex treats transcript echo as delivered" {
     run bash -c '
-        MOCK_CAPTURE_PANE="$(printf "› inbox1\n  gpt-5.5 xhigh · ~/repo\n")"
+        MOCK_CAPTURE_PANE="$(printf "› inbox1\n  gpt-5.5 xhigh · ~/repo\n  ? for shortcuts\n")"
         source "'"$TEST_HARNESS"'"
         CLI_TYPE="codex"
         send_wakeup 1
@@ -1379,4 +1406,295 @@ YAML
     ! grep -q "send-keys.*/clear" "$MOCK_LOG"
     ! grep -q "send-keys.*Escape" "$MOCK_LOG"
     ! grep -q "send-keys.*C-c" "$MOCK_LOG"
+}
+
+# --- T-LIVE-001: fail-closed classifier gate ---
+
+@test "T-LIVE-001: delivery liveness gate blocks all five unsafe states" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        for fixture in permission login shell absent unknown; do
+            MOCK_PANE_EXISTS=1
+            MOCK_PANE_COMMAND=node
+            case "$fixture" in
+                permission) MOCK_CAPTURE_PANE=$'"'"'Claude Code\nDo you want to allow this command?'"'"' ; expected=permission_prompt ;;
+                login) MOCK_CAPTURE_PANE=$'"'"'Claude Code\nPlease sign in to continue'"'"' ; expected=login_prompt ;;
+                shell) MOCK_CAPTURE_PANE='"'"'$ '"'"'; MOCK_PANE_COMMAND=bash; expected=shell_prompt ;;
+                absent) MOCK_PANE_EXISTS=0; MOCK_CAPTURE_PANE='"'"''"'"'; expected=absent ;;
+                unknown) MOCK_CAPTURE_PANE='"'"'unrecognized terminal output'"'"'; expected=unknown ;;
+            esac
+            if delivery_liveness_gate test_entry; then
+                echo "unexpected-pass:$fixture"
+                exit 1
+            fi
+            echo "$fixture:$CLI_STATE_AT_NOTIFY:$DELIVERY_BLOCKED_REASON:$expected"
+        done
+    '
+    [ "$status" -eq 0 ]
+    ! echo "$output" | grep -q "unexpected-pass"
+    echo "$output" | grep -q "permission:permission_prompt:permission_prompt:permission_prompt"
+    echo "$output" | grep -q "login:login_prompt:login_prompt:login_prompt"
+    echo "$output" | grep -q "shell:shell_prompt:shell_prompt:shell_prompt"
+    echo "$output" | grep -q "absent:absent:absent:absent"
+    echo "$output" | grep -q "unknown:unknown:unknown:unknown"
+}
+
+@test "T-LIVE-002: permission prompt blocks every aggregated send entry" {
+    run bash -c '
+        MOCK_CAPTURE_PANE=$'"'"'Claude Code\nDo you want to allow this command?'"'"'
+        source "'"$TEST_HARNESS"'"
+        send_wakeup 1
+        send_wakeup_with_escape 1
+        send_startup_prompt
+        send_context_reset
+        send_task_resume
+        send_cli_command /model\ opus || true
+        clear_idle_input
+    '
+    [ "$status" -eq 0 ]
+    ! grep -q "send-keys" "$MOCK_LOG"
+    echo "$output" | grep -q "permission_prompt"
+}
+
+@test "T-LIVE-003: ready state preserves normal wakeup delivery" {
+    run bash -c '
+        MOCK_CAPTURE_PANE="❯"
+        source "'"$TEST_HARNESS"'"
+        send_wakeup 2
+        echo "state=$CLI_STATE_AT_NOTIFY reason=${DELIVERY_BLOCKED_REASON:-none}"
+    '
+    [ "$status" -eq 0 ]
+    grep -q "send-keys.*inbox2" "$MOCK_LOG"
+    echo "$output" | grep -q "state=ready reason=none"
+}
+
+@test "T-LIVE-004: live busy state still uses existing busy guard" {
+    run bash -c '
+        MOCK_CAPTURE_PANE=$'"'"'Claude Code\nWorking\nesc to interrupt'"'"'
+        source "'"$TEST_HARNESS"'"
+        rm -f "$IDLE_FLAG_DIR/shogun_idle_${AGENT_ID}"
+        delivery_liveness_gate test_entry
+        echo "gate=$? state=$CLI_STATE_AT_NOTIFY reason=${DELIVERY_BLOCKED_REASON:-none}"
+        send_wakeup 1
+        echo "post_reason=${DELIVERY_BLOCKED_REASON:-none}"
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "gate=0 state=busy reason=none"
+    ! grep -q "send-keys" "$MOCK_LOG"
+    echo "$output" | grep -q "existing busy\|is busy"
+    echo "$output" | grep -q "post_reason=busy"
+}
+
+@test "T-LIVE-005: all-read input cleanup is blocked at a shell prompt" {
+    run bash -c '
+        MOCK_CAPTURE_PANE='"'"'$ '"'"'
+        MOCK_PANE_COMMAND=bash
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages: []
+YAML
+        process_unread event
+    '
+    [ "$status" -eq 0 ]
+    ! grep -q "send-keys" "$MOCK_LOG"
+    echo "$output" | grep -q "shell_prompt"
+}
+
+@test "T-LIVE-006: cli_restart cannot bypass a blocked liveness gate" {
+    local mock_root="$TEST_TMPDIR/restart_root"
+    mkdir -p "$mock_root/scripts"
+    cat > "$mock_root/scripts/switch_cli.sh" <<'MOCK'
+#!/bin/bash
+echo called >> "$MOCK_RESTART_LOG"
+MOCK
+    chmod +x "$mock_root/scripts/switch_cli.sh"
+    export MOCK_RESTART_LOG="$TEST_TMPDIR/restart.log"
+
+    run bash -c '
+        MOCK_CAPTURE_PANE=$'"'"'Claude Code\nDo you want to allow this command?'"'"'
+        source "'"$TEST_HARNESS"'"
+        SCRIPT_DIR="'"$mock_root"'"
+        send_cli_command "__CLI_RESTART__:--type codex"
+    '
+    [ "$status" -eq 1 ]
+    [ ! -e "$MOCK_RESTART_LOG" ]
+    echo "$output" | grep -q "permission_prompt"
+}
+
+@test "T-LIVE-007: watchdog records a send-time liveness race without consuming count" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_race
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: info
+    content: "sanitized fixture"
+    read: false
+YAML
+        HANDOFF_STATUS_FILE="'"$TEST_TMPDIR"'/race_status.yaml"
+        HANDOFF_TASK_FILE="'"$TEST_TMPDIR"'/race_task.yaml"
+        HANDOFF_REPORT_FILE="'"$TEST_TMPDIR"'/race_report.yaml"
+        state_counter="'"$TEST_TMPDIR"'/state_counter"
+        printf "0\n" > "$state_counter"
+        get_delivery_cli_state() {
+            local count
+            count=$(cat "$state_counter")
+            count=$((count + 1))
+            printf "%s\n" "$count" > "$state_counter"
+            if [ "$count" -eq 1 ]; then
+                printf "ready\n"
+            else
+                printf "permission_prompt\n"
+            fi
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["notification_count"] == 0, delivery
+assert delivery["cli_state_at_notify"] == "permission_prompt", delivery
+assert delivery["delivery_blocked_reason"] == "permission_prompt", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    ! grep -q "send-keys" "$MOCK_LOG"
+}
+
+@test "T-LIVE-008: blocked Phase-3 fallback stays daemon-safe under errexit" {
+    run bash -e -c '
+        MOCK_CAPTURE_PANE=$'"'"'Claude Code\nDo you want to allow this command?'"'"'
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_phase3
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: info
+    content: "sanitized fixture"
+    read: false
+YAML
+        HANDOFF_WATCHDOG_ENABLED=0
+        ESCALATE_PHASE1=1
+        ESCALATE_PHASE2=2
+        FIRST_UNREAD_SEEN=$(($(date +%s) - 10))
+        LAST_CLEAR_TS=0
+        process_unread event
+        echo survived
+    '
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -q "survived"
+    ! grep -q "send-keys" "$MOCK_LOG"
+}
+
+@test "T-LIVE-009: task retry rechecks existing busy state before delivery commit" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_task_retry_busy
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+        cat > "'"$TEST_TMPDIR"'/task_retry_busy.yaml" <<YAML
+task:
+  task_id: subtask_retry_busy
+  status: assigned
+YAML
+        HANDOFF_STATUS_FILE="'"$TEST_TMPDIR"'/task_retry_busy_status.yaml"
+        HANDOFF_TASK_FILE="'"$TEST_TMPDIR"'/task_retry_busy.yaml"
+        HANDOFF_REPORT_FILE="'"$TEST_TMPDIR"'/task_retry_busy_report.yaml"
+        get_delivery_cli_state() { printf "ready\n"; }
+        busy_counter=0
+        agent_is_busy() {
+            busy_counter=$((busy_counter + 1))
+            [ "$busy_counter" -ge 2 ]
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert not delivery.get("execution_retry_at"), delivery
+assert delivery["delivery_blocked_reason"] == "busy", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    ! grep -q "send-keys" "$MOCK_LOG"
+}
+
+@test "T-LIVE-010: failed task-resume send does not commit execution retry" {
+    run bash -c '
+        MOCK_SENDKEYS_RC=1
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_task_retry_failed
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+        cat > "'"$TEST_TMPDIR"'/task_retry_failed.yaml" <<YAML
+task:
+  task_id: subtask_retry_failed
+  status: assigned
+YAML
+        HANDOFF_STATUS_FILE="'"$TEST_TMPDIR"'/task_retry_failed_status.yaml"
+        HANDOFF_TASK_FILE="'"$TEST_TMPDIR"'/task_retry_failed.yaml"
+        HANDOFF_REPORT_FILE="'"$TEST_TMPDIR"'/task_retry_failed_report.yaml"
+        get_delivery_cli_state() { printf "ready\n"; }
+        agent_is_busy() { return 1; }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert not delivery.get("execution_retry_at"), delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    grep -q "send-keys" "$MOCK_LOG"
+}
+
+@test "T-LIVE-011: failed Codex Enter does not commit notification count" {
+    run bash -c '
+        MOCK_PANE_CLI="codex"
+        MOCK_SENDKEYS_ENTER_RC=1
+        source "'"$TEST_HARNESS"'"
+        CLI_TYPE="codex"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_codex_enter_failed
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: info
+    content: "sanitized fixture"
+    read: false
+YAML
+        HANDOFF_STATUS_FILE="'"$TEST_TMPDIR"'/codex_enter_status.yaml"
+        HANDOFF_TASK_FILE="'"$TEST_TMPDIR"'/codex_enter_task.yaml"
+        HANDOFF_REPORT_FILE="'"$TEST_TMPDIR"'/codex_enter_report.yaml"
+        get_delivery_cli_state() { printf "ready\\n"; }
+        agent_is_busy() { return 1; }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["notification_count"] == 0, delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    grep -q "send-keys -t test:0.0 Enter" "$MOCK_LOG"
 }
