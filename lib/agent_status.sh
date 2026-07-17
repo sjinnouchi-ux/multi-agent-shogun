@@ -172,3 +172,191 @@ get_pane_state_label() {
         2) echo "不在" ;;
     esac
 }
+
+# _pane_cli_has_positive_marker <cli_type> <capture_tail>
+# Returns success only when the visible tail contains a marker belonging to the
+# expected CLI. Process names are deliberately not considered here: Claude Code
+# can run as node, while a CLI tool invocation can temporarily run as bash.
+_pane_cli_has_positive_marker() {
+    local cli_type="$1"
+    local capture_tail="$2"
+
+    case "$cli_type" in
+        claude)
+            printf '%s\n' "$capture_tail" | grep -qE '(Claude Code|bypass permissions|esc([[:space:]]+to)?[[:space:]]+interrupt\)?[[:space:]]*$|^[[:space:]]*(❯|›)[[:space:]]*$)'
+            ;;
+        codex)
+            printf '%s\n' "$capture_tail" | grep -qiE '(Codex CLI|OpenAI Codex|\? for shortcuts|context left|esc([[:space:]]+to)?[[:space:]]+interrupt\)?[[:space:]]*$)'
+            ;;
+        opencode)
+            if opencode_has_busy_animation "$capture_tail"; then
+                return 0
+            fi
+            printf '%s\n' "$capture_tail" | grep -qiE '(OpenCode|Ask anything|ctrl\+p commands)'
+            ;;
+        cursor)
+            printf '%s\n' "$capture_tail" | grep -qE '(Cursor Agent|Plan, search, build anything|Add a follow-up|ctrl\+c to stop)'
+            ;;
+        copilot)
+            printf '%s\n' "$capture_tail" | grep -qiE '(GitHub Copilot|Copilot CLI)'
+            ;;
+        kimi)
+            printf '%s\n' "$capture_tail" | grep -qiE '(Kimi Code|Kimi CLI|Kimi K2)'
+            ;;
+        antigravity|agy)
+            printf '%s\n' "$capture_tail" | grep -qiE '(Google Antigravity|Antigravity CLI)'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Blocked prompts take precedence over CLI markers so a visible TUI cannot be
+# mistaken for ready while it is waiting for a human decision or login.
+_pane_cli_has_permission_prompt() {
+    local capture_tail="$1"
+    printf '%s\n' "$capture_tail" | grep -qiE \
+        '((Do you want|Would you like) to (allow|approve|continue|execute|proceed|run|trust)|trust the files in (this|the) (folder|location)|permission (is )?(required|requested|denied)|(^|[[:space:]])(allow|approve) (this|once|always)([[:space:]]|$)|Press Enter to (allow|confirm)|Trust (this|the) (folder|workspace))'
+}
+
+_pane_cli_has_login_prompt() {
+    local capture_tail="$1"
+    printf '%s\n' "$capture_tail" | grep -qiE \
+        '((please[[:space:]]+)?(sign|log)[[:space:]]+in(to)?([[:space:][:punct:]]|$)|(authentication|login|sign-in) (is )?required|no authentication information found|select an authentication method|choose (a )?(login|authentication) method|enter (your )?(api key|device code)|(enter|use|run)[[:space:]]+/login|/login.*(authenticate|log[[:space:]]+in|sign[[:space:]]+in|slash command)|waiting for (oauth )?authorization|one-time (user )?code|github\.com/login/device|oauth (authorization|login)|visit .*(login|authenticate))'
+}
+
+_pane_cli_has_idle_marker() {
+    local cli_type="$1"
+    local capture_tail="$2"
+    local visible_tail last_line previous_line
+
+    visible_tail=$(printf '%s\n' "$capture_tail" | grep -v '^[[:space:]]*$' || true)
+    last_line=$(printf '%s\n' "$visible_tail" | tail -1)
+    previous_line=$(printf '%s\n' "$visible_tail" | tail -2 | head -1)
+
+    case "$cli_type" in
+        claude)
+            printf '%s\n' "$last_line" | grep -qE '^[[:space:]]*(❯|›)[[:space:]]*$'
+            ;;
+        codex)
+            if printf '%s\n' "$last_line" | grep -qiE '(\? for shortcuts|context left)'; then
+                return 0
+            fi
+            printf '%s\n' "$last_line" | grep -qE '^[[:space:]]*\$[[:space:]]*$' &&
+                printf '%s\n' "$previous_line" | grep -qiE '(\? for shortcuts|context left)'
+            ;;
+        opencode)
+            printf '%s\n' "$last_line" | grep -qiE '(Ask anything|ctrl\+p commands)'
+            ;;
+        cursor)
+            printf '%s\n' "$last_line" | grep -qE '(Plan, search, build anything|Add a follow-up)'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+_pane_cli_is_busy() {
+    local cli_type="$1"
+    local capture_tail="$2"
+    local last_line
+
+    if [[ "$cli_type" == "opencode" ]] && opencode_has_busy_animation "$capture_tail"; then
+        return 0
+    fi
+
+    last_line=$(printf '%s\n' "$capture_tail" | grep -v '^[[:space:]]*$' | tail -1)
+    if printf '%s\n' "$last_line" | grep -qiE '(esc([[:space:]]+to)?[[:space:]]+interrupt|ctrl\+c to stop)'; then
+        return 0
+    fi
+    if _pane_cli_has_idle_marker "$cli_type" "$capture_tail"; then
+        return 1
+    fi
+    printf '%s\n' "$capture_tail" | grep -qiE \
+        '(background terminal running|Working|Thinking|Planning|Sending|task is in progress|Compacting conversation)'
+}
+
+_pane_cli_looks_like_shell_prompt() {
+    local capture_tail="$1"
+    local current_command="$2"
+
+    if printf '%s\n' "$capture_tail" | grep -qE '(^[[:space:]]*[#$%][[:space:]]*$|(^|[[:space:]])[^[:space:]]+([[:space:]][^[:space:]]+)?[#$%][[:space:]]*$)'; then
+        return 0
+    fi
+    if [[ "$current_command" == "fish" ]]; then
+        printf '%s\n' "$capture_tail" | grep -qE '(^[[:space:]]*>[[:space:]]*$|(^|[[:space:]])[^[:space:]]+([[:space:]][^[:space:]]+)?>[[:space:]]*$)'
+        return $?
+    fi
+    return 1
+}
+
+# get_pane_cli_state <pane_target> [expected_cli]
+# Prints exactly one state token and always returns zero.
+#
+# State order is fail-closed: absent, test override, blocked prompt, positive
+# CLI marker (busy/ready), shell prompt, unknown. The classifier intentionally
+# does not replace agent_is_busy_check() or any existing busy/idle semantics.
+get_pane_cli_state() {
+    local pane_target="${1:-}"
+    local expected_cli="${2:-}"
+    local override=""
+    local full_capture=""
+    local blocked_tail=""
+    local activity_tail=""
+    local current_command=""
+
+    if ! tmux display-message -t "$pane_target" -p '#{pane_id}' >/dev/null 2>&1; then
+        printf '%s\n' absent
+        return 0
+    fi
+
+    override=$(timeout 2 tmux show-options -v -p -t "$pane_target" @pane_state_override 2>/dev/null || true)
+    if [[ -n "$override" ]]; then
+        if [[ "${SHOGUN_TEST_MODE:-}" != "1" ]]; then
+            printf '%s\n' 'warning: pane state override ignored outside test mode' >&2
+        elif [[ "$override" =~ ^(ready|busy|permission_prompt|login_prompt|shell_prompt|absent|unknown)$ ]]; then
+            printf '%s\n' "$override"
+            return 0
+        else
+            printf '%s\n' 'warning: invalid pane state override ignored' >&2
+        fi
+    fi
+
+    if [[ -z "$expected_cli" ]]; then
+        expected_cli=$(timeout 2 tmux show-options -v -p -t "$pane_target" @agent_cli 2>/dev/null || true)
+    fi
+    expected_cli=${expected_cli,,}
+
+    full_capture=$(timeout 2 tmux capture-pane -t "$pane_target" -p 2>/dev/null || true)
+    blocked_tail=$(printf '%s\n' "$full_capture" | tail -15)
+    activity_tail=$(printf '%s\n' "$full_capture" | tail -5)
+
+    if _pane_cli_has_permission_prompt "$blocked_tail"; then
+        printf '%s\n' permission_prompt
+        return 0
+    fi
+    if _pane_cli_has_login_prompt "$blocked_tail"; then
+        printf '%s\n' login_prompt
+        return 0
+    fi
+
+    if _pane_cli_has_positive_marker "$expected_cli" "$activity_tail"; then
+        if _pane_cli_is_busy "$expected_cli" "$activity_tail"; then
+            printf '%s\n' busy
+        else
+            printf '%s\n' ready
+        fi
+        return 0
+    fi
+
+    current_command=$(timeout 2 tmux display-message -t "$pane_target" -p '#{pane_current_command}' 2>/dev/null || true)
+    if [[ "$current_command" =~ ^(bash|zsh|fish|sh)$ ]] && _pane_cli_looks_like_shell_prompt "$activity_tail" "$current_command"; then
+        printf '%s\n' shell_prompt
+        return 0
+    fi
+
+    printf '%s\n' unknown
+    return 0
+}
