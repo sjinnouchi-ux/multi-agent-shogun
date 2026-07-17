@@ -15,6 +15,7 @@ Check `config/settings.yaml` → `language`:
 
 ```yaml
 worker_id: ashigaru1
+cmd: cmd_035
 task_id: subtask_001
 parent_cmd: cmd_035
 timestamp: "2026-01-25T10:15:00"  # from date command
@@ -32,8 +33,13 @@ skill_candidate:
   reason: null      # e.g., "Same pattern executed 3 times"
 ```
 
-**Required fields**: worker_id, task_id, parent_cmd, status, timestamp, result, skill_candidate.
+**Required fields**: worker_id, cmd, task_id, parent_cmd, status, timestamp, result, skill_candidate.
 Missing fields = incomplete report.
+
+Copy `cmd` and `task_id` exactly from the assigned task YAML into the report
+and all task-scoped inbox messages. Never infer them from pane text or an older
+inbox entry. Legacy task YAML without `cmd` is still executable; do not invent a
+formal epoch while reading legacy data.
 
 ## Race Condition (RACE-001)
 

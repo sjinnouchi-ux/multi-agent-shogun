@@ -1,6 +1,7 @@
 # task_ashigaru2_basic.yaml — Test task for ashigaru2
 # Pre-assigned task for E2E testing (parallel/blocked_by scenarios)
 task:
+  cmd: cmd_test_001
   task_id: subtask_test_002a
   parent_cmd: cmd_test_001
   type: implementation

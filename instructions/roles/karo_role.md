@@ -80,6 +80,7 @@ Before assigning tasks, ask yourself these five questions:
 ```yaml
 # Standard task (no dependencies)
 task:
+  cmd: cmd_001
   task_id: subtask_001
   parent_cmd: cmd_001
   bloom_level: L3        # L1-L3=Ashigaru, L4-L6=Gunshi
@@ -91,6 +92,7 @@ task:
 
 # Dependent task (blocked until prerequisites complete)
 task:
+  cmd: cmd_001
   task_id: subtask_003
   parent_cmd: cmd_001
   bloom_level: L6
@@ -101,6 +103,18 @@ task:
   status: blocked         # Initial status when blocked_by exists
   timestamp: "2026-01-25T12:00:00"
 ```
+
+## Formal cmd propagation
+
+For every new task, copy the parent command's formal `cmd` into the task and
+keep `parent_cmd` with the same value for legacy readers. Every task-scoped
+`task_assigned`, `clear_command`, report request, or redo notification MUST pass
+that `cmd` and the current `task_id` to `inbox_write.sh`.
+
+For redo under the same parent command, keep `cmd` unchanged and create a new
+`task_id`; never reuse the old task identity. Parallel tasks may share `cmd`
+but always have distinct `task_id` values. A formal receipt matches only when
+both values match. Do not treat a stale receipt or stale clear as current work.
 
 ## echo_message Rule
 

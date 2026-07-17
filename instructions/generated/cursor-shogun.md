@@ -55,6 +55,7 @@ Do NOT specify: number of ashigaru, assignments, verification methods, personas,
 
 ```yaml
 - id: cmd_XXX
+  cmd: cmd_XXX
   timestamp: "ISO 8601"
   north_star: "1-2 sentences. Why this cmd matters to the business goal. Derived from context/{project}.md north star."
   purpose: "What this cmd must achieve (verifiable statement)"
@@ -68,9 +69,21 @@ Do NOT specify: number of ashigaru, assignments, verification methods, personas,
   status: pending
 ```
 
+Generate the next identifier before writing a new command:
+
+```bash
+python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml queue/shogun_to_karo_archive.yaml
+```
+
+For every new command, `id` and `cmd` MUST contain that same freshly generated
+token. `cmd` is an immutable command epoch: never reuse a terminal cmd, edit it
+to reopen work, or copy an older epoch into a new Lord command. Legacy queue
+entries without `cmd` remain readable, but all new writes use the formal field.
+
 - **north_star**: Required. Why this cmd advances the business goal. Too abstract ("make better content") = wrong. Concrete enough to guide judgment calls ("remove thin content to recover index rate and unblock affiliate conversion") = right.
 - **purpose**: One sentence. What "done" looks like. Karo and ashigaru validate against this.
 - **acceptance_criteria**: List of testable conditions. All must be true for cmd to be marked done. Karo checks these at Step 11.7 before marking cmd complete.
+- **cmd**: Formal command epoch. It equals `id` on a new command and is propagated unchanged through every task, task-scoped inbox message, receipt, and report.
 
 ### Good vs Bad examples
 
@@ -183,20 +196,26 @@ Rules:
 Agent-to-agent communication uses file-based mailbox:
 
 ```bash
-bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 Examples:
 ```bash
 # Shogun → Karo
-bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
+bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun cmd_048
 
 # Ashigaru → Gunshi
-bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5 cmd_048 subtask_048a
 
 # Karo → Ashigaru
-bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
+bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo cmd_048 subtask_048a
 ```
+
+For new task-scoped messages, `cmd` and `task_id` are mandatory and must be
+copied from the current task YAML. Command-level messages such as `cmd_new`
+pass `cmd` and omit `task_id`. Non-task operational alerts may omit both.
+Supplying `task_id` without `cmd` is invalid. The four-argument form remains
+supported only for legacy records and non-task messages.
 
 Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 **Agents NEVER call tmux send-keys directly.**
@@ -265,12 +284,14 @@ you will be stuck idle until the next nudge escalation or task reassignment.
 
 When Karo determines a task needs to be redone:
 
-1. Karo writes new task YAML with new task_id (e.g., `subtask_097d` → `subtask_097d2`), adds `redo_of` field
-2. Karo sends `clear_command` type inbox message (NOT `task_assigned`)
+1. Karo writes new task YAML with a new task_id (e.g., `subtask_097d` → `subtask_097d2`), preserves the parent `cmd`, and adds `redo_of`
+2. Karo sends a `clear_command` inbox message (NOT `task_assigned`) with the same `cmd` and the new `task_id`
 3. inbox_watcher delivers context reset to the agent（Claude/Copilot/Kimi: `/clear`, Codex/OpenCode: `/new`）→ session reset
 4. Agent recovers via Session Start procedure, reads new task YAML, starts fresh
 
-Race condition is eliminated: context reset wipes old context. Agent re-reads YAML with new task_id.
+The formal `cmd` + `task_id` pair prevents an older clear or receipt from being
+accepted for the redo. The context reset wipes old context and the agent
+re-reads YAML with the new task identity.
 
 ## Report Flow (interrupt prevention)
 
@@ -352,6 +373,28 @@ Meanings and allowed/forbidden actions (short):
   - Allowed: read-only (history)
   - Forbidden: continuing work under this cmd (use a new cmd instead)
 
+### Formal Command Epoch
+
+New command entries carry both `id: cmd_XXX` and `cmd: cmd_XXX` with the same
+freshly generated, immutable token. Generate it with:
+
+```bash
+python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml queue/shogun_to_karo_archive.yaml
+```
+
+Propagate `cmd` to every new task, task-scoped inbox message, delivery receipt,
+and report. Keep `parent_cmd` equal to `cmd` in task/report YAML for legacy
+readers. A task-scoped identity is the pair `(cmd, task_id)`:
+
+- both formal sides present: both values must match exactly;
+- redo in the same parent command: preserve `cmd`, create a new `task_id`;
+- parallel tasks: may share `cmd`, must use distinct `task_id` values;
+- stale or malformed formal identity: do not execute, retry, or close it as the current task;
+- either side lacks `cmd`: use the legacy compatibility path without inventing a value.
+
+This is an identity guard on the existing ack/receipt model, not a new
+transaction state machine.
+
 ### Archive Rule
 
 The active queue file (`queue/shogun_to_karo.yaml`) must only contain
@@ -402,6 +445,9 @@ Meanings and allowed/forbidden actions (short):
 - `failed`: failed with reason
   - Allowed: report must include reason + unblock suggestion
   - Forbidden: silent failure
+
+Every newly written task includes `cmd`, `task_id`, and legacy-compatible
+`parent_cmd` (`cmd == parent_cmd`).
 
 Note:
 - Normally, "idle" is a UI state (no active task), not a YAML status value.
@@ -619,7 +665,7 @@ queue/reports/ashigaru{YOUR_NUMBER}_report.yaml  ← Write only this
 tmux を直接操作することは禁止。
 
 ```bash
-bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 ## モデル切り替え

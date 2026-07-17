@@ -117,9 +117,10 @@ process_task() {
         return 1
     fi
 
-    local task_id parent_cmd status
+    local task_id parent_cmd cmd_epoch status
     task_id=$(yaml_read "$task_file" "task.task_id")
     parent_cmd=$(yaml_read "$task_file" "task.parent_cmd")
+    cmd_epoch=$(yaml_read "$task_file" "task.cmd")
     status=$(yaml_read "$task_file" "task.status")
 
     if [ "$status" != "assigned" ] && [ "$status" != "in_progress" ]; then
@@ -143,7 +144,7 @@ process_task() {
     done
 
     # 3. Write completion report
-    write_mock_report "$MOCK_AGENT_ID" "$task_id" "$parent_cmd" "$MOCK_PROJECT_ROOT"
+    write_mock_report "$MOCK_AGENT_ID" "$task_id" "$parent_cmd" "$MOCK_PROJECT_ROOT" "$cmd_epoch"
     echo "[mock] Report written for $task_id"
 
     # 4. Update status to done
@@ -161,9 +162,15 @@ process_task() {
         if [ "$MOCK_AGENT_ID" = "karo" ]; then
             report_target="shogun"
         fi
-        SCRIPT_DIR="$MOCK_PROJECT_ROOT" bash "$inbox_write_script" "$report_target" \
-            "${MOCK_AGENT_ID}号、任務完了。報告YAML確認されたし。" \
-            "report_received" "$MOCK_AGENT_ID" 2>/dev/null || true
+        if [ -n "$cmd_epoch" ]; then
+            SCRIPT_DIR="$MOCK_PROJECT_ROOT" bash "$inbox_write_script" "$report_target" \
+                "${MOCK_AGENT_ID}号、任務完了。報告YAML確認されたし。" \
+                "report_received" "$MOCK_AGENT_ID" "$cmd_epoch" "$task_id" 2>/dev/null || true
+        else
+            SCRIPT_DIR="$MOCK_PROJECT_ROOT" bash "$inbox_write_script" "$report_target" \
+                "${MOCK_AGENT_ID}号、任務完了。報告YAML確認されたし。" \
+                "report_received" "$MOCK_AGENT_ID" 2>/dev/null || true
+        fi
     fi
 
     STATE="idle"

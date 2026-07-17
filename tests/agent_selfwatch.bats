@@ -77,6 +77,9 @@ HARNESS
 
 teardown() {
     rm -rf "$TEST_TMPDIR"
+    rm -f "$PROJECT_ROOT/queue/inbox/test_agent.yaml" \
+        "$PROJECT_ROOT/queue/inbox/test_agent.yaml.lock"
+    rmdir "$PROJECT_ROOT/queue/inbox/test_agent.yaml.lock.d" 2>/dev/null || true
 }
 
 @test "TC-FR-001 [RED]: process_unread_once is defined and called on startup" {
@@ -222,6 +225,23 @@ print("OK")
 PY
 
     # cleanup test artifact written to real queue path by production script
+    rm -f "$PROJECT_ROOT/queue/inbox/test_agent.yaml" "$PROJECT_ROOT/queue/inbox/test_agent.yaml.lock"
+}
+
+@test "TC-CMD-EPOCH-001: inbox_write preserves formal cmd and task identity in message and delivery" {
+    run bash "$INBOX_WRITE_SCRIPT" test_agent "formal-epoch" task_assigned karo cmd_021 subtask_021a
+    [ "$status" -eq 0 ]
+
+    "$VENV_PYTHON" - << 'PY' "$PROJECT_ROOT/queue/inbox/test_agent.yaml"
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][-1]
+assert message["cmd"] == "cmd_021", message
+assert message["task_id"] == "subtask_021a", message
+assert message["delivery"]["cmd"] == "cmd_021", message
+assert message["delivery"]["task_id"] == "subtask_021a", message
+PY
+
     rm -f "$PROJECT_ROOT/queue/inbox/test_agent.yaml" "$PROJECT_ROOT/queue/inbox/test_agent.yaml.lock"
 }
 

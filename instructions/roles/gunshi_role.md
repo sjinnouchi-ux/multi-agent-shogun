@@ -79,6 +79,7 @@ north_star_alignment:
 
 ```yaml
 worker_id: gunshi
+cmd: cmd_150
 task_id: gunshi_strategy_001
 parent_cmd: cmd_150
 timestamp: "2026-02-13T19:30:00"
@@ -102,7 +103,11 @@ skill_candidate:
   found: false
 ```
 
-**Required fields**: worker_id, task_id, parent_cmd, status, timestamp, result, skill_candidate.
+**Required fields**: worker_id, cmd, task_id, parent_cmd, status, timestamp, result, skill_candidate.
+
+Copy `cmd` and `task_id` exactly from the assigned task YAML into the report
+and every task-scoped inbox message. A different task in the same command is a
+different identity. Legacy task YAML without `cmd` remains supported.
 
 ## Analysis Depth Guidelines
 

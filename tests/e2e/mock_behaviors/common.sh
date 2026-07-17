@@ -110,18 +110,25 @@ inbox_unread_count() {
 }
 
 # Write a mock completion report
-# Usage: write_mock_report <agent_id> <task_id> <parent_cmd> <project_root>
+# Usage: write_mock_report <agent_id> <task_id> <parent_cmd> <project_root> [cmd]
 write_mock_report() {
     local agent_id="$1"
     local task_id="$2"
     local parent_cmd="$3"
     local project_root="$4"
+    local cmd_epoch="${5:-}"
     local report_file="$project_root/queue/reports/${agent_id}_report.yaml"
     local timestamp
     timestamp=$(date "+%Y-%m-%dT%H:%M:%S")
 
-    cat > "$report_file" <<EOF
+    {
+    cat <<EOF
 worker_id: "$agent_id"
+EOF
+    if [ -n "$cmd_epoch" ]; then
+        printf 'cmd: "%s"\n' "$cmd_epoch"
+    fi
+    cat <<EOF
 task_id: "$task_id"
 parent_cmd: "$parent_cmd"
 timestamp: "$timestamp"
@@ -134,6 +141,7 @@ result:
 skill_candidate:
   found: false
 EOF
+    } > "$report_file"
 }
 
 # Show mock CLI prompt (idle state indicator)

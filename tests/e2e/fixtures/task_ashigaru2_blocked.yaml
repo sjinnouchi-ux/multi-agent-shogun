@@ -1,6 +1,7 @@
 # task_ashigaru2_blocked.yaml — Blocked task for ashigaru2
 # Depends on ashigaru1's task completing first
 task:
+  cmd: cmd_test_001
   task_id: subtask_test_002b
   parent_cmd: cmd_test_001
   type: implementation

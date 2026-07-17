@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from cmd_epoch import compare_identity, unwrap_task, valid_cmd, valid_task_id
+
 
 SPECIAL_TYPES = {"clear_command", "model_switch", "cli_restart"}
 
@@ -117,18 +119,66 @@ def delivery_for(message: dict[str, Any]) -> dict[str, Any]:
     delivery.setdefault("escalation_sent_at", None)
     delivery.setdefault("cli_state_at_notify", None)
     delivery.setdefault("delivery_blocked_reason", None)
+    message_cmd = message.get("cmd")
+    message_task_id = message.get("task_id")
+    if valid_cmd(message_cmd):
+        delivery.setdefault("cmd", message_cmd)
+    if valid_task_id(message_task_id):
+        delivery.setdefault("task_id", message_task_id)
     return delivery
 
 
-def task_finished(report_file: Path | None, task_id: str | None) -> bool:
+def task_finished(
+    report_file: Path | None,
+    task_id: str | None,
+    task_cmd: str | None = None,
+) -> bool:
     if not report_file or not report_file.exists() or not task_id:
         return False
-    report = load_yaml(report_file)
-    return report.get("task_id") == task_id and report.get("status") in {
+    report = unwrap_task(load_yaml(report_file))
+    if report.get("task_id") != task_id:
+        return False
+    report_cmd = report.get("cmd")
+    if task_cmd not in (None, "") and report_cmd not in (None, ""):
+        if compare_identity(
+            {"cmd": task_cmd, "task_id": task_id},
+            {"cmd": report_cmd, "task_id": report.get("task_id")},
+        ) != "match":
+            return False
+    return report.get("status") in {
         "done",
         "failed",
         "blocked",
     }
+
+
+def select_task_message(
+    messages: list[dict[str, Any]], task_data: dict[str, Any]
+) -> dict[str, Any] | None:
+    candidates = [
+        message
+        for message in reversed(messages)
+        if isinstance(message, dict)
+        and message.get("type") == "task_assigned"
+        and message.get("read", False)
+    ]
+    if not candidates:
+        return None
+
+    task_declares_cmd = task_data.get("cmd") not in (None, "")
+    if not task_declares_cmd:
+        return candidates[0]
+
+    for message in candidates:
+        if compare_identity(task_data, message) == "match":
+            return message
+
+    # A formal task can consume a legacy receipt during rolling migration only
+    # when there is no formal task receipt to contradict it.  Once a formal
+    # receipt exists, mismatches are stale and must not acknowledge this task.
+    if any(message.get("cmd") not in (None, "") for message in candidates):
+        return None
+    return candidates[0]
 
 
 def reconcile(args: argparse.Namespace) -> dict[str, Any]:
@@ -199,30 +249,19 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
     task_file = Path(args.task_file) if args.task_file else None
     report_file = Path(args.report_file) if args.report_file else None
     if task_file and task_file.exists():
-        raw_task = load_yaml(task_file)
-        task_data = raw_task.get("task") or raw_task
-        if not isinstance(task_data, dict):
-            task_data = {}
+        task_data = unwrap_task(load_yaml(task_file))
 
     task_status = str(task_data.get("status") or "")
     task_id = task_data.get("task_id")
-    task_message = next(
-        (
-            message
-            for message in reversed(messages)
-            if isinstance(message, dict)
-            and message.get("type") == "task_assigned"
-            and message.get("read", False)
-        ),
-        None,
-    )
+    task_cmd = task_data.get("cmd")
+    task_message = select_task_message(messages, task_data)
     execution_state = "none"
     if (
         can_notify
         and not unread
         and task_status == "assigned"
         and task_message
-        and not task_finished(report_file, task_id)
+        and not task_finished(report_file, task_id, task_cmd)
     ):
         execution_state = "accepted"
         delivery = delivery_for(task_message)
@@ -261,7 +300,7 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
         not unread
         and task_status == "assigned"
         and task_message
-        and not task_finished(report_file, task_id)
+        and not task_finished(report_file, task_id, task_cmd)
     ):
         execution_state = "in_progress"
         delivery = delivery_for(task_message)
@@ -334,6 +373,8 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
             "status": task_status,
             "handoff_state": execution_state,
         }
+        if valid_cmd(task_cmd):
+            projection["task"]["cmd"] = task_cmd
     atomic_dump(Path(args.status_file), projection)
 
     return {
@@ -344,6 +385,7 @@ def reconcile(args: argparse.Namespace) -> dict[str, Any]:
         "age_sec": oldest_age,
         "message_type": oldest.get("type") if oldest else "",
         "task_id": task_id or "",
+        "cmd": task_cmd if valid_cmd(task_cmd) else "",
     }
 
 

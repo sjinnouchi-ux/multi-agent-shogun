@@ -74,6 +74,23 @@ setup() {
     [ -f "$OUTPUT_DIR/oometsuke.md" ]
 }
 
+@test "cmd epoch: source instructions require formal cmd generation and propagation" {
+    grep -q "python3 scripts/cmd_epoch.py next" "$PROJECT_ROOT/instructions/roles/shogun_role.md"
+    grep -q "cmd: cmd_XXX" "$PROJECT_ROOT/CLAUDE.md"
+    grep -q "Formal Command Epoch" "$PROJECT_ROOT/instructions/common/task_flow.md"
+    grep -q '\[cmd\] \[task_id\]' "$PROJECT_ROOT/instructions/common/protocol.md"
+
+    for role in karo ashigaru gunshi oometsuke; do
+        grep -q "cmd:" "$PROJECT_ROOT/instructions/roles/${role}_role.md"
+    done
+}
+
+@test "cmd epoch: generated instructions preserve the formal epoch contract" {
+    grep -q "Formal Command Epoch" "$OUTPUT_DIR/codex-karo.md"
+    grep -q "cmd: cmd_XXX" "$OUTPUT_DIR/codex-shogun.md"
+    grep -q '\[cmd\] \[task_id\]' "$OUTPUT_DIR/codex-ashigaru.md"
+}
+
 @test "codex: codex-oometsuke.md generated" {
     [ -f "$OUTPUT_DIR/codex-oometsuke.md" ]
 }

@@ -913,27 +913,24 @@ try:
 
     messages = data.get("messages", []) or []
 
-    # Dedup guard: keep only one pending auto-recovery hint at a time.
-    for m in reversed(messages):
-        if (
-            m.get("from") == "inbox_watcher"
-            and m.get("type") == "task_assigned"
-            and m.get("read", False) is False
-            and "[auto-recovery]" in (m.get("content") or "")
-        ):
-            print("SKIP_DUPLICATE")
-            raise SystemExit(0)
-
-    # Task YAML status guard: skip auto-recovery if task is cancelled or idle.
+    # Task YAML status and identity guard: skip auto-recovery if task is
+    # cancelled/idle and bind new recovery hints to the current formal epoch.
     # This prevents restarting a task that Karo intentionally cancelled via clear_command.
     task_yaml_path = os.path.join(
         os.path.dirname(os.path.dirname(inbox)), "tasks", f"{agent_id}.yaml"
     )
+    current_cmd = ""
+    current_task_id = ""
     if os.path.exists(task_yaml_path):
         try:
             with open(task_yaml_path, "r", encoding="utf-8") as tf:
                 task_data = yaml.safe_load(tf) or {}
+            nested_task = task_data.get("task")
+            if isinstance(nested_task, dict):
+                task_data = nested_task
             task_status = str(task_data.get("status") or "").strip().strip("'\"")
+            current_cmd = str(task_data.get("cmd") or "")
+            current_task_id = str(task_data.get("task_id") or "")
             if task_status in ("cancelled", "idle"):
                 print(f"SKIP_CANCELLED:{task_status}")
                 raise SystemExit(0)
@@ -941,6 +938,25 @@ try:
             raise
         except Exception:
             pass  # If task YAML is unreadable, proceed with auto-recovery as safety net
+
+    # Dedup only the same formal identity. Legacy hints retain the previous
+    # single-pending-message behavior during rolling migration.
+    for m in reversed(messages):
+        if not (
+            m.get("from") == "inbox_watcher"
+            and m.get("type") == "task_assigned"
+            and m.get("read", False) is False
+            and "[auto-recovery]" in (m.get("content") or "")
+        ):
+            continue
+        existing_cmd = str(m.get("cmd") or "")
+        existing_task_id = str(m.get("task_id") or "")
+        if not current_cmd or not existing_cmd:
+            print("SKIP_DUPLICATE")
+            raise SystemExit(0)
+        if existing_cmd == current_cmd and existing_task_id == current_task_id:
+            print("SKIP_DUPLICATE")
+            raise SystemExit(0)
 
     now = datetime.datetime.now(datetime.timezone.utc).astimezone()
     # Persona re-establishment on /clear is handled by SessionStart hook
@@ -957,6 +973,10 @@ try:
         "timestamp": now.replace(microsecond=0).isoformat(),
         "type": "task_assigned",
     }
+    if current_cmd:
+        msg["cmd"] = current_cmd
+    if current_task_id:
+        msg["task_id"] = current_task_id
     messages.append(msg)
     data["messages"] = messages
 
@@ -1080,6 +1100,8 @@ try:
                 "id": m.get("id", ""),
                 "from": m.get("from", ""),
                 "type": m.get("type", ""),
+                "cmd": m.get("cmd", ""),
+                "task_id": m.get("task_id", ""),
                 "content": m.get("content", ""),
             }
             for m in specials
@@ -1090,6 +1112,36 @@ except Exception:
     print(json.dumps({"count": 0, "specials": []}))
 PY
     ) 200>"$LOCKFILE" 2>/dev/null
+}
+
+# Compare a special command against the current task identity. Missing cmd on
+# either an existing legacy task or message follows the compatibility path;
+# once both sides are formal, cmd + task_id must match exactly.
+clear_command_epoch_state() {
+    local message_cmd="${1:-}"
+    local message_task_id="${2:-}"
+    local task_file
+    task_file="$(dirname "$(dirname "$INBOX")")/tasks/${AGENT_ID}.yaml"
+
+    if [ -z "$message_cmd" ]; then
+        printf 'legacy\n'
+        return 0
+    fi
+    if [ ! -f "$SCRIPT_DIR/scripts/cmd_epoch.py" ]; then
+        printf 'invalid\n'
+        return 0
+    fi
+
+    local state
+    state=$("$SCRIPT_DIR/.venv/bin/python3" \
+        "$SCRIPT_DIR/scripts/cmd_epoch.py" compare \
+        --task-file "$task_file" --cmd "$message_cmd" \
+        --task-id "$message_task_id" 2>/dev/null) || state="invalid"
+    case "$state" in
+        match|stale|legacy|invalid) printf '%s\n' "$state" ;;
+        *) printf 'invalid\n' ;;
+    esac
+    return 0
 }
 
 # ─── Send CLI command via pty direct write ───
@@ -1769,22 +1821,37 @@ for s in data.get('specials', []):
     i = (s.get('id', '') or '').replace('\t', ' ').replace('\n', ' ').strip()
     f = (s.get('from', '') or '').replace('\t', ' ').replace('\n', ' ').strip()
     t = s.get('type', '')
+    e = (s.get('cmd', '') or '').replace('\t', ' ').replace('\n', ' ').strip() or '__legacy__'
+    k = (s.get('task_id', '') or '').replace('\t', ' ').replace('\n', ' ').strip() or '__legacy__'
     c = (s.get('content', '') or '').replace('\t', ' ').replace('\n', ' ').strip()
-    print(f'{i}\t{f}\t{t}\t{c}')
+    print(f'{i}\t{f}\t{t}\t{e}\t{k}\t{c}')
 " 2>/dev/null)
 
     local clear_seen=0
     local clear_sent=0  # tracks if /clear was actually sent (not just seen)
     if [ -n "$specials" ]; then
-        local msg_id msg_from msg_type msg_content cmd drop_reason claim_result
-        while IFS=$'\t' read -r msg_id msg_from msg_type msg_content; do
+        local msg_id msg_from msg_type msg_cmd msg_task_id msg_content cmd drop_reason claim_result epoch_state
+        while IFS=$'\t' read -r msg_id msg_from msg_type msg_cmd msg_task_id msg_content; do
             [ -n "$msg_type" ] || continue
+            [ "$msg_cmd" = "__legacy__" ] && msg_cmd=""
+            [ "$msg_task_id" = "__legacy__" ] && msg_task_id=""
             if [ "$msg_type" = "clear_command" ]; then
                 clear_seen=1
                 if is_clear_command_quarantined "$msg_id"; then
                     drop_clear_command "$msg_id" "$msg_from" unknown state_persist_failed || true
                     continue
                 fi
+                epoch_state=$(clear_command_epoch_state "$msg_cmd" "$msg_task_id")
+                case "$epoch_state" in
+                    stale)
+                        drop_clear_command "$msg_id" "$msg_from" unknown stale_command_epoch || true
+                        continue
+                        ;;
+                    invalid)
+                        drop_clear_command "$msg_id" "$msg_from" unknown invalid_command_epoch || true
+                        continue
+                        ;;
+                esac
                 if ! delivery_liveness_gate cli_command; then
                     drop_clear_command "$msg_id" "$msg_from" "$CLI_STATE_AT_NOTIFY" "${DELIVERY_BLOCKED_REASON:-unknown}" || true
                     continue

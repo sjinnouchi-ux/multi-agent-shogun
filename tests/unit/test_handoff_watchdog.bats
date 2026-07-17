@@ -419,3 +419,234 @@ assert delivery["delivery_blocked_reason"] == "permission_prompt", delivery
 PY
     [ "$status" -eq 0 ]
 }
+
+@test "formal receipt persists cmd epoch and task identity without replacing acknowledgement" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_formal_receipt
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    cmd: cmd_010
+    task_id: subtask_010a
+    content: "sanitized fixture"
+    read: true
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_010
+  task_id: subtask_010a
+  parent_cmd: cmd_010
+  status: assigned
+YAML
+
+    run_watchdog 1100
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" state)" = "execution_accepted" ]
+
+    run "$PYTHON" - "$INBOX" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert delivery["cmd"] == "cmd_010", delivery
+assert delivery["task_id"] == "subtask_010a", delivery
+assert delivery["acknowledged_at"], delivery
+PY
+    [ "$status" -eq 0 ]
+}
+
+@test "formal receipt with stale cmd epoch does not acknowledge the current task" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_stale_cmd
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    cmd: cmd_009
+    task_id: subtask_same
+    content: "sanitized fixture"
+    read: true
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_010
+  task_id: subtask_same
+  parent_cmd: cmd_010
+  status: assigned
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+    [ "$(json_field "$output" state)" = "healthy" ]
+    grep -q "handoff_state: none" "$STATUS_FILE"
+    grep -q "acknowledged_at:" "$INBOX"
+}
+
+@test "redo selects the exact formal task receipt instead of an older task in the same cmd" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_redo_current
+    from: karo
+    timestamp: "1970-01-01T00:31:40+00:00"
+    type: task_assigned
+    cmd: cmd_011
+    task_id: subtask_011a2
+    content: "sanitized current redo"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:31:40+00:00"
+  - id: msg_redo_old
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    cmd: cmd_011
+    task_id: subtask_011a
+    content: "sanitized old task"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_011
+  task_id: subtask_011a2
+  parent_cmd: cmd_011
+  redo_of: subtask_011a
+  status: assigned
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+    [ "$(json_field "$output" state)" = "execution_accepted" ]
+}
+
+@test "parallel tasks sharing a cmd do not consume each other's receipts" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_parallel_current
+    from: karo
+    timestamp: "1970-01-01T00:31:40+00:00"
+    type: task_assigned
+    cmd: cmd_014
+    task_id: subtask_014a
+    content: "sanitized current task"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:31:40+00:00"
+  - id: msg_parallel_other
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    cmd: cmd_014
+    task_id: subtask_014b
+    content: "sanitized other task"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_014
+  task_id: subtask_014a
+  parent_cmd: cmd_014
+  status: assigned
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+    [ "$(json_field "$output" state)" = "execution_accepted" ]
+}
+
+@test "legacy task and receipt without cmd preserve the existing retry behavior" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_legacy_receipt
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    content: "sanitized legacy task"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  task_id: subtask_legacy
+  parent_cmd: cmd_004
+  status: assigned
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "task_retry" ]
+    [ "$(json_field "$output" state)" = "execution_retry_sent" ]
+}
+
+@test "formal report with stale cmd does not close the current task identity" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_current_formal
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    cmd: cmd_020
+    task_id: subtask_reused
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_020
+  task_id: subtask_reused
+  parent_cmd: cmd_020
+  status: assigned
+YAML
+    cat > "$REPORT" <<'YAML'
+cmd: cmd_019
+task_id: subtask_reused
+status: done
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "task_retry" ]
+    [ "$(json_field "$output" state)" = "execution_retry_sent" ]
+}
+
+@test "legacy report without cmd can close a formal task during migration" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_current_formal
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    cmd: cmd_021
+    task_id: subtask_migrating
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  cmd: cmd_021
+  task_id: subtask_migrating
+  parent_cmd: cmd_021
+  status: assigned
+YAML
+    cat > "$REPORT" <<'YAML'
+task_id: subtask_migrating
+status: done
+YAML
+
+    run_watchdog 2000
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+    [ "$(json_field "$output" state)" = "healthy" ]
+}

@@ -54,9 +54,9 @@ setup() {
 
     # 2. Send task_assigned to both inboxes
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" cmd_test_001 subtask_test_001a
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru2" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" cmd_test_001 subtask_test_002a
 
     # 3. Nudge both simultaneously
     local ashigaru1_pane ashigaru2_pane
@@ -81,6 +81,8 @@ setup() {
     # 6. Reports should have correct agent IDs
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "worker_id" "ashigaru1"
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru2_report.yaml" "worker_id" "ashigaru2"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "cmd" "cmd_test_001"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru2_report.yaml" "cmd" "cmd_test_001"
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -95,9 +97,9 @@ setup() {
        "$E2E_QUEUE/queue/tasks/ashigaru2.yaml"
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" cmd_test_001 subtask_test_001a
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru2" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" cmd_test_001 subtask_test_002a
 
     local ashigaru1_pane ashigaru2_pane
     ashigaru1_pane=$(pane_target 1)

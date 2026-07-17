@@ -2490,3 +2490,119 @@ PY
     '
     [ "$status" -eq 0 ]
 }
+
+@test "T-CMD-EPOCH-CLEAR-001: clear command identity comparison reports match stale and legacy" {
+    mkdir -p "$TEST_TMPDIR/queue/tasks"
+    cat > "$TEST_TMPDIR/queue/tasks/test_agent.yaml" <<'YAML'
+task:
+  cmd: cmd_031
+  task_id: subtask_031b
+  parent_cmd: cmd_031
+  status: assigned
+YAML
+
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        [ "$(clear_command_epoch_state cmd_031 subtask_031b)" = "match" ] || exit 81
+        [ "$(clear_command_epoch_state cmd_030 subtask_031b)" = "stale" ] || exit 82
+        [ "$(clear_command_epoch_state cmd_031 subtask_031a)" = "stale" ] || exit 83
+        [ "$(clear_command_epoch_state "" "")" = "legacy" ] || exit 84
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CMD-EPOCH-CLEAR-002: stale formal clear is dropped and never reaches the CLI" {
+    export CLEAR_EPOCH_ALERT_LOG="$TEST_TMPDIR/clear_epoch_alert.log"
+    export CLEAR_EPOCH_SEND_LOG="$TEST_TMPDIR/clear_epoch_send.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        mkdir -p "'"$TEST_TMPDIR"'/queue/tasks"
+        cat > "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<YAML
+task:
+  cmd: cmd_032
+  task_id: subtask_032b
+  parent_cmd: cmd_032
+  status: assigned
+YAML
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_stale_epoch
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    cmd: cmd_031
+    task_id: subtask_031a
+    content: "sanitized stale clear"
+    read: false
+YAML
+        sleep() { :; }
+        get_delivery_cli_state() { printf "ready\n"; }
+        agent_is_busy() { return 1; }
+        send_cli_command() {
+            printf "sent\n" >> "'"$CLEAR_EPOCH_SEND_LOG"'"
+            return 0
+        }
+        write_clear_drop_alert() {
+            printf "%s\n" "$*" >> "'"$CLEAR_EPOCH_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert message["read"] is True, message
+assert delivery["delivery_blocked_reason"] == "stale_command_epoch", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ ! -s "$CLEAR_EPOCH_SEND_LOG" ]
+    [ "$(wc -l < "$CLEAR_EPOCH_ALERT_LOG")" -eq 1 ]
+}
+
+@test "T-CMD-EPOCH-RECOVERY-001: auto recovery preserves identity and a redo is independently queued" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        mkdir -p "'"$TEST_TMPDIR"'/queue/tasks"
+        cat > "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<YAML
+task:
+  cmd: cmd_040
+  task_id: subtask_040a
+  parent_cmd: cmd_040
+  status: assigned
+YAML
+        cat > "$INBOX" <<YAML
+messages: []
+YAML
+        first=$(enqueue_recovery_task_assigned)
+        duplicate=$(enqueue_recovery_task_assigned)
+        "'"$VENV_PYTHON"'" - "'"$TEST_TMPDIR"'/queue/tasks/test_agent.yaml" <<'"'"'PY'"'"'
+import sys, yaml
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    data = yaml.safe_load(handle)
+data["task"]["task_id"] = "subtask_040a2"
+data["task"]["redo_of"] = "subtask_040a"
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+PY
+        redo=$(enqueue_recovery_task_assigned)
+        FIRST="$first" DUPLICATE="$duplicate" REDO="$redo" \
+            "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import os, sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = yaml.safe_load(handle)["messages"]
+auto = [m for m in messages if m.get("from") == "inbox_watcher"]
+assert len(auto) == 2, auto
+assert [(m.get("cmd"), m.get("task_id")) for m in auto] == [
+    ("cmd_040", "subtask_040a"),
+    ("cmd_040", "subtask_040a2"),
+], auto
+assert os.environ["FIRST"].startswith("msg_auto_recovery_"), os.environ
+assert os.environ["DUPLICATE"] == "SKIP_DUPLICATE", os.environ
+assert os.environ["REDO"].startswith("msg_auto_recovery_"), os.environ
+PY
+    '
+    [ "$status" -eq 0 ]
+}
