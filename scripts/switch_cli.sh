@@ -37,12 +37,86 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-SETTINGS_FILE="${PROJECT_ROOT}/config/settings.yaml"
-LOG_FILE="${PROJECT_ROOT}/logs/switch_cli.log"
+SETTINGS_FILE="${CLI_ADAPTER_SETTINGS:-${PROJECT_ROOT}/config/settings.yaml}"
+LOG_FILE="${SWITCH_CLI_LOG_FILE:-${PROJECT_ROOT}/logs/switch_cli.log}"
+OPENCODE_AGENT_DIR="${SWITCH_CLI_OPENCODE_AGENT_DIR:-${PROJECT_ROOT}/.opencode/agents}"
 
 # cli_adapter.sh をロード
 source "${PROJECT_ROOT}/lib/cli_adapter.sh"
 source "${PROJECT_ROOT}/lib/agent_registry.sh"
+# shellcheck disable=SC1091  # resolved from PROJECT_ROOT at runtime
+source "${PROJECT_ROOT}/lib/cli_readiness.sh"
+
+SETTINGS_BACKUP=""
+SETTINGS_BACKUP_VALID=false
+RUNTIME_BACKUP_DIR=""
+RUNTIME_FILE=""
+RUNTIME_SNAPSHOT_VALID=false
+RUNTIME_EXISTED=false
+SWITCH_COMMITTED=false
+
+PANE_METADATA_SNAPSHOT_VALID=false
+PANE_METADATA_DIRTY=false
+PANE_METADATA_TARGET=""
+PANE_OLD_CLI_PRESENT=false
+PANE_OLD_CLI=""
+PANE_OLD_MODEL_PRESENT=false
+PANE_OLD_MODEL=""
+PANE_OLD_TITLE=""
+
+cleanup_switch_transaction() {
+    local rc=$?
+    local settings_restored=true
+    local runtime_restored=true
+
+    if [[ "$PANE_METADATA_DIRTY" == true && "$SWITCH_COMMITTED" != true ]]; then
+        if restore_pane_metadata; then
+            log "Restored pane metadata after incomplete CLI switch"
+        else
+            log "ERROR: Failed to restore pane metadata after incomplete CLI switch"
+            rc=1
+        fi
+    fi
+
+    if [[ "$RUNTIME_SNAPSHOT_VALID" == true && "$SWITCH_COMMITTED" != true ]]; then
+        if [[ "$RUNTIME_EXISTED" == true ]]; then
+            rm -f -- "$RUNTIME_FILE" 2>/dev/null || runtime_restored=false
+            if [[ "$runtime_restored" == true ]] && ! cp -a -- "${RUNTIME_BACKUP_DIR}/runtime" "$RUNTIME_FILE"; then
+                runtime_restored=false
+            fi
+        elif ! rm -f -- "$RUNTIME_FILE"; then
+            runtime_restored=false
+        fi
+
+        if [[ "$runtime_restored" == true ]]; then
+            log "Restored OpenCode runtime metadata after incomplete CLI switch"
+        else
+            log "ERROR: Failed to restore OpenCode runtime metadata; backup retained at ${RUNTIME_BACKUP_DIR}"
+            rc=1
+        fi
+    fi
+
+    if [[ "$SETTINGS_BACKUP_VALID" == true && -n "$SETTINGS_BACKUP" && "$SWITCH_COMMITTED" != true && -f "$SETTINGS_BACKUP" ]]; then
+        if cp -- "$SETTINGS_BACKUP" "$SETTINGS_FILE"; then
+            log "Restored settings after incomplete CLI switch"
+        else
+            settings_restored=false
+            log "ERROR: Failed to restore settings after incomplete CLI switch; backup retained at ${SETTINGS_BACKUP}"
+            rc=1
+        fi
+    fi
+
+    if [[ -n "$SETTINGS_BACKUP" && ( "$SWITCH_COMMITTED" == true || "$settings_restored" == true ) ]]; then
+        rm -f -- "$SETTINGS_BACKUP"
+    fi
+    if [[ -n "$RUNTIME_BACKUP_DIR" && ( "$SWITCH_COMMITTED" == true || "$runtime_restored" == true ) ]]; then
+        rm -f -- "${RUNTIME_BACKUP_DIR}/runtime"
+        rmdir -- "$RUNTIME_BACKUP_DIR" 2>/dev/null || true
+    fi
+    exit "$rc"
+}
+
+trap cleanup_switch_transaction EXIT
 
 # ─── ログ ───
 log() {
@@ -250,12 +324,35 @@ PYEOF
 # ─── OpenCode runtime agent frontmatter 同期 ───
 # OpenCode TUI は `opencode run` と違って --variant を受け付けない。
 # provider固有variantは git-ignored の .opencode/agents/<agent>-runtime.md に同期する。
+snapshot_opencode_runtime() {
+    local agent_id="$1"
+
+    RUNTIME_FILE="${OPENCODE_AGENT_DIR}/${agent_id}-runtime.md"
+    if [[ -d "$RUNTIME_FILE" && ! -L "$RUNTIME_FILE" ]]; then
+        log "ERROR: OpenCode runtime metadata path is not a file"
+        return 1
+    fi
+
+    if ! RUNTIME_BACKUP_DIR=$(mktemp -d); then
+        log "ERROR: Unable to create OpenCode runtime metadata snapshot"
+        return 1
+    fi
+    if [[ -e "$RUNTIME_FILE" || -L "$RUNTIME_FILE" ]]; then
+        if ! cp -a -- "$RUNTIME_FILE" "${RUNTIME_BACKUP_DIR}/runtime"; then
+            log "ERROR: Unable to snapshot OpenCode runtime metadata"
+            return 1
+        fi
+        RUNTIME_EXISTED=true
+    fi
+    RUNTIME_SNAPSHOT_VALID=true
+}
+
 sync_opencode_agent_frontmatter() {
     local agent_id="$1"
     local model="${2:-}"
     local variant="${3:-}"
-    local base_file="${PROJECT_ROOT}/.opencode/agents/${agent_id}.md"
-    local runtime_file="${PROJECT_ROOT}/.opencode/agents/${agent_id}-runtime.md"
+    local base_file="${OPENCODE_AGENT_DIR}/${agent_id}.md"
+    local runtime_file="${OPENCODE_AGENT_DIR}/${agent_id}-runtime.md"
     local normalized_model
 
     [[ -f "$base_file" ]] || return 0
@@ -372,11 +469,16 @@ wait_for_shell_prompt() {
     local pane="$1"
     local max_wait=15
     local waited=0
+    local poll_seconds="${SHOGUN_SWITCH_SHELL_POLL_SECONDS:-1}"
+
+    if [[ ! "$poll_seconds" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        poll_seconds=1
+    fi
 
     log "Waiting for shell prompt on ${pane}..."
 
     while [ "$waited" -lt "$max_wait" ]; do
-        sleep 1
+        sleep "$poll_seconds"
         waited=$((waited + 1))
 
         local last_lines
@@ -405,6 +507,52 @@ wait_for_shell_prompt() {
 # get_model_display_name は cli_adapter.sh から source 済み
 
 # ─── tmux pane metadata 更新 ───
+snapshot_pane_metadata() {
+    local pane="$1"
+
+    PANE_METADATA_TARGET="$pane"
+    if PANE_OLD_CLI=$(tmux show-options -p -t "$pane" -v @agent_cli 2>/dev/null); then
+        PANE_OLD_CLI_PRESENT=true
+    else
+        PANE_OLD_CLI_PRESENT=false
+        PANE_OLD_CLI=""
+    fi
+    if PANE_OLD_MODEL=$(tmux show-options -p -t "$pane" -v @model_name 2>/dev/null); then
+        PANE_OLD_MODEL_PRESENT=true
+    else
+        PANE_OLD_MODEL_PRESENT=false
+        PANE_OLD_MODEL=""
+    fi
+    if ! PANE_OLD_TITLE=$(tmux display-message -t "$pane" -p '#{pane_title}' 2>/dev/null); then
+        log "ERROR: Unable to snapshot pane metadata before CLI switch"
+        return 1
+    fi
+    PANE_METADATA_SNAPSHOT_VALID=true
+}
+
+restore_pane_metadata() {
+    local restore_rc=0
+
+    [[ "$PANE_METADATA_SNAPSHOT_VALID" == true ]] || return 1
+
+    if [[ "$PANE_OLD_CLI_PRESENT" == true ]]; then
+        tmux set-option -p -t "$PANE_METADATA_TARGET" @agent_cli "$PANE_OLD_CLI" 2>/dev/null || restore_rc=1
+    else
+        tmux set-option -p -u -t "$PANE_METADATA_TARGET" @agent_cli 2>/dev/null || restore_rc=1
+    fi
+    if [[ "$PANE_OLD_MODEL_PRESENT" == true ]]; then
+        tmux set-option -p -t "$PANE_METADATA_TARGET" @model_name "$PANE_OLD_MODEL" 2>/dev/null || restore_rc=1
+    else
+        tmux set-option -p -u -t "$PANE_METADATA_TARGET" @model_name 2>/dev/null || restore_rc=1
+    fi
+    tmux select-pane -t "$PANE_METADATA_TARGET" -T "$PANE_OLD_TITLE" 2>/dev/null || restore_rc=1
+
+    if (( restore_rc == 0 )); then
+        PANE_METADATA_DIRTY=false
+    fi
+    return "$restore_rc"
+}
+
 update_pane_metadata() {
     local pane="$1"
     local new_cli_type="$2"
@@ -412,9 +560,10 @@ update_pane_metadata() {
 
     log "Updating pane metadata: @agent_cli=${new_cli_type}, @model_name=${display_name}"
 
-    tmux set-option -p -t "$pane" @agent_cli "$new_cli_type" 2>/dev/null || true
-    tmux set-option -p -t "$pane" @model_name "$display_name" 2>/dev/null || true
-    tmux select-pane -t "$pane" -T "$display_name" 2>/dev/null || true
+    PANE_METADATA_DIRTY=true
+    tmux set-option -p -t "$pane" @agent_cli "$new_cli_type" 2>/dev/null || return 1
+    tmux set-option -p -t "$pane" @model_name "$display_name" 2>/dev/null || return 1
+    tmux select-pane -t "$pane" -T "$display_name" 2>/dev/null || return 1
 }
 
 # ═══════════════════════════════════════════════════════════════
@@ -511,8 +660,20 @@ if [[ -n "$NEW_MODEL" && -z "$NEW_TYPE" ]]; then
     esac
 fi
 
+# Input validation is complete. Snapshot pane metadata before the first
+# persistent settings/runtime mutation.
+if ! snapshot_pane_metadata "$PANE_TARGET"; then
+    exit 1
+fi
+
 # Step 1: settings.yaml 更新（--type/--model/--variant 指定時のみ）
 if [[ -n "$NEW_TYPE" || -n "$NEW_MODEL" || -n "$NEW_VARIANT" || -n "$NEW_EFFORT" ]]; then
+    SETTINGS_BACKUP=$(mktemp)
+    if ! cp -- "$SETTINGS_FILE" "$SETTINGS_BACKUP"; then
+        log "ERROR: Unable to back up settings before CLI switch"
+        exit 1
+    fi
+    SETTINGS_BACKUP_VALID=true
     update_settings_yaml "$AGENT_ID" "$NEW_TYPE" "$NEW_MODEL" "$NEW_VARIANT" "$NEW_EFFORT"
 fi
 
@@ -522,6 +683,9 @@ TARGET_MODEL=$(get_agent_model "$AGENT_ID")
 TARGET_EFFORT=$(get_agent_effort "$AGENT_ID")
 TARGET_VARIANT=$(_cli_adapter_read_yaml "cli.agents.${AGENT_ID}.variant" "")
 if [[ "$TARGET_CLI_TYPE" == "opencode" ]]; then
+    if ! snapshot_opencode_runtime "$AGENT_ID"; then
+        exit 1
+    fi
     sync_opencode_agent_frontmatter "$AGENT_ID" "$TARGET_MODEL" "$TARGET_VARIANT"
 fi
 TARGET_CMD=$(build_cli_command "$AGENT_ID")
@@ -542,9 +706,31 @@ tmux send-keys -t "$PANE_TARGET" "$TARGET_CMD" 2>/dev/null || true
 sleep 0.3
 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
 
-# Step 6: tmux pane metadata 更新
+# Step 6: 新CLIのreadinessを確認する。ready以外ではsettingsをrollbackし、
+# pane metadataは旧CLIの値を保持する。
+_switch_ready_roles=("$AGENT_ID")
+_switch_ready_panes=("$PANE_TARGET")
+_switch_ready_clis=("$TARGET_CLI_TYPE")
+_switch_ready_states=()
+if ! cli_readiness_wait_all \
+    _switch_ready_roles _switch_ready_panes _switch_ready_clis _switch_ready_states \
+    "${SHOGUN_CLI_READINESS_TIMEOUT_SECONDS:-30}" \
+    "${SHOGUN_CLI_READINESS_POLL_SECONDS:-1}"; then
+    log "ERROR: New CLI readiness was not confirmed; metadata commit blocked"
+    exit 1
+fi
+
+# Step 7: readiness確認後だけtmux pane metadataを確定する
 DISPLAY_NAME=$(get_model_display_name "$AGENT_ID")
-update_pane_metadata "$PANE_TARGET" "$TARGET_CLI_TYPE" "$DISPLAY_NAME"
+if ! update_pane_metadata "$PANE_TARGET" "$TARGET_CLI_TYPE" "$DISPLAY_NAME"; then
+    log "ERROR: Pane metadata commit failed; restoring previous metadata"
+    if ! restore_pane_metadata; then
+        log "ERROR: Pane metadata restore failed"
+    fi
+    exit 1
+fi
+SWITCH_COMMITTED=true
+PANE_METADATA_DIRTY=false
 
 log "=== CLI switch complete: ${AGENT_ID} → ${TARGET_CLI_TYPE}/${TARGET_MODEL} (${DISPLAY_NAME}) ==="
 echo "OK: ${AGENT_ID} → ${TARGET_CLI_TYPE}/${TARGET_MODEL}"

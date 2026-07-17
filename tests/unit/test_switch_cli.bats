@@ -7,6 +7,8 @@
 setup() {
     TEST_TMP="$(mktemp -d)"
     PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
+    RETAINED_SETTINGS_BACKUP=""
+    RETAINED_RUNTIME_BACKUP_DIR=""
 
     # テスト用settings.yaml
     cat > "${TEST_TMP}/settings.yaml" << 'YAML'
@@ -44,6 +46,13 @@ YAML
 }
 
 teardown() {
+    if [[ -n "$RETAINED_SETTINGS_BACKUP" && "$RETAINED_SETTINGS_BACKUP" == /tmp/tmp.* ]]; then
+        rm -f -- "$RETAINED_SETTINGS_BACKUP"
+    fi
+    if [[ -n "$RETAINED_RUNTIME_BACKUP_DIR" && "$RETAINED_RUNTIME_BACKUP_DIR" == /tmp/tmp.* ]]; then
+        rm -f -- "$RETAINED_RUNTIME_BACKUP_DIR/runtime"
+        rmdir -- "$RETAINED_RUNTIME_BACKUP_DIR" 2>/dev/null || true
+    fi
     rm -rf "$TEST_TMP"
 }
 
@@ -320,4 +329,292 @@ YAML
     # ashigaru5は thinking:true
     result=$(get_model_display_name "ashigaru5")
     [ "$result" = "Opus+T" ]
+}
+
+# =============================================================================
+# readiness transaction integration tests
+# =============================================================================
+
+setup_switch_cli_tmux_mock() {
+    mkdir -p "$TEST_TMP/bin"
+    export MOCK_TMUX_LOG="$TEST_TMP/tmux.log"
+    : > "$MOCK_TMUX_LOG"
+
+    cat > "$TEST_TMP/bin/tmux" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_TMUX_LOG"
+
+case "$1" in
+    list-panes)
+        echo '%1'
+        ;;
+    display-message)
+        case "$*" in
+            *'#{@agent_id}'*) echo ashigaru1 ;;
+            *'#{pane_id}'*) echo '%1' ;;
+            *'#{pane_current_command}'*) echo node ;;
+            *'#{pane_title}'*) echo OldTitle ;;
+        esac
+        ;;
+    show-options)
+        case "$*" in
+            *'@pane_state_override'*) echo "${MOCK_CLI_STATE:-unknown}" ;;
+            *'@agent_cli'*) echo claude ;;
+            *'@model_name'*) echo OldModel ;;
+            *'@pane_base'*) echo 0 ;;
+            *'pane-base-index'*) echo 0 ;;
+        esac
+        ;;
+    set-option)
+        if [[ "${MOCK_METADATA_FAIL_AT:-}" == model_name && "$*" == *'@model_name '* && "$*" != *'@model_name OldModel'* ]]; then
+            exit 1
+        fi
+        if [[ "${MOCK_SIGNAL_AFTER_AGENT_CLI:-}" == 1 && "$*" == *'@agent_cli codex'* ]]; then
+            kill -TERM "$PPID"
+            sleep 0.1
+        fi
+        ;;
+    capture-pane)
+        echo '$'
+        ;;
+esac
+exit 0
+MOCK
+    chmod +x "$TEST_TMP/bin/tmux"
+}
+
+setup_cp_restore_failure_mock() {
+    cat > "$TEST_TMP/bin/cp" <<'MOCK'
+#!/usr/bin/env bash
+args=("$@")
+dest="${args[${#args[@]}-1]}"
+if [[ -n "${MOCK_CP_FAIL_DEST:-}" && "$dest" == "$MOCK_CP_FAIL_DEST" ]]; then
+    exit 1
+fi
+exec /usr/bin/cp "$@"
+MOCK
+    chmod +x "$TEST_TMP/bin/cp"
+}
+
+setup_isolated_switch_project() {
+    export ISOLATED_SWITCH_ROOT="$TEST_TMP/isolated-switch"
+    mkdir -p "$ISOLATED_SWITCH_ROOT"/{scripts,lib,config,logs,.opencode/agents}
+    cp "$PROJECT_ROOT/scripts/switch_cli.sh" "$ISOLATED_SWITCH_ROOT/scripts/"
+    cp "$PROJECT_ROOT/lib/cli_adapter.sh" "$ISOLATED_SWITCH_ROOT/lib/"
+    cp "$PROJECT_ROOT/lib/agent_registry.sh" "$ISOLATED_SWITCH_ROOT/lib/"
+    cp "$PROJECT_ROOT/lib/agent_status.sh" "$ISOLATED_SWITCH_ROOT/lib/"
+    cp "$PROJECT_ROOT/lib/cli_readiness.sh" "$ISOLATED_SWITCH_ROOT/lib/"
+    cp "$TEST_TMP/settings.yaml" "$ISOLATED_SWITCH_ROOT/config/settings.yaml"
+    ln -s "$PROJECT_ROOT/.venv" "$ISOLATED_SWITCH_ROOT/.venv"
+
+    cat > "$ISOLATED_SWITCH_ROOT/.opencode/agents/ashigaru1.md" <<'MARKDOWN'
+---
+description: Sanitized readiness transaction fixture
+mode: primary
+---
+fixture body
+MARKDOWN
+}
+
+@test "switch_cli readiness failure restores settings and leaves pane metadata unchanged" {
+    setup_switch_cli_tmux_mock
+    cp "$TEST_TMP/settings.yaml" "$TEST_TMP/settings.before.yaml"
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=unknown \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$PROJECT_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type codex --model gpt-5.3-codex-spark
+
+    [ "$status" -ne 0 ]
+    cmp -s "$TEST_TMP/settings.before.yaml" "$TEST_TMP/settings.yaml"
+    [[ "$output" == *"cli_readiness role=ashigaru1 state=unknown ready=false"* ]]
+    [[ "$output" == *"cli_readiness overall=not_ready"* ]]
+    ! grep -q 'set-option.*@agent_cli codex' "$MOCK_TMUX_LOG"
+    ! grep -q 'set-option.*@model_name' "$MOCK_TMUX_LOG"
+}
+
+@test "switch_cli commits settings and pane metadata only after new CLI is ready" {
+    setup_switch_cli_tmux_mock
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=ready \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$PROJECT_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type codex --model gpt-5.3-codex-spark
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"cli_readiness role=ashigaru1 state=ready ready=true"* ]]
+    [[ "$output" == *"cli_readiness overall=ready"* ]]
+    grep -q 'set-option.*@agent_cli codex' "$MOCK_TMUX_LOG"
+    grep -q 'set-option.*@model_name' "$MOCK_TMUX_LOG"
+
+    readiness_probe_line=$(grep -n '@pane_state_override' "$MOCK_TMUX_LOG" | tail -1 | cut -d: -f1)
+    metadata_commit_line=$(grep -n 'set-option.*@agent_cli codex' "$MOCK_TMUX_LOG" | head -1 | cut -d: -f1)
+    [ "$readiness_probe_line" -lt "$metadata_commit_line" ]
+
+    export CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml"
+    source "$PROJECT_ROOT/lib/cli_adapter.sh"
+    [ "$(get_cli_type ashigaru1)" = codex ]
+}
+
+@test "switch_cli metadata partial failure restores old metadata and settings" {
+    setup_switch_cli_tmux_mock
+    cp "$TEST_TMP/settings.yaml" "$TEST_TMP/settings.before.yaml"
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=ready \
+        MOCK_METADATA_FAIL_AT=model_name \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$PROJECT_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type codex --model gpt-5.3-codex-spark
+
+    [ "$status" -ne 0 ]
+    cmp -s "$TEST_TMP/settings.before.yaml" "$TEST_TMP/settings.yaml"
+    grep -q 'set-option.*@agent_cli codex' "$MOCK_TMUX_LOG"
+    grep -q 'set-option.*@agent_cli claude' "$MOCK_TMUX_LOG"
+    grep -q 'set-option.*@model_name OldModel' "$MOCK_TMUX_LOG"
+    grep -q 'select-pane.*-T OldTitle' "$MOCK_TMUX_LOG"
+    [[ "$output" != *"CLI switch complete"* ]]
+}
+
+@test "switch_cli TERM during metadata commit restores old metadata and settings" {
+    setup_switch_cli_tmux_mock
+    cp "$TEST_TMP/settings.yaml" "$TEST_TMP/settings.before.yaml"
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=ready \
+        MOCK_SIGNAL_AFTER_AGENT_CLI=1 \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$PROJECT_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type codex --model gpt-5.3-codex-spark
+
+    [ "$status" -ne 0 ]
+    cmp -s "$TEST_TMP/settings.before.yaml" "$TEST_TMP/settings.yaml"
+    grep -q 'set-option.*@agent_cli codex' "$MOCK_TMUX_LOG"
+    grep -q 'set-option.*@agent_cli claude' "$MOCK_TMUX_LOG"
+    grep -q 'set-option.*@model_name OldModel' "$MOCK_TMUX_LOG"
+    grep -q 'select-pane.*-T OldTitle' "$MOCK_TMUX_LOG"
+    [[ "$output" != *"CLI switch complete"* ]]
+}
+
+@test "switch_cli retains settings backup when rollback copy fails" {
+    setup_switch_cli_tmux_mock
+    setup_cp_restore_failure_mock
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=unknown \
+        MOCK_CP_FAIL_DEST="$TEST_TMP/settings.yaml" \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$PROJECT_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type codex --model gpt-5.3-codex-spark
+
+    [ "$status" -ne 0 ]
+    RETAINED_SETTINGS_BACKUP=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore settings.*backup retained at \(\/tmp\/tmp\.[^ ]*\).*/\1/p' | tail -1)
+    [[ "$RETAINED_SETTINGS_BACKUP" == /tmp/tmp.* ]]
+    [ -f "$RETAINED_SETTINGS_BACKUP" ]
+}
+
+@test "switch_cli retains runtime backup when sidecar rollback copy fails" {
+    setup_switch_cli_tmux_mock
+    setup_cp_restore_failure_mock
+    setup_isolated_switch_project
+    local runtime_file="$ISOLATED_SWITCH_ROOT/.opencode/agents/ashigaru1-runtime.md"
+    printf '%s\n' 'original sanitized runtime' > "$runtime_file"
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$ISOLATED_SWITCH_ROOT/config/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=unknown \
+        MOCK_CP_FAIL_DEST="$runtime_file" \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$ISOLATED_SWITCH_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type opencode --model openai/gpt-5.4-mini --variant high
+
+    [ "$status" -ne 0 ]
+    RETAINED_RUNTIME_BACKUP_DIR=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(\/tmp\/tmp\.[^ ]*\).*/\1/p' | tail -1)
+    [[ "$RETAINED_RUNTIME_BACKUP_DIR" == /tmp/tmp.* ]]
+    [ -f "$RETAINED_RUNTIME_BACKUP_DIR/runtime" ]
+}
+
+@test "switch_cli readiness failure restores overwritten OpenCode runtime sidecar" {
+    setup_switch_cli_tmux_mock
+    setup_isolated_switch_project
+    local runtime_file="$ISOLATED_SWITCH_ROOT/.opencode/agents/ashigaru1-runtime.md"
+    printf '%s\n' 'original sanitized runtime' > "$runtime_file"
+    cp "$runtime_file" "$TEST_TMP/runtime.before"
+    cp "$ISOLATED_SWITCH_ROOT/config/settings.yaml" "$TEST_TMP/settings.before.yaml"
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$ISOLATED_SWITCH_ROOT/config/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=unknown \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$ISOLATED_SWITCH_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type opencode --model openai/gpt-5.4-mini --variant high
+
+    [ "$status" -ne 0 ]
+    cmp -s "$TEST_TMP/runtime.before" "$runtime_file"
+    cmp -s "$TEST_TMP/settings.before.yaml" "$ISOLATED_SWITCH_ROOT/config/settings.yaml"
+}
+
+@test "switch_cli readiness failure restores OpenCode runtime sidecar deleted for empty variant" {
+    setup_switch_cli_tmux_mock
+    setup_isolated_switch_project
+    local runtime_file="$ISOLATED_SWITCH_ROOT/.opencode/agents/ashigaru1-runtime.md"
+    printf '%s\n' 'original sanitized runtime' > "$runtime_file"
+    cp "$runtime_file" "$TEST_TMP/runtime.before"
+
+    run env \
+        PATH="$TEST_TMP/bin:$PATH" \
+        CLI_ADAPTER_SETTINGS="$ISOLATED_SWITCH_ROOT/config/settings.yaml" \
+        SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
+        SHOGUN_TEST_MODE=1 \
+        MOCK_CLI_STATE=unknown \
+        SHOGUN_CLI_READINESS_TIMEOUT_SECONDS=0 \
+        SHOGUN_CLI_READINESS_POLL_SECONDS=0 \
+        SHOGUN_SWITCH_SHELL_POLL_SECONDS=0 \
+        bash "$ISOLATED_SWITCH_ROOT/scripts/switch_cli.sh" ashigaru1 \
+            --type opencode --model openai/gpt-5.4-mini
+
+    [ "$status" -ne 0 ]
+    cmp -s "$TEST_TMP/runtime.before" "$runtime_file"
 }

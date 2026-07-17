@@ -62,6 +62,10 @@ else
     CLI_ADAPTER_LOADED=false
 fi
 
+# CLI liveness/readiness gate (busy/idle detection remains unchanged).
+# shellcheck disable=SC1091  # resolved from SCRIPT_DIR at runtime
+source "$SCRIPT_DIR/lib/cli_readiness.sh"
+
 # 足軽IDリストと人数を動的に取得（settings.yaml から）
 if [ "$CLI_ADAPTER_LOADED" = true ]; then
     _ASHIGARU_IDS_STR=$(get_ashigaru_ids)
@@ -90,17 +94,6 @@ opencode_startup_delay() {
     if [ "$cli_type" = "opencode" ]; then
         sleep 0.1
     fi
-}
-
-cli_ready_pattern() {
-    local cli_type="$1"
-    case "$cli_type" in
-        claude)      echo "bypass permissions|Do you trust|Claude Code" ;;
-        codex)       echo "context left|\\? for shortcuts|Codex" ;;
-        opencode)    echo "esc.*interrupt|OpenCode|opencode" ;;
-        antigravity) echo "Antigravity|agy|type a message|Type a message|message" ;;
-        *)           echo "." ;;
-    esac
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -336,6 +329,10 @@ echo ""
 # STEP 1: 既存セッションクリーンアップ
 # ═══════════════════════════════════════════════════════════════════════════════
 log_info "🧹 既存の陣を撤収中..."
+# paneを同名で再作成する前に旧watcherを停止する。readiness失敗時にも
+# permission/login画面へ旧processが入力する経路を残さない。
+cli_readiness_quiesce_watchers
+sleep 1
 tmux kill-session -t multiagent 2>/dev/null && log_info "  └─ multiagent陣、撤収完了" || log_info "  └─ multiagent陣は存在せず"
 tmux kill-session -t shogun 2>/dev/null && log_info "  └─ shogun本陣、撤収完了" || log_info "  └─ shogun本陣は存在せず"
 
@@ -745,6 +742,11 @@ if [ "$SETUP_ONLY" = false ]; then
 
     log_war "👑 全軍にエージェントCLIを召喚中..."
 
+    _cli_ready_roles=()
+    _cli_ready_panes=()
+    _cli_ready_types=()
+    _cli_ready_states=()
+
     # 将軍: CLI Adapter経由でコマンド構築
     _shogun_cli_type="claude"
     _shogun_cmd="claude --model opus --effort max $PERMISSION_FLAG"
@@ -767,6 +769,9 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
     tmux set-option -p -t "shogun:main" @agent_cli "$_shogun_cli_type"
     tmux send-keys -t shogun:main "$_shogun_cmd"
     tmux send-keys -t shogun:main Enter
+    _cli_ready_roles+=("shogun")
+    _cli_ready_panes+=("shogun:main")
+    _cli_ready_types+=("$_shogun_cli_type")
     opencode_startup_delay "$_shogun_cli_type"
     _shogun_display=$(get_model_display_name "shogun" 2>/dev/null || echo "Opus")
     tmux set-option -p -t "shogun:main" @model_name "$_shogun_display" 2>/dev/null || true
@@ -786,6 +791,9 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
     tmux set-option -p -t "multiagent:agents.${p}" @agent_cli "$_karo_cli_type"
     tmux send-keys -t "multiagent:agents.${p}" "$_karo_cmd"
     tmux send-keys -t "multiagent:agents.${p}" Enter
+    _cli_ready_roles+=("karo")
+    _cli_ready_panes+=("multiagent:agents.${p}")
+    _cli_ready_types+=("$_karo_cli_type")
     opencode_startup_delay "$_karo_cli_type"
     _karo_display=$(get_model_display_name "karo" 2>/dev/null || echo "Sonnet")
     tmux set-option -p -t "multiagent:agents.${p}" @model_name "$_karo_display" 2>/dev/null || true
@@ -808,6 +816,9 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
             tmux set-option -p -t "multiagent:agents.${p}" @agent_cli "$_ashi_cli_type"
             tmux send-keys -t "multiagent:agents.${p}" "$_ashi_cmd"
             tmux send-keys -t "multiagent:agents.${p}" Enter
+            _cli_ready_roles+=("ashigaru${i}")
+            _cli_ready_panes+=("multiagent:agents.${p}")
+            _cli_ready_types+=("$_ashi_cli_type")
             opencode_startup_delay "$_ashi_cli_type"
         done
         log_info "  └─ 足軽1-${_ASHIGARU_COUNT}（決戦の陣）、召喚完了"
@@ -824,6 +835,9 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
             tmux set-option -p -t "multiagent:agents.${p}" @agent_cli "$_ashi_cli_type"
             tmux send-keys -t "multiagent:agents.${p}" "$_ashi_cmd"
             tmux send-keys -t "multiagent:agents.${p}" Enter
+            _cli_ready_roles+=("ashigaru${i}")
+            _cli_ready_panes+=("multiagent:agents.${p}")
+            _cli_ready_types+=("$_ashi_cli_type")
             opencode_startup_delay "$_ashi_cli_type"
         done
         log_info "  └─ 足軽1-${_ASHIGARU_COUNT}（平時の陣）、召喚完了"
@@ -841,6 +855,9 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
 
     tmux send-keys -t "multiagent:agents.${p}" "$_gunshi_cmd"
     tmux send-keys -t "multiagent:agents.${p}" Enter
+    _cli_ready_roles+=("gunshi")
+    _cli_ready_panes+=("multiagent:agents.${p}")
+    _cli_ready_types+=("$_gunshi_cli_type")
     opencode_startup_delay "$_gunshi_cli_type"
     _gunshi_display=$(get_model_display_name "gunshi" 2>/dev/null || echo "Opus+T")
     tmux set-option -p -t "multiagent:agents.${p}" @model_name "$_gunshi_display" 2>/dev/null || true
@@ -853,6 +870,9 @@ with open(f,'w') as fh: yaml.safe_dump(d, fh, default_flow_style=False, allow_un
     tmux set-option -p -t "multiagent:agents.${p}" @agent_cli "$_oometsuke_cli_type"
     tmux send-keys -t "multiagent:agents.${p}" "$_oometsuke_cmd"
     tmux send-keys -t "multiagent:agents.${p}" Enter
+    _cli_ready_roles+=("oometsuke")
+    _cli_ready_panes+=("multiagent:agents.${p}")
+    _cli_ready_types+=("$_oometsuke_cli_type")
     opencode_startup_delay "$_oometsuke_cli_type"
     _oometsuke_display=$(get_model_display_name "oometsuke" 2>/dev/null || echo "Opus+T")
     tmux set-option -p -t "multiagent:agents.${p}" @model_name "$_oometsuke_display" 2>/dev/null || true
@@ -936,17 +956,17 @@ NINJA_EOF
     echo -e "                               \033[0;36m[ASCII Art: syntax-samurai/ryu - CC0 1.0 Public Domain]\033[0m"
     echo ""
 
-    echo "  エージェントCLIの起動を待機中（最大30秒）..."
+    echo "  全エージェントCLIのreadinessを待機中（最大30秒）..."
 
-    # 将軍の起動を確認（最大30秒待機）
-    _shogun_ready_pattern=$(cli_ready_pattern "$_shogun_cli_type")
-    for i in {1..30}; do
-        if tmux capture-pane -t shogun:main -p | grep -qiE "$_shogun_ready_pattern"; then
-            echo "  └─ 将軍のCLI起動確認完了（${i}秒, ${_shogun_cli_type}）"
-            break
-        fi
-        sleep 1
-    done
+    # 全役職を同一deadlineで確認する。ready以外が残る場合はfail-closedで
+    # watcher起動前に停止し、permission/loginを自動承認・自動再起動しない。
+    if ! cli_readiness_wait_all \
+        _cli_ready_roles _cli_ready_panes _cli_ready_types _cli_ready_states \
+        "${SHOGUN_CLI_READINESS_TIMEOUT_SECONDS:-30}" \
+        "${SHOGUN_CLI_READINESS_POLL_SECONDS:-1}"; then
+        log_war "CLI readiness failed; watcher startup is blocked"
+        exit 1
+    fi
 
     # ═══════════════════════════════════════════════════════════════════
     # STEP 6.6: inbox_watcher起動（全エージェント）
@@ -958,12 +978,6 @@ NINJA_EOF
     for agent in shogun karo $_ASHIGARU_IDS_STR gunshi oometsuke; do
         [ -f "$SCRIPT_DIR/queue/inbox/${agent}.yaml" ] || echo "messages:" > "$SCRIPT_DIR/queue/inbox/${agent}.yaml"
     done
-
-    # 既存のwatcherと孤児inotifywait/fswatchをkill
-    pkill -f "inbox_watcher.sh" 2>/dev/null || true
-    pkill -f "inotifywait.*queue/inbox" 2>/dev/null || true
-    pkill -f "fswatch.*queue/inbox" 2>/dev/null || true
-    sleep 1
 
     # 将軍のwatcher（ntfy受信の自動起床に必要）
     # 安全モード: phase2/phase3エスカレーションは無効、timeout周期処理も無効（event-drivenのみ）
@@ -1001,6 +1015,10 @@ NINJA_EOF
     nohup bash "$SCRIPT_DIR/scripts/inbox_watcher.sh" "oometsuke" "multiagent:agents.${p}" "$_oometsuke_watcher_cli" \
         >> "$SCRIPT_DIR/logs/inbox_watcher_oometsuke.log" 2>&1 &
     disown
+
+    # 起動前から稼働していたsupervisorだけを、readiness成功と新watcher起動後に再開する。
+    # readiness失敗時は再開せず、blocked paneへの再送経路を閉じたままにする。
+    cli_readiness_resume_watcher_supervisor "$SCRIPT_DIR"
 
     log_success "  └─ $((_ASHIGARU_COUNT + 4))エージェント分のinbox_watcher起動完了（将軍+家老+足軽${_ASHIGARU_COUNT}+軍師+大目付）"
 
