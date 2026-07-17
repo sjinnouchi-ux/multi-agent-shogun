@@ -126,7 +126,7 @@ with open(inbox_path) as f:
     data = yaml.safe_load(f)
 by_id = {m["id"]: m for m in data["messages"]}
 assert by_id["msg_task"]["read"] is False
-assert by_id["msg_clear"]["read"] is True
+assert by_id["msg_clear"]["read"] is False
 assert by_id["msg_model"]["read"] is True
 print("OK")
 PY

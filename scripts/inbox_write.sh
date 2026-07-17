@@ -10,6 +10,7 @@ TARGET="$1"
 CONTENT="$2"
 TYPE="$3"
 FROM="$4"
+DEDUP_REF="${INBOX_WRITE_DEDUP_REF:-}"
 
 INBOX="$SCRIPT_DIR/queue/inbox/${TARGET}.yaml"
 LOCKFILE="${INBOX}.lock"
@@ -17,6 +18,10 @@ LOCKFILE="${INBOX}.lock"
 # Validate arguments
 if [ -z "$TARGET" ] || [ -z "$CONTENT" ] || [ -z "$TYPE" ] || [ -z "$FROM" ]; then
     echo "Usage: inbox_write.sh <target_agent> <content> <type> <from>" >&2
+    exit 1
+fi
+if [ -n "$DEDUP_REF" ] && ! [[ "$DEDUP_REF" =~ ^[a-f0-9]{12}$ ]]; then
+    echo "[inbox_write] REJECTED: invalid dedup reference" >&2
     exit 1
 fi
 
@@ -90,6 +95,17 @@ try:
         data = {}
     if not data.get('messages'):
         data['messages'] = []
+
+    dedup_ref = '$DEDUP_REF'
+    if dedup_ref:
+        needle = f'ref={dedup_ref}'
+        if any(
+            isinstance(message, dict)
+            and message.get('type') == '$TYPE'
+            and needle in str(message.get('content') or '')
+            for message in data['messages']
+        ):
+            sys.exit(0)
 
     # Add new message
     new_msg = {
