@@ -161,6 +161,20 @@ def main() -> int:
     invalid += schema_errors
     archive_records, schema_errors = collect_command_records(archive_doc)
     invalid += schema_errors
+
+    timestamped_archive_dir = queue_dir / "archive"
+    if timestamped_archive_dir.is_dir():
+        for archive_path in sorted(
+            timestamped_archive_dir.glob("shogun_to_karo_*.yaml")
+        ):
+            document, load_errors = load_document(archive_path, required=True)
+            invalid += load_errors
+            if load_errors:
+                continue
+            records, schema_errors = collect_command_records(document)
+            invalid += schema_errors
+            archive_records.extend(records)
+
     for record in active_records + archive_records:
         raw_cmd = record.get("cmd")
         raw_id = record.get("id")

@@ -100,6 +100,32 @@ YAML
     [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=0" ]
 }
 
+@test "timestamped command archives produced by slim_yaml are checked" {
+    write_active_commands <<'YAML'
+commands: []
+YAML
+    write_archived_commands <<'YAML'
+commands: []
+YAML
+    mkdir -p "$SHOGUN_QUEUE_DIR/archive"
+    cat > "$SHOGUN_QUEUE_DIR/archive/shogun_to_karo_20260101010101.yaml" <<'YAML'
+commands:
+  - id: cmd_closed
+    cmd: cmd_closed
+    status: done
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/ashigaru1.yaml" <<'YAML'
+cmd: cmd_closed
+task_id: task_assigned
+status: assigned
+YAML
+
+    run_checker
+
+    [ "$status" -ne 0 ]
+    [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=0" ]
+}
+
 @test "completed and failed tasks close a terminal command" {
     write_active_commands <<'YAML'
 commands: []
