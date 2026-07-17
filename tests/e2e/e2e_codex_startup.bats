@@ -72,7 +72,8 @@ dump_watcher_log() {
 
     # 3. Send task_assigned message via inbox_write
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+        "cmd_test_001" "subtask_test_001a"
 
     # 4. Start inbox_watcher with codex CLI type
     local watcher_pid log_file
@@ -128,7 +129,8 @@ dump_watcher_log() {
        "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+        "cmd_test_001" "subtask_test_001a"
 
     # 3. Start watcher (codex CLI type)
     local watcher_pid log_file
@@ -182,7 +184,8 @@ dump_watcher_log() {
        "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+        "cmd_test_001" "subtask_test_001a"
 
     # 3. Start watcher (claude CLI type)
     local watcher_pid log_file
@@ -233,7 +236,7 @@ dump_watcher_log() {
 
     # 3. Send clear_command via inbox_write (simulates karo sending /clear)
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
 
     # 4. Start inbox_watcher with codex CLI type
     local watcher_pid log_file
@@ -300,11 +303,11 @@ dump_watcher_log() {
 
     # 3. Send THREE clear_commands in rapid succession (simulates karo bug)
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
 
     # 4. Start inbox_watcher with codex CLI type
     local watcher_pid log_file
@@ -407,7 +410,8 @@ PY
 
     # 4. Send task_assigned message (unread message waiting)
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+        "cmd_test_001" "subtask_test_001a"
 
     # 5. Start inbox_watcher — this is where the fix kicks in:
     #    inbox_watcher should create the initial idle flag for Claude CLI

@@ -83,7 +83,7 @@ wait_for_log() {
     sleep 1
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
 
     run wait_for_yaml_value "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.status" "done" 45
     assert_success
@@ -114,7 +114,8 @@ wait_for_log() {
         "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+        "cmd_test_001" "subtask_test_001a"
 
     log_file="/tmp/e2e_inbox_watcher_ashigaru1_stale_busy_${BASHPID}.log"
     watcher_pid=$(
