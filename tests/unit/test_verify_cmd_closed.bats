@@ -77,6 +77,64 @@ YAML
     [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=0" ]
 }
 
+@test "promotion gate allows an unrelated active parallel command" {
+    write_active_commands <<'YAML'
+commands:
+  - id: cmd_parallel
+    cmd: cmd_parallel
+    status: in_progress
+YAML
+    write_archived_commands <<'YAML'
+commands:
+  - id: cmd_closed
+    cmd: cmd_closed
+    status: done
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/pending.yaml" <<'YAML'
+pending_tasks:
+  - cmd: cmd_closed
+    task_id: task_closed
+    status: pending_blocked
+  - cmd: cmd_parallel
+    task_id: task_parallel
+    status: pending_blocked
+YAML
+
+    run_checker --promoting-cmd cmd_parallel
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "cmd_closure: ok checked=2 legacy=0" ]
+}
+
+@test "promotion gate rejects the candidate when its own command is terminal" {
+    write_active_commands <<'YAML'
+commands:
+  - id: cmd_parallel
+    cmd: cmd_parallel
+    status: in_progress
+YAML
+    write_archived_commands <<'YAML'
+commands:
+  - id: cmd_closed
+    cmd: cmd_closed
+    status: done
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/pending.yaml" <<'YAML'
+pending_tasks:
+  - cmd: cmd_closed
+    task_id: task_closed
+    status: pending_blocked
+  - cmd: cmd_parallel
+    task_id: task_parallel
+    status: pending_blocked
+YAML
+
+    run_checker --promoting-cmd cmd_closed
+
+    [ "$status" -ne 0 ]
+    [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=0" ]
+}
+
 @test "assigned work for a terminal command is reported as unclosed" {
     write_active_commands <<'YAML'
 commands: []
@@ -257,6 +315,100 @@ YAML
     [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=0" ]
 }
 
+@test "closing-cmd does not block on an unrelated terminal command task" {
+    write_active_commands <<'YAML'
+commands:
+  - id: cmd_work
+    cmd: cmd_work
+    status: in_progress
+YAML
+    write_archived_commands <<'YAML'
+commands:
+  - id: cmd_old
+    cmd: cmd_old
+    status: done
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/task_work.yaml" <<'YAML'
+cmd: cmd_work
+task_id: task_work
+status: done
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/task_old.yaml" <<'YAML'
+cmd: cmd_old
+task_id: task_old
+status: assigned
+YAML
+
+    run_checker --closing-cmd cmd_work
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "cmd_closure: ok checked=2 legacy=0" ]
+}
+
+@test "closing-cmd blocks active legacy work with no parent command" {
+    write_active_commands <<'YAML'
+commands:
+  - id: cmd_work
+    cmd: cmd_work
+    status: in_progress
+YAML
+    write_archived_commands <<'YAML'
+commands: []
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/legacy_orphan.yaml" <<'YAML'
+task_id: task_legacy
+status: assigned
+YAML
+
+    run_checker --closing-cmd cmd_work
+
+    [ "$status" -ne 0 ]
+    [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=1" ]
+}
+
+@test "closing-cmd blocks active legacy work with an unknown parent command" {
+    write_active_commands <<'YAML'
+commands:
+  - id: cmd_work
+    cmd: cmd_work
+    status: in_progress
+YAML
+    write_archived_commands <<'YAML'
+commands: []
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/legacy_unknown.yaml" <<'YAML'
+parent_cmd: cmd_unknown
+task_id: task_legacy
+status: blocked
+YAML
+
+    run_checker --closing-cmd cmd_work
+
+    [ "$status" -ne 0 ]
+    [ "$output" = "cmd_closure: blocked open=1 invalid=0 legacy=1" ]
+}
+
+@test "completed legacy work without a parent does not block closure" {
+    write_active_commands <<'YAML'
+commands:
+  - id: cmd_work
+    cmd: cmd_work
+    status: in_progress
+YAML
+    write_archived_commands <<'YAML'
+commands: []
+YAML
+    cat > "$SHOGUN_QUEUE_DIR/tasks/legacy_done.yaml" <<'YAML'
+task_id: task_legacy
+status: done
+YAML
+
+    run_checker --closing-cmd cmd_work
+
+    [ "$status" -eq 0 ]
+    [ "$output" = "cmd_closure: ok checked=1 legacy=1" ]
+}
+
 @test "runtime pending file is optional" {
     write_active_commands <<'YAML'
 commands:
@@ -360,9 +512,15 @@ YAML
     [ "$status" -ne 0 ]
 }
 
-@test "source instructions gate command closure and pending promotion" {
+@test "source and generated instructions gate command closure and pending promotion" {
     grep -Fq 'bash scripts/verify_cmd_closed.sh --closing-cmd "$cmd"' \
         "$PROJECT_ROOT/instructions/common/task_flow.md"
     grep -Fq 'bash scripts/verify_cmd_closed.sh' \
         "$PROJECT_ROOT/CLAUDE.md"
+    grep -Fq 'bash scripts/verify_cmd_closed.sh --promoting-cmd "$cmd"' \
+        "$PROJECT_ROOT/instructions/common/task_flow.md"
+    grep -Fq 'bash scripts/verify_cmd_closed.sh --closing-cmd' \
+        "$PROJECT_ROOT/AGENTS.md"
+    grep -Fq 'bash scripts/verify_cmd_closed.sh --promoting-cmd "$cmd"' \
+        "$PROJECT_ROOT/instructions/generated/karo.md"
 }

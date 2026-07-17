@@ -6,7 +6,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QUEUE_DIR="${SHOGUN_QUEUE_DIR:-${SCRIPT_DIR}/../queue}"
 PYTHON_BIN="${SHOGUN_PYTHON_BIN:-${SCRIPT_DIR}/../.venv/bin/python3}"
-CLOSING_CMD=""
+MODE="audit"
+TARGET_CMD=""
 
 sanitized_failure() {
     printf '%s\n' "cmd_closure: blocked open=0 invalid=1 legacy=0"
@@ -14,7 +15,11 @@ sanitized_failure() {
 }
 
 if [ "$#" -eq 2 ] && [ "$1" = "--closing-cmd" ]; then
-    CLOSING_CMD="$2"
+    MODE="closing"
+    TARGET_CMD="$2"
+elif [ "$#" -eq 2 ] && [ "$1" = "--promoting-cmd" ]; then
+    MODE="promoting"
+    TARGET_CMD="$2"
 elif [ "$#" -ne 0 ]; then
     sanitized_failure
 fi
@@ -27,7 +32,7 @@ fi
 
 "$PYTHON_BIN" -c 'import yaml' >/dev/null 2>&1 || sanitized_failure
 
-"$PYTHON_BIN" - "$QUEUE_DIR" "$CLOSING_CMD" <<'PY'
+"$PYTHON_BIN" - "$QUEUE_DIR" "$MODE" "$TARGET_CMD" <<'PY'
 from __future__ import annotations
 
 import re
@@ -138,7 +143,8 @@ def collect_task_records(document: Any) -> tuple[list[dict[str, Any]], int]:
 
 def main() -> int:
     queue_dir = Path(sys.argv[1])
-    closing_cmd = sys.argv[2]
+    mode = sys.argv[2]
+    target_cmd = sys.argv[3]
     invalid = 0
     legacy = 0
     checked = 0
@@ -153,7 +159,6 @@ def main() -> int:
     )
     invalid += load_errors
 
-    active_commands: set[str] = set()
     terminal_commands: set[str] = set()
     known_commands: set[str] = set()
 
@@ -197,19 +202,27 @@ def main() -> int:
         if status in COMMAND_TERMINAL:
             terminal_commands.add(command_id)
         elif status in COMMAND_ACTIVE:
-            active_commands.add(command_id)
+            pass
         else:
             invalid += 1
 
-    if closing_cmd:
-        if not valid_token(CMD_TOKEN, closing_cmd) or closing_cmd not in known_commands:
+    target_valid = True
+    if mode not in {"audit", "closing", "promoting"}:
+        invalid += 1
+        target_valid = False
+    elif mode == "audit":
+        if target_cmd:
             invalid += 1
-        else:
-            terminal_commands.add(closing_cmd)
-            active_commands.discard(closing_cmd)
+            target_valid = False
+    elif not valid_token(CMD_TOKEN, target_cmd) or target_cmd not in known_commands:
+        invalid += 1
+        target_valid = False
+    elif mode == "closing":
+        terminal_commands.add(target_cmd)
 
     tasks_dir = queue_dir / "tasks"
     task_files = sorted(tasks_dir.glob("*.yaml")) if tasks_dir.is_dir() else []
+    promotion_seen = False
     for task_file in task_files:
         document, load_errors = load_document(task_file, required=True)
         invalid += load_errors
@@ -222,6 +235,7 @@ def main() -> int:
             task_id = record.get("task_id")
             raw_cmd = record.get("cmd")
             parent_cmd = record.get("parent_cmd")
+            is_legacy = False
 
             if status == "idle" and task_id in (None, ""):
                 continue
@@ -244,6 +258,7 @@ def main() -> int:
                     invalid += 1
                     continue
             else:
+                is_legacy = True
                 legacy += 1
                 if parent_cmd in (None, ""):
                     command_id = ""
@@ -253,8 +268,25 @@ def main() -> int:
                     invalid += 1
                     continue
 
-            if command_id in terminal_commands and status in TASK_ACTIVE:
-                open_count += 1
+            if status not in TASK_ACTIVE:
+                continue
+            if mode == "audit":
+                if command_id in terminal_commands:
+                    open_count += 1
+            elif mode == "closing":
+                if command_id == target_cmd:
+                    open_count += 1
+                elif is_legacy and (
+                    not command_id or command_id not in known_commands
+                ):
+                    open_count += 1
+            elif mode == "promoting" and command_id == target_cmd:
+                promotion_seen = True
+                if command_id in terminal_commands:
+                    open_count += 1
+
+    if mode == "promoting" and target_valid and not promotion_seen:
+        invalid += 1
 
     if open_count or invalid:
         print(

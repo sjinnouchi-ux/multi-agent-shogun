@@ -559,10 +559,17 @@ Note:
   - Allowed: Karo moves it to an `ashigaruN.yaml` as `assigned` after prerequisites complete
   - Forbidden: pre-assigning to ashigaru before ready
 
-Immediately before moving any pending record to `assigned`, run
-`bash scripts/verify_cmd_closed.sh`. A nonzero result blocks promotion. This
-includes the runtime-only `queue/tasks/pending.yaml` when it exists; do not
-create that file merely to run the checker.
+Immediately before moving any pending record to `assigned`, set `cmd` to that
+record's formal `cmd` token (or legacy `parent_cmd`) and run:
+
+```bash
+bash scripts/verify_cmd_closed.sh --promoting-cmd "$cmd"
+```
+
+A nonzero result blocks that promotion. Unrelated valid command epochs do not
+block one another. The check includes the runtime-only
+`queue/tasks/pending.yaml` when it exists; do not create that file merely to
+run the checker.
 
 ### NTFY Inbox (Lord phone): `queue/ntfy_inbox.yaml`
 
