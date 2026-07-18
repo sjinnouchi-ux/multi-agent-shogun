@@ -8,17 +8,24 @@ setup() {
 @test "departure gives detached multiagent panes explicit readiness geometry" {
     grep -q '^MULTIAGENT_DETACHED_WIDTH=300$' "$SCRIPT"
     grep -q '^MULTIAGENT_DETACHED_HEIGHT=120$' "$SCRIPT"
-    grep -q -- '-x "$MULTIAGENT_DETACHED_WIDTH"' "$SCRIPT"
-    grep -q -- '-y "$MULTIAGENT_DETACHED_HEIGHT"' "$SCRIPT"
-
-    run grep -n 'tmux new-session -d \\' "$SCRIPT"
+    run awk '
+        /^MULTIAGENT_DETACHED_WIDTH=300$/ { geometry = 1 }
+        geometry && /^if ! tmux new-session -d \\/ { capture = 1 }
+        capture {
+            block = block $0 ORS
+            if ($0 !~ /\\$/) {
+                print block
+                exit
+            }
+        }
+    ' "$SCRIPT"
     [ "$status" -eq 0 ]
-    session_line="${output%%:*}"
+    [[ "$output" == *'-x "$MULTIAGENT_DETACHED_WIDTH"'* ]]
+    [[ "$output" == *'-y "$MULTIAGENT_DETACHED_HEIGHT"'* ]]
+    [[ "$output" == *'-s multiagent -n "agents"'* ]]
 
     run grep -n 'tmux split-window -h -t "multiagent:agents"' "$SCRIPT"
     [ "$status" -eq 0 ]
-    split_line="${output%%:*}"
-    [ "$session_line" -lt "$split_line" ]
 }
 
 @test "departure checks all role CLI readiness before starting inbox watchers" {

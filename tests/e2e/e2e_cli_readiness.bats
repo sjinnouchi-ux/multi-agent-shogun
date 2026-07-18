@@ -29,7 +29,13 @@ setup() {
 
 teardown() {
     if [[ -n "${GEOMETRY_SOCKET:-}" ]]; then
-        tmux -L "$GEOMETRY_SOCKET" kill-server 2>/dev/null || true
+        while read -r pane_id; do
+            tmux -L "$GEOMETRY_SOCKET" send-keys -t "$pane_id" exit Enter \
+                2>/dev/null || true
+        done < <(
+            tmux -L "$GEOMETRY_SOCKET" list-panes -a -F '#{pane_id}' \
+                2>/dev/null || true
+        )
         GEOMETRY_SOCKET=""
     fi
 }
