@@ -133,6 +133,7 @@ scripts/seo_qc.sh
 !scripts/github_boundary_preflight.sh
 !scripts/shogun_completion_summary.py
 !scripts/handoff_watchdog.py
+!scripts/cmd_epoch.py
 !scripts/skill_registry.py
 !scripts/skill_registry.sh
 !scripts/codex_diagnostics.py

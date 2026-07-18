@@ -80,6 +80,7 @@ north_star_alignment:
 
 ```yaml
 worker_id: gunshi
+cmd: cmd_150
 task_id: gunshi_strategy_001
 parent_cmd: cmd_150
 timestamp: "2026-02-13T19:30:00"
@@ -103,7 +104,11 @@ skill_candidate:
   found: false
 ```
 
-**Required fields**: worker_id, task_id, parent_cmd, status, timestamp, result, skill_candidate.
+**Required fields**: worker_id, cmd, task_id, parent_cmd, status, timestamp, result, skill_candidate.
+
+Copy `cmd` and `task_id` exactly from the assigned task YAML into the report
+and every task-scoped inbox message. A different task in the same command is a
+different identity. Legacy task YAML without `cmd` remains supported.
 
 ## Analysis Depth Guidelines
 
@@ -219,20 +224,26 @@ Plain text with emoji. No box/罫線.
 Agent-to-agent communication uses file-based mailbox:
 
 ```bash
-bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 Examples:
 ```bash
 # Shogun → Karo
-bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
+bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun cmd_048
 
 # Ashigaru → Gunshi
-bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5 cmd_048 subtask_048a
 
 # Karo → Ashigaru
-bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
+bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo cmd_048 subtask_048a
 ```
+
+For new task-scoped messages, `cmd` and `task_id` are mandatory and must be
+copied from the current task YAML. Command-level messages such as `cmd_new`
+pass `cmd` and omit `task_id`. Non-task operational alerts may omit both.
+Supplying `task_id` without `cmd` is invalid. The four-argument form remains
+supported only for legacy records and non-task messages.
 
 Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 **Agents NEVER call tmux send-keys directly.**
@@ -301,12 +312,14 @@ you will be stuck idle until the next nudge escalation or task reassignment.
 
 When Karo determines a task needs to be redone:
 
-1. Karo writes new task YAML with new task_id (e.g., `subtask_097d` → `subtask_097d2`), adds `redo_of` field
-2. Karo sends `clear_command` type inbox message (NOT `task_assigned`)
+1. Karo writes new task YAML with a new task_id (e.g., `subtask_097d` → `subtask_097d2`), preserves the parent `cmd`, and adds `redo_of`
+2. Karo sends a `clear_command` inbox message (NOT `task_assigned`) with the same `cmd` and the new `task_id`
 3. inbox_watcher delivers context reset to the agent（Claude/Copilot/Kimi: `/clear`, Codex/OpenCode: `/new`）→ session reset
 4. Agent recovers via Session Start procedure, reads new task YAML, starts fresh
 
-Race condition is eliminated: context reset wipes old context. Agent re-reads YAML with new task_id.
+The formal `cmd` + `task_id` pair prevents an older clear or receipt from being
+accepted for the redo. The context reset wipes old context and the agent
+re-reads YAML with the new task identity.
 
 ## Report Flow (interrupt prevention)
 
@@ -329,7 +342,7 @@ Race condition is eliminated: context reset wipes old context. Agent re-reads YA
 ### Sending Messages
 
 ```bash
-bash scripts/inbox_write.sh <target> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 **No sleep interval needed.** No delivery confirmation needed. Multiple sends can be done in rapid succession — flock handles concurrency.
@@ -339,10 +352,11 @@ bash scripts/inbox_write.sh <target> "<message>" <type> <from>
 After writing report YAML, Ashigaru notifies Gunshi:
 
 ```bash
-bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N}
+bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N} cmd_XXX subtask_XXX
 ```
 
-That's it. No state checking, no retry, no delivery verification.
+Copy the current task YAML's formal `cmd` and `task_id`; legacy tasks may omit
+both. No state checking, retry, or delivery verification is required here.
 The inbox_write guarantees persistence. inbox_watcher handles delivery.
 
 # Task Flow
@@ -387,6 +401,29 @@ Meanings and allowed/forbidden actions (short):
 - `cancelled`: intentionally stopped
   - Allowed: read-only (history)
   - Forbidden: continuing work under this cmd (use a new cmd instead)
+
+### Formal Command Epoch
+
+New command entries carry both `id: cmd_XXX` and `cmd: cmd_XXX` with the same
+freshly generated, immutable token. Generate it with:
+
+```bash
+python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml queue/shogun_to_karo_archive.yaml
+```
+
+Propagate `cmd` to every new task, task-scoped inbox message, delivery receipt,
+and report. Keep `parent_cmd` equal to `cmd` in task/report YAML for legacy
+readers. A task-scoped identity is the pair `(cmd, task_id)`:
+
+- both formal sides present: both values must match exactly;
+- redo in the same parent command: preserve `cmd`, create a new `task_id`;
+- parallel tasks: may share `cmd`, must use distinct `task_id` values;
+- stale or malformed formal identity: do not execute, retry, or close it as the current task;
+- current task has no `cmd`: use the legacy compatibility path without inventing a value;
+- current task is formal but the incoming identity is missing: treat it as stale.
+
+This is an identity guard on the existing ack/receipt model, not a new
+transaction state machine.
 
 ### Archive Rule
 
@@ -438,6 +475,9 @@ Meanings and allowed/forbidden actions (short):
 - `failed`: failed with reason
   - Allowed: report must include reason + unblock suggestion
   - Forbidden: silent failure
+
+Every newly written task includes `cmd`, `task_id`, and legacy-compatible
+`parent_cmd` (`cmd == parent_cmd`).
 
 Note:
 - Normally, "idle" is a UI state (no active task), not a YAML status value.

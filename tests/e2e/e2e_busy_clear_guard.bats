@@ -77,7 +77,7 @@ wait_for_log() {
     sleep 2
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
 
     run wait_for_log "$log_file" "[CLEAR-DROP] agent=ashigaru1 cli_state=busy reason=busy"
     assert_success
@@ -146,7 +146,7 @@ PY
     sleep 2
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru2" \
-        "/clear" "clear_command" "karo"
+        "/clear" "clear_command" "karo" "cmd_test_001" "subtask_test_001a"
 
     run wait_for_log "$log_file" "[SEND-KEYS] Sending CLI command to ashigaru2 (claude): /clear"
     assert_success

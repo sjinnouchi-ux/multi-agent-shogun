@@ -41,6 +41,29 @@ Meanings and allowed/forbidden actions (short):
   - Allowed: read-only (history)
   - Forbidden: continuing work under this cmd (use a new cmd instead)
 
+### Formal Command Epoch
+
+New command entries carry both `id: cmd_XXX` and `cmd: cmd_XXX` with the same
+freshly generated, immutable token. Generate it with:
+
+```bash
+python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml queue/shogun_to_karo_archive.yaml
+```
+
+Propagate `cmd` to every new task, task-scoped inbox message, delivery receipt,
+and report. Keep `parent_cmd` equal to `cmd` in task/report YAML for legacy
+readers. A task-scoped identity is the pair `(cmd, task_id)`:
+
+- both formal sides present: both values must match exactly;
+- redo in the same parent command: preserve `cmd`, create a new `task_id`;
+- parallel tasks: may share `cmd`, must use distinct `task_id` values;
+- stale or malformed formal identity: do not execute, retry, or close it as the current task;
+- current task has no `cmd`: use the legacy compatibility path without inventing a value;
+- current task is formal but the incoming identity is missing: treat it as stale.
+
+This is an identity guard on the existing ack/receipt model, not a new
+transaction state machine.
+
 ### Archive Rule
 
 The active queue file (`queue/shogun_to_karo.yaml`) must only contain
@@ -91,6 +114,9 @@ Meanings and allowed/forbidden actions (short):
 - `failed`: failed with reason
   - Allowed: report must include reason + unblock suggestion
   - Forbidden: silent failure
+
+Every newly written task includes `cmd`, `task_id`, and legacy-compatible
+`parent_cmd` (`cmd == parent_cmd`).
 
 Note:
 - Normally, "idle" is a UI state (no active task), not a YAML status value.

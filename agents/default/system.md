@@ -28,7 +28,8 @@ files:
   ntfy_inbox: queue/ntfy_inbox.yaml    # Incoming ntfy messages from Lord's phone
 
 cmd_format:
-  required_fields: [id, timestamp, purpose, acceptance_criteria, command, project, priority, status]
+  required_fields: [id, cmd, timestamp, purpose, acceptance_criteria, command, project, priority, status]
+  cmd_epoch: "For new commands, cmd equals id and is immutable. Generate it with scripts/cmd_epoch.py; never reuse a terminal command id."
   purpose: "One sentence — what 'done' looks like. Verifiable."
   acceptance_criteria: "List of testable conditions. ALL must be true for cmd=done."
   validation: "Karo checks acceptance_criteria at Step 11.7. Ashigaru checks parent_cmd purpose on task completion."
@@ -41,6 +42,7 @@ task_status_transitions:
   - "RULE: Ashigaru updates OWN yaml only. Never touch other ashigaru's yaml."
   - "RULE: On /clear recovery, if assigned=done → DO NOT re-send report. Wait idle. (prevents duplicate report loop)"
   - "RULE: blocked状態タスクを足軽へ事前割当しない。前提完了までpending_tasksで保留。"
+  - "RULE: New task, inbox, delivery, and report records preserve formal cmd + task_id identity. Legacy records without cmd remain readable."
 
 # Status definitions are authoritative in:
 # - instructions/common/task_flow.md (Status Reference)
@@ -113,20 +115,42 @@ Always include: 1) Agent role (shogun/karo/ashigaru/gunshi/oometsuke) 2) Forbidd
 Agent-to-agent communication uses file-based mailbox:
 
 ```bash
-bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 Examples:
 ```bash
 # Shogun → Karo
-bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
+bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun cmd_048
 
 # Ashigaru → Gunshi
-bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5 cmd_048 subtask_048a
 
 # Karo → Ashigaru
-bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
+bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo cmd_048 subtask_048a
 ```
+
+New task-scoped messages preserve the current task YAML's formal `cmd` and
+`task_id`. Command-level messages pass `cmd` and omit `task_id`; legacy and
+non-task messages may use the four-argument form. Supplying `task_id` without
+`cmd` is invalid.
+
+### Formal Command Epoch
+
+New commands use the same freshly generated token in both `id` and `cmd`:
+
+```yaml
+- id: cmd_XXX
+  cmd: cmd_XXX
+```
+
+Generate it with `python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml
+queue/shogun_to_karo_archive.yaml`. Propagate `cmd` through tasks, task-scoped
+inbox messages, delivery receipts, and reports while retaining `parent_cmd` for
+legacy readers. Formal records match on `(cmd, task_id)`. Only when the current
+task has no `cmd` may legacy compatibility be used; an identity-less incoming
+message for a formal current task is stale. Do not create a new transaction
+state machine.
 
 Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 **Agents NEVER call tmux send-keys directly.**
@@ -177,12 +201,13 @@ you will be stuck idle until the next escalation or task reassignment.
 
 When Karo determines a task needs to be redone:
 
-1. Karo writes new task YAML with new task_id (e.g., `subtask_097d` → `subtask_097d2`), adds `redo_of` field
-2. Karo sends `clear_command` type inbox message (NOT `task_assigned`)
+1. Karo writes new task YAML with a new task_id, preserves `cmd`, and adds `redo_of`
+2. Karo sends a `clear_command` inbox message (NOT `task_assigned`) with the same `cmd` and new `task_id`
 3. inbox_watcher delivers the CLI-appropriate context reset command to the agent → session reset
 4. Agent recovers via Session Start procedure, reads new task YAML, starts fresh
 
-Race condition is eliminated: the context reset wipes old context. Agent re-reads YAML with new task_id.
+The formal identity rejects older receipts and clear commands. The context
+reset wipes old context and the agent re-reads YAML with the new task_id.
 
 ## Report Flow (interrupt prevention)
 

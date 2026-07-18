@@ -5,20 +5,26 @@
 Agent-to-agent communication uses file-based mailbox:
 
 ```bash
-bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target_agent> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 Examples:
 ```bash
 # Shogun → Karo
-bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun
+bash scripts/inbox_write.sh karo "cmd_048を書いた。実行せよ。" cmd_new shogun cmd_048
 
 # Ashigaru → Gunshi
-bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5
+bash scripts/inbox_write.sh gunshi "足軽5号、任務完了。品質チェックを仰ぎたし。" report_received ashigaru5 cmd_048 subtask_048a
 
 # Karo → Ashigaru
-bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo
+bash scripts/inbox_write.sh ashigaru3 "タスクYAMLを読んで作業開始せよ。" task_assigned karo cmd_048 subtask_048a
 ```
+
+For new task-scoped messages, `cmd` and `task_id` are mandatory and must be
+copied from the current task YAML. Command-level messages such as `cmd_new`
+pass `cmd` and omit `task_id`. Non-task operational alerts may omit both.
+Supplying `task_id` without `cmd` is invalid. The four-argument form remains
+supported only for legacy records and non-task messages.
 
 Delivery is handled by `inbox_watcher.sh` (infrastructure layer).
 **Agents NEVER call tmux send-keys directly.**
@@ -87,12 +93,14 @@ you will be stuck idle until the next nudge escalation or task reassignment.
 
 When Karo determines a task needs to be redone:
 
-1. Karo writes new task YAML with new task_id (e.g., `subtask_097d` → `subtask_097d2`), adds `redo_of` field
-2. Karo sends `clear_command` type inbox message (NOT `task_assigned`)
+1. Karo writes new task YAML with a new task_id (e.g., `subtask_097d` → `subtask_097d2`), preserves the parent `cmd`, and adds `redo_of`
+2. Karo sends a `clear_command` inbox message (NOT `task_assigned`) with the same `cmd` and the new `task_id`
 3. inbox_watcher delivers context reset to the agent（Claude/Copilot/Kimi: `/clear`, Codex/OpenCode: `/new`）→ session reset
 4. Agent recovers via Session Start procedure, reads new task YAML, starts fresh
 
-Race condition is eliminated: context reset wipes old context. Agent re-reads YAML with new task_id.
+The formal `cmd` + `task_id` pair prevents an older clear or receipt from being
+accepted for the redo. The context reset wipes old context and the agent
+re-reads YAML with the new task identity.
 
 ## Report Flow (interrupt prevention)
 
@@ -115,7 +123,7 @@ Race condition is eliminated: context reset wipes old context. Agent re-reads YA
 ### Sending Messages
 
 ```bash
-bash scripts/inbox_write.sh <target> "<message>" <type> <from>
+bash scripts/inbox_write.sh <target> "<message>" <type> <from> [cmd] [task_id]
 ```
 
 **No sleep interval needed.** No delivery confirmation needed. Multiple sends can be done in rapid succession — flock handles concurrency.
@@ -125,8 +133,9 @@ bash scripts/inbox_write.sh <target> "<message>" <type> <from>
 After writing report YAML, Ashigaru notifies Gunshi:
 
 ```bash
-bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N}
+bash scripts/inbox_write.sh gunshi "足軽{N}号、任務完了でござる。品質確認を仰ぎたし。" report_received ashigaru{N} cmd_XXX subtask_XXX
 ```
 
-That's it. No state checking, no retry, no delivery verification.
+Copy the current task YAML's formal `cmd` and `task_id`; legacy tasks may omit
+both. No state checking, retry, or delivery verification is required here.
 The inbox_write guarantees persistence. inbox_watcher handles delivery.

@@ -56,7 +56,8 @@ setup() {
 
     # 2. Write task_assigned to ashigaru1's inbox
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo"
+        "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+        "cmd_test_001" "subtask_test_001a"
 
     # 3. Send inbox nudge to ashigaru1
     local ashigaru1_pane
@@ -92,7 +93,7 @@ setup() {
 
     # 2. Write cmd_new to karo's inbox
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "karo" \
-        "cmd_test_001を発行した。" "cmd_new" "shogun"
+        "cmd_test_001を発行した。" "cmd_new" "shogun" "cmd_test_001"
 
     # 3. Send nudge to karo — karo reads inbox, sees cmd_new, decomposes
     local karo_pane
@@ -105,11 +106,23 @@ setup() {
 
     # 5. Verify subtask was created with correct structure
     assert_yaml_field "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.status" "assigned"
+    assert_yaml_field "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.cmd" "cmd_test_001"
     assert_yaml_field "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.parent_cmd" "cmd_test_001"
+    assert_yaml_field "$E2E_QUEUE/queue/shogun_to_karo.yaml" "cmd" "cmd_test_001"
 
     # 6. Wait and verify ashigaru1 received task_assigned inbox
     sleep 3
     run assert_inbox_message_exists "$E2E_QUEUE/queue/inbox/ashigaru1.yaml" "karo" "task_assigned"
+    assert_success
+    run python3 - "$E2E_QUEUE/queue/inbox/ashigaru1.yaml" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = (yaml.safe_load(handle) or {}).get("messages", []) or []
+assigned = [message for message in messages if message.get("type") == "task_assigned"]
+assert [(message.get("cmd"), message.get("task_id")) for message in assigned] == [
+    ("cmd_test_001", "subtask_cmd_test_001_a")
+], assigned
+PY
     assert_success
 }
 
@@ -128,7 +141,7 @@ setup() {
 
     # 2. Trigger karo to decompose (inbox1 → process_inbox detects cmd_new → decompose)
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "karo" \
-        "cmd_test_001を発行した。" "cmd_new" "shogun"
+        "cmd_test_001を発行した。" "cmd_new" "shogun" "cmd_test_001"
     send_to_pane "$karo_pane" "inbox1"
 
     # 3. Wait for subtask creation
@@ -148,9 +161,21 @@ setup() {
 
     # 7. Verify report fields
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "status" "done"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "cmd" "cmd_test_001"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "task_id" "subtask_cmd_test_001_a"
 
     # 8. Verify karo received report notification
     sleep 2
     run assert_inbox_message_exists "$E2E_QUEUE/queue/inbox/karo.yaml" "ashigaru1" "report_received"
+    assert_success
+    run python3 - "$E2E_QUEUE/queue/inbox/karo.yaml" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = (yaml.safe_load(handle) or {}).get("messages", []) or []
+reports = [message for message in messages if message.get("type") == "report_received"]
+assert [(message.get("cmd"), message.get("task_id")) for message in reports] == [
+    ("cmd_test_001", "subtask_cmd_test_001_a")
+], reports
+PY
     assert_success
 }

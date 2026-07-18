@@ -54,6 +54,7 @@ Do NOT specify: number of ashigaru, assignments, verification methods, personas,
 
 ```yaml
 - id: cmd_XXX
+  cmd: cmd_XXX
   timestamp: "ISO 8601"
   north_star: "1-2 sentences. Why this cmd matters to the business goal. Derived from context/{project}.md north star."
   purpose: "What this cmd must achieve (verifiable statement)"
@@ -67,9 +68,21 @@ Do NOT specify: number of ashigaru, assignments, verification methods, personas,
   status: pending
 ```
 
+Generate the next identifier before writing a new command:
+
+```bash
+python3 scripts/cmd_epoch.py next queue/shogun_to_karo.yaml queue/shogun_to_karo_archive.yaml
+```
+
+For every new command, `id` and `cmd` MUST contain that same freshly generated
+token. `cmd` is an immutable command epoch: never reuse a terminal cmd, edit it
+to reopen work, or copy an older epoch into a new Lord command. Legacy queue
+entries without `cmd` remain readable, but all new writes use the formal field.
+
 - **north_star**: Required. Why this cmd advances the business goal. Too abstract ("make better content") = wrong. Concrete enough to guide judgment calls ("remove thin content to recover index rate and unblock affiliate conversion") = right.
 - **purpose**: One sentence. What "done" looks like. Karo and ashigaru validate against this.
 - **acceptance_criteria**: List of testable conditions. All must be true for cmd to be marked done. Karo checks these at Step 11.7 before marking cmd complete.
+- **cmd**: Formal command epoch. It equals `id` on a new command and is propagated unchanged through every task, task-scoped inbox message, receipt, and report.
 
 ### Good vs Bad examples
 

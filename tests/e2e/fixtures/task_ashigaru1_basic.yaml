@@ -1,6 +1,7 @@
 # task_ashigaru1_basic.yaml — Test task for ashigaru1
 # Pre-assigned task for E2E testing
 task:
+  cmd: cmd_test_001
   task_id: subtask_test_001a
   parent_cmd: cmd_test_001
   type: implementation

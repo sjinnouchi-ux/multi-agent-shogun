@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # inbox_write.sh — メールボックスへのメッセージ書き込み（排他ロック付き）
-# Usage: bash scripts/inbox_write.sh <target_agent> <content> <type> <from>
+# Usage: bash scripts/inbox_write.sh <target_agent> <content> <type> <from> [cmd] [task_id]
 # Example: bash scripts/inbox_write.sh karo "足軽5号、任務完了" report_received ashigaru5
 
 set -e
@@ -10,6 +10,8 @@ TARGET="$1"
 CONTENT="$2"
 TYPE="$3"
 FROM="$4"
+CMD_EPOCH="${5:-}"
+TASK_ID="${6:-}"
 DEDUP_REF="${INBOX_WRITE_DEDUP_REF:-}"
 
 INBOX="$SCRIPT_DIR/queue/inbox/${TARGET}.yaml"
@@ -17,9 +19,25 @@ LOCKFILE="${INBOX}.lock"
 
 # Validate arguments
 if [ -z "$TARGET" ] || [ -z "$CONTENT" ] || [ -z "$TYPE" ] || [ -z "$FROM" ]; then
-    echo "Usage: inbox_write.sh <target_agent> <content> <type> <from>" >&2
+    echo "Usage: inbox_write.sh <target_agent> <content> <type> <from> [cmd] [task_id]" >&2
     exit 1
 fi
+if [ -n "$CMD_EPOCH" ] && ! [[ "$CMD_EPOCH" =~ ^cmd_[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
+    echo "[inbox_write] REJECTED: invalid cmd epoch" >&2
+    exit 1
+fi
+if [ -n "$TASK_ID" ] && { [ -z "$CMD_EPOCH" ] || ! [[ "$TASK_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; }; then
+    echo "[inbox_write] REJECTED: invalid task identity" >&2
+    exit 1
+fi
+case "$TYPE" in
+    task_assigned|clear_command|report_received)
+        if [ -n "$CMD_EPOCH" ] && [ -z "$TASK_ID" ]; then
+            echo "[inbox_write] REJECTED: invalid task identity" >&2
+            exit 1
+        fi
+        ;;
+esac
 if [ -n "$DEDUP_REF" ] && ! [[ "$DEDUP_REF" =~ ^[a-f0-9]{12}$ ]]; then
     echo "[inbox_write] REJECTED: invalid dedup reference" >&2
     exit 1
@@ -125,6 +143,14 @@ try:
             'escalation_sent_at': None,
         },
     }
+    cmd_epoch = '$CMD_EPOCH'
+    task_id = '$TASK_ID'
+    if cmd_epoch:
+        new_msg['cmd'] = cmd_epoch
+        new_msg['delivery']['cmd'] = cmd_epoch
+    if task_id:
+        new_msg['task_id'] = task_id
+        new_msg['delivery']['task_id'] = task_id
     data['messages'].append(new_msg)
 
     # Overflow protection: keep max 50 messages

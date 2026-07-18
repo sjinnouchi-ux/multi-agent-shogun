@@ -117,9 +117,10 @@ process_task() {
         return 1
     fi
 
-    local task_id parent_cmd status
+    local task_id parent_cmd cmd_epoch status
     task_id=$(yaml_read "$task_file" "task.task_id")
     parent_cmd=$(yaml_read "$task_file" "task.parent_cmd")
+    cmd_epoch=$(yaml_read "$task_file" "task.cmd")
     status=$(yaml_read "$task_file" "task.status")
 
     if [ "$status" != "assigned" ] && [ "$status" != "in_progress" ]; then
@@ -143,7 +144,7 @@ process_task() {
     done
 
     # 3. Write completion report
-    write_mock_report "$MOCK_AGENT_ID" "$task_id" "$parent_cmd" "$MOCK_PROJECT_ROOT"
+    write_mock_report "$MOCK_AGENT_ID" "$task_id" "$parent_cmd" "$MOCK_PROJECT_ROOT" "$cmd_epoch"
     echo "[mock] Report written for $task_id"
 
     # 4. Update status to done
@@ -161,9 +162,15 @@ process_task() {
         if [ "$MOCK_AGENT_ID" = "karo" ]; then
             report_target="shogun"
         fi
-        SCRIPT_DIR="$MOCK_PROJECT_ROOT" bash "$inbox_write_script" "$report_target" \
-            "${MOCK_AGENT_ID}号、任務完了。報告YAML確認されたし。" \
-            "report_received" "$MOCK_AGENT_ID" 2>/dev/null || true
+        if [ -n "$cmd_epoch" ]; then
+            SCRIPT_DIR="$MOCK_PROJECT_ROOT" bash "$inbox_write_script" "$report_target" \
+                "${MOCK_AGENT_ID}号、任務完了。報告YAML確認されたし。" \
+                "report_received" "$MOCK_AGENT_ID" "$cmd_epoch" "$task_id" 2>/dev/null || true
+        else
+            SCRIPT_DIR="$MOCK_PROJECT_ROOT" bash "$inbox_write_script" "$report_target" \
+                "${MOCK_AGENT_ID}号、任務完了。報告YAML確認されたし。" \
+                "report_received" "$MOCK_AGENT_ID" 2>/dev/null || true
+        fi
     fi
 
     STATE="idle"
@@ -253,8 +260,9 @@ karo_decompose_cmd() {
     STATE="busy"
     show_busy "$MOCK_CLI_TYPE" 0
 
-    local cmd_id cmd_description
+    local cmd_id cmd_epoch cmd_description
     cmd_id=$(yaml_read "$cmd_file" "id") || cmd_id=$(yaml_read "$cmd_file" "commands.0.id") || cmd_id="cmd_unknown"
+    cmd_epoch=$(yaml_read "$cmd_file" "cmd") || cmd_epoch=""
     cmd_description=$(yaml_read "$cmd_file" "description") || cmd_description=$(yaml_read "$cmd_file" "commands.0.description") || cmd_description="Unknown task"
 
     echo "[mock/karo] Decomposing cmd: $cmd_id"
@@ -263,8 +271,11 @@ karo_decompose_cmd() {
     # Create subtask for ashigaru1
     local subtask_file="$MOCK_PROJECT_ROOT/queue/tasks/ashigaru1.yaml"
     local subtask_id="subtask_${cmd_id}_a"
+    local task_cmd_line=""
+    [ -n "$cmd_epoch" ] && task_cmd_line="  cmd: \"$cmd_epoch\""
     cat > "$subtask_file" <<EOF
 task:
+$task_cmd_line
   task_id: "$subtask_id"
   parent_cmd: "$cmd_id"
   type: implementation
@@ -283,8 +294,14 @@ EOF
         inbox_write_script="$MOCK_SCRIPT_DIR/../../scripts/inbox_write.sh"
     fi
     if [ -f "$inbox_write_script" ]; then
-        bash "$inbox_write_script" "ashigaru1" \
-            "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" 2>/dev/null || true
+        if [ -n "$cmd_epoch" ]; then
+            bash "$inbox_write_script" "ashigaru1" \
+                "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" \
+                "$cmd_epoch" "$subtask_id" 2>/dev/null || true
+        else
+            bash "$inbox_write_script" "ashigaru1" \
+                "タスクYAMLを読んで作業開始せよ。" "task_assigned" "karo" 2>/dev/null || true
+        fi
         echo "[mock/karo] Sent task_assigned to ashigaru1"
     fi
 

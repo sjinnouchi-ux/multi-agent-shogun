@@ -58,7 +58,7 @@ setup() {
        "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "初回タスク開始。" "task_assigned" "karo"
+        "初回タスク開始。" "task_assigned" "karo" cmd_test_001 subtask_test_001a
     send_to_pane "$ashigaru1_pane" "inbox1"
 
     # 2. Wait for initial task to complete
@@ -69,12 +69,14 @@ setup() {
     run wait_for_file "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" 10
     assert_success
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "task_id" "subtask_test_001a"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "cmd" "cmd_test_001"
 
     # ─── Phase 2: Redo ───
 
     # 4. Write redo task YAML (new task_id, redo_of field, status: assigned)
     cat > "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" <<'EOF'
 task:
+  cmd: cmd_test_001
   task_id: subtask_test_001a2
   parent_cmd: cmd_test_001
   type: implementation
@@ -94,6 +96,7 @@ EOF
 
     # 7. Verify new report has new task_id
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "task_id" "subtask_test_001a2"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "cmd" "cmd_test_001"
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "status" "done"
 
     # 8. Verify redo_of field is preserved in task YAML
@@ -113,7 +116,7 @@ EOF
        "$E2E_QUEUE/queue/tasks/ashigaru1.yaml"
 
     bash "$E2E_QUEUE/scripts/inbox_write.sh" "ashigaru1" \
-        "初回タスク開始。" "task_assigned" "karo"
+        "初回タスク開始。" "task_assigned" "karo" cmd_test_001 subtask_test_001a
     send_to_pane "$ashigaru1_pane" "inbox1"
 
     run wait_for_yaml_value "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.status" "done" 30
@@ -125,6 +128,7 @@ EOF
     # 3. Write redo task YAML
     cat > "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" <<'EOF'
 task:
+  cmd: cmd_test_001
   task_id: subtask_test_001a2
   parent_cmd: cmd_test_001
   type: implementation
@@ -144,6 +148,7 @@ EOF
 
     # 6. Report now has the NEW task_id (overwritten)
     assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "task_id" "subtask_test_001a2"
+    assert_yaml_field "$E2E_QUEUE/queue/reports/ashigaru1_report.yaml" "cmd" "cmd_test_001"
 
     # 7. redo_of field preserved in task YAML
     assert_yaml_field "$E2E_QUEUE/queue/tasks/ashigaru1.yaml" "task.redo_of" "subtask_test_001a"
