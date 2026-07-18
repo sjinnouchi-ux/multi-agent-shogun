@@ -2184,7 +2184,11 @@ PY
         ALERT_ROOT="'"$TEST_TMPDIR"'/alert_project"
         mkdir -p "$ALERT_ROOT/scripts" "$ALERT_ROOT/.venv/bin" "$ALERT_ROOT/queue/inbox"
         ln -s "'"$PROJECT_ROOT"'/scripts/inbox_write.sh" "$ALERT_ROOT/scripts/inbox_write.sh"
-        ln -s "'"$VENV_PYTHON"'" "$ALERT_ROOT/.venv/bin/python3"
+        cat > "$ALERT_ROOT/.venv/bin/python3" <<'"'"'PYTHON_WRAPPER'"'"'
+#!/usr/bin/env bash
+exec "'"$VENV_PYTHON"'" "$@"
+PYTHON_WRAPPER
+        chmod +x "$ALERT_ROOT/.venv/bin/python3"
         SCRIPT_DIR="$ALERT_ROOT"
         cat > "$ALERT_ROOT/queue/inbox/karo.yaml" <<YAML
 messages: []
