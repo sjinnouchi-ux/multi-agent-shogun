@@ -7,8 +7,8 @@
 
 ## P0で解消した項目
 
-次のP0項目はdraft PRへ実装済みで、関連unit・integration・既存mock E2Eの回帰確認と
-独立レビューを完了した。mainへ未マージの間は、各変更の導入可否をPR単位で判断する。
+次のP0項目はmainへ実装済みで、関連unit・integration・既存mock E2Eの回帰確認と
+独立レビューを完了した。
 
 - PR #14: Hookのcwd解決を `${CLAUDE_PROJECT_DIR:-.}` に統一し、裸の相対パスと
   `args` 使用をlintで検出する。oometsukeのPhase-3 `/clear` を抑止し、既存のkaro・
@@ -57,8 +57,9 @@
   fail-closedに送信を止めるため、未知のCLI表示変更は手動確認が必要になる。
 - permission/login promptは自動承認せず、startup promptやinbox番号も送らない。
   P0では自動restartを行わないため、blocked状態の解消は利用者操作に依存する。
-- deployment hostを必要とするBloom E2E 6件はSKIPであり、成功扱いにしていない。
-  `make test-no-skip` も未実行である。
+- deployment host受入ではPR-1a headの `make test-no-skip` が750件、P1最終stack headが
+  847件、隔離tmuxとsanitized設定fixtureによるBloom E2Eが6件で、いずれもfail 0・
+  skip 0だった。実運用設定・pane・queue・report・logは受入対象に含めていない。
 - 送信元Inboxが恒久的に無効または書込み不能なclear drop alertは最大3回で
   `exhausted` となる。clear自体は再送しないため、sanitizedなterminal statusを確認して
   運用側で送信元経路を復旧する必要がある。
@@ -116,6 +117,5 @@ Claudeのidle flagが5分間更新されない場合、正当な長考中でも 
 
 ## 変更管理
 
-本書に記載した項目は引き継ぎ記録であり、このdocs PRでは機能変更を行わない。
-P0解消項目の記載はPR #14〜#17へ依存する。残存項目は別タスク・別ブランチで実装し、
-テストとレビューを経て反映する。
+本書に記載した項目は引き継ぎ記録である。P0/P1-1解消項目は実装・テスト・レビューを
+経てmainへ反映し、残存項目は別タスク・別ブランチで実装する。

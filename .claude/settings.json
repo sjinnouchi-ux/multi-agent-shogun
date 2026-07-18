@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/session_start_hook.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/scripts/session_start_hook.sh\"",
             "timeout": 10
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash scripts/stop_hook_inbox.sh",
+            "command": "bash \"${CLAUDE_PROJECT_DIR:-.}/scripts/stop_hook_inbox.sh\"",
             "timeout": 60
           }
         ]

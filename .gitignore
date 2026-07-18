@@ -60,6 +60,7 @@
 !lib/ntfy_lifecycle.sh
 !lib/agent_status.sh
 !lib/agent_registry.sh
+!lib/cli_readiness.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
@@ -122,6 +123,7 @@ scripts/seo_qc.py
 scripts/seo_qc.sh
 !scripts/stop_hook_inbox.sh
 !scripts/session_start_hook.sh
+!scripts/lint_hook_settings.py
 !scripts/agent_status.sh
 !scripts/ratelimit_check.sh
 !scripts/switch_cli.sh
