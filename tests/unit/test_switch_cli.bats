@@ -49,11 +49,19 @@ YAML
     source "${PROJECT_ROOT}/lib/cli_adapter.sh"
 }
 
+retained_platform_tmp_path_is_safe() {
+    local candidate="$1"
+
+    [[ -n "$candidate" ]] || return 1
+    [[ "$(dirname "$candidate")" == "$PLATFORM_TMP_DIR" ]] || return 1
+    [[ "$(basename "$candidate")" == tmp* ]]
+}
+
 teardown() {
-    if [[ -n "$RETAINED_SETTINGS_BACKUP" && "$RETAINED_SETTINGS_BACKUP" == "$PLATFORM_TMP_DIR"/tmp.* ]]; then
+    if retained_platform_tmp_path_is_safe "$RETAINED_SETTINGS_BACKUP"; then
         rm -f -- "$RETAINED_SETTINGS_BACKUP"
     fi
-    if [[ -n "$RETAINED_RUNTIME_BACKUP_DIR" && "$RETAINED_RUNTIME_BACKUP_DIR" == "$PLATFORM_TMP_DIR"/tmp.* ]]; then
+    if retained_platform_tmp_path_is_safe "$RETAINED_RUNTIME_BACKUP_DIR"; then
         rm -f -- "$RETAINED_RUNTIME_BACKUP_DIR/runtime"
         rmdir -- "$RETAINED_RUNTIME_BACKUP_DIR" 2>/dev/null || true
     fi
@@ -545,7 +553,7 @@ MARKDOWN
 
     [ "$status" -ne 0 ]
     RETAINED_SETTINGS_BACKUP=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore settings.*backup retained at \(.*\)$/\1/p' | tail -1)
-    [[ "$RETAINED_SETTINGS_BACKUP" == "$PLATFORM_TMP_DIR"/tmp.* ]]
+    retained_platform_tmp_path_is_safe "$RETAINED_SETTINGS_BACKUP"
     [ -f "$RETAINED_SETTINGS_BACKUP" ]
 }
 
@@ -571,7 +579,7 @@ MARKDOWN
 
     [ "$status" -ne 0 ]
     RETAINED_RUNTIME_BACKUP_DIR=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(.*\)$/\1/p' | tail -1)
-    [[ "$RETAINED_RUNTIME_BACKUP_DIR" == "$PLATFORM_TMP_DIR"/tmp.* ]]
+    retained_platform_tmp_path_is_safe "$RETAINED_RUNTIME_BACKUP_DIR"
     [ -f "$RETAINED_RUNTIME_BACKUP_DIR/runtime" ]
 }
 
