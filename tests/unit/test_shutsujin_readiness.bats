@@ -5,6 +5,37 @@ setup() {
     SCRIPT="$PROJECT_ROOT/shutsujin_departure.sh"
 }
 
+@test "departure gives detached multiagent panes explicit readiness geometry" {
+    grep -q '^MULTIAGENT_DETACHED_WIDTH=300$' "$SCRIPT"
+    grep -q '^MULTIAGENT_DETACHED_HEIGHT=120$' "$SCRIPT"
+    run awk '
+        /^MULTIAGENT_DETACHED_WIDTH=300$/ { geometry = 1 }
+        geometry && /^if ! tmux new-session -d \\/ {
+            capture = 1
+            session_line = NR
+        }
+        capture {
+            block = block $0 ORS
+            if ($0 !~ /\\$/) {
+                print session_line
+                print block
+                exit
+            }
+        }
+    ' "$SCRIPT"
+    [ "$status" -eq 0 ]
+    session_line="${output%%$'\n'*}"
+    command_block="${output#*$'\n'}"
+    [[ "$command_block" == *'-x "$MULTIAGENT_DETACHED_WIDTH"'* ]]
+    [[ "$command_block" == *'-y "$MULTIAGENT_DETACHED_HEIGHT"'* ]]
+    [[ "$command_block" == *'-s multiagent -n "agents"'* ]]
+
+    run grep -n 'tmux split-window -h -t "multiagent:agents"' "$SCRIPT"
+    [ "$status" -eq 0 ]
+    split_line="${output%%:*}"
+    [ "$session_line" -lt "$split_line" ]
+}
+
 @test "departure checks all role CLI readiness before starting inbox watchers" {
     run grep -n 'cli_readiness_wait_all' "$SCRIPT"
     [ "$status" -eq 0 ]

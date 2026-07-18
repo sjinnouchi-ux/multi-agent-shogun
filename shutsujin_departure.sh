@@ -611,7 +611,13 @@ LAST_AGENT_PANE=$((PANE_BASE + _ASHIGARU_COUNT + 2))
 log_war "⚔️ 家老・足軽・軍師・大目付の陣を構築中（$((_ASHIGARU_COUNT + 3))名配備）..."
 
 # 最初のペイン作成
-if ! tmux new-session -d -s multiagent -n "agents" 2>/dev/null; then
+MULTIAGENT_DETACHED_WIDTH=300
+MULTIAGENT_DETACHED_HEIGHT=120
+
+if ! tmux new-session -d \
+    -x "$MULTIAGENT_DETACHED_WIDTH" \
+    -y "$MULTIAGENT_DETACHED_HEIGHT" \
+    -s multiagent -n "agents" 2>/dev/null; then
     echo ""
     echo "  ╔════════════════════════════════════════════════════════════╗"
     echo "  ║  [ERROR] Failed to create tmux session 'multiagent'      ║"
