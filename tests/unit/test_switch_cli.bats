@@ -46,13 +46,6 @@ YAML
 }
 
 teardown() {
-    if [[ -n "$RETAINED_SETTINGS_BACKUP" && "$RETAINED_SETTINGS_BACKUP" == /tmp/tmp.* ]]; then
-        rm -f -- "$RETAINED_SETTINGS_BACKUP"
-    fi
-    if [[ -n "$RETAINED_RUNTIME_BACKUP_DIR" && "$RETAINED_RUNTIME_BACKUP_DIR" == /tmp/tmp.* ]]; then
-        rm -f -- "$RETAINED_RUNTIME_BACKUP_DIR/runtime"
-        rmdir -- "$RETAINED_RUNTIME_BACKUP_DIR" 2>/dev/null || true
-    fi
     rm -rf "$TEST_TMP"
 }
 
@@ -525,9 +518,12 @@ MARKDOWN
 @test "switch_cli retains settings backup when rollback copy fails" {
     setup_switch_cli_tmux_mock
     setup_cp_restore_failure_mock
+    local retained_root="$TEST_TMP/retained"
+    mkdir -p "$retained_root"
 
     run env \
         PATH="$TEST_TMP/bin:$PATH" \
+        TMPDIR="$retained_root" \
         CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
         SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
         SHOGUN_TEST_MODE=1 \
@@ -540,8 +536,8 @@ MARKDOWN
             --type codex --model gpt-5.3-codex-spark
 
     [ "$status" -ne 0 ]
-    RETAINED_SETTINGS_BACKUP=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore settings.*backup retained at \(\/tmp\/tmp\.[^ ]*\).*/\1/p' | tail -1)
-    [[ "$RETAINED_SETTINGS_BACKUP" == /tmp/tmp.* ]]
+    RETAINED_SETTINGS_BACKUP=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore settings.*backup retained at \(.*\)$/\1/p' | tail -1)
+    [[ "$RETAINED_SETTINGS_BACKUP" == "$retained_root/"* ]]
     [ -f "$RETAINED_SETTINGS_BACKUP" ]
 }
 
@@ -550,10 +546,13 @@ MARKDOWN
     setup_cp_restore_failure_mock
     setup_isolated_switch_project
     local runtime_file="$ISOLATED_SWITCH_ROOT/.opencode/agents/ashigaru1-runtime.md"
+    local retained_root="$TEST_TMP/retained"
+    mkdir -p "$retained_root"
     printf '%s\n' 'original sanitized runtime' > "$runtime_file"
 
     run env \
         PATH="$TEST_TMP/bin:$PATH" \
+        TMPDIR="$retained_root" \
         CLI_ADAPTER_SETTINGS="$ISOLATED_SWITCH_ROOT/config/settings.yaml" \
         SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
         SHOGUN_TEST_MODE=1 \
@@ -566,8 +565,8 @@ MARKDOWN
             --type opencode --model openai/gpt-5.4-mini --variant high
 
     [ "$status" -ne 0 ]
-    RETAINED_RUNTIME_BACKUP_DIR=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(\/tmp\/tmp\.[^ ]*\).*/\1/p' | tail -1)
-    [[ "$RETAINED_RUNTIME_BACKUP_DIR" == /tmp/tmp.* ]]
+    RETAINED_RUNTIME_BACKUP_DIR=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(.*\)$/\1/p' | tail -1)
+    [[ "$RETAINED_RUNTIME_BACKUP_DIR" == "$retained_root/"* ]]
     [ -f "$RETAINED_RUNTIME_BACKUP_DIR/runtime" ]
 }
 
