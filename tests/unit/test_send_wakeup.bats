@@ -181,6 +181,16 @@ export -f tmux timeout pgrep sleep
 # Source the REAL inbox_watcher.sh (testing guard skips startup & main loop)
 export __INBOX_WATCHER_TESTING__=1
 source "$WATCHER_SCRIPT"
+
+# Keep clear-drop alerts inside the per-test sandbox. Individual tests may
+# replace this function to assert target/reason behavior.
+eval "\$(declare -f write_clear_drop_alert | sed '1s/write_clear_drop_alert/production_write_clear_drop_alert/')"
+eval "\$(declare -f clear_drop_state | sed '1s/clear_drop_state/production_clear_drop_state/')"
+export CLEAR_DROP_QUARANTINE_DIR="$TEST_TMPDIR/clear_drop_quarantine"
+write_clear_drop_alert() {
+    printf "%s\n" "\$*" >> "$TEST_TMPDIR/clear_drop_alerts.log"
+    return 0
+}
 HARNESS
     chmod +x "$TEST_HARNESS"
 
@@ -1730,4 +1740,790 @@ PY
     '
     [ "$status" -eq 0 ]
     grep -q "send-keys -t test:0.0 Enter" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-001: busy clear command is explicitly dropped and alerts source once" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/clear_drop_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_busy
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "secret-body-must-not-appear"
+    read: false
+YAML
+        get_delivery_cli_state() { printf "busy\\n"; }
+        agent_is_busy() { return 0; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert message["read"] is True, message
+assert delivery["cli_state_at_notify"] == "busy", delivery
+assert delivery["delivery_blocked_reason"] == "busy", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    grep -q "karo.*busy\|busy.*karo" "$CLEAR_DROP_ALERT_LOG"
+    ! grep -q "secret-body-must-not-appear" "$CLEAR_DROP_ALERT_LOG"
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-002: unsafe clear states are dropped without later execution" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/unsafe_clear_drop_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        CURRENT_STATE=unknown
+        get_delivery_cli_state() { printf "%s\\n" "$CURRENT_STATE"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        for CURRENT_STATE in permission_prompt login_prompt shell_prompt absent unknown; do
+            cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_${CURRENT_STATE}
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+            process_unread event
+            EXPECTED_STATE="$CURRENT_STATE" "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import os, sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert message["read"] is True, message
+assert delivery["cli_state_at_notify"] == os.environ["EXPECTED_STATE"], delivery
+assert delivery["delivery_blocked_reason"] == os.environ["EXPECTED_STATE"], delivery
+PY
+        done
+        CURRENT_STATE=ready
+        process_unread event
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 5 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-003: ready classifier plus existing busy guard drops clear" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/existing_busy_clear_drop_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_existing_busy
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        get_delivery_cli_state() { printf "ready\\n"; }
+        agent_is_busy() { return 0; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["cli_state_at_notify"] == "ready", delivery
+assert delivery["delivery_blocked_reason"] == "busy", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-004: new clear after a drop is independent and can be delivered" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/new_clear_after_drop_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        CLI_TYPE="claude"
+        CURRENT_STATE=busy
+        get_delivery_cli_state() { printf "%s\\n" "$CURRENT_STATE"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_old
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "old redo"
+    read: false
+YAML
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    data = yaml.safe_load(handle)
+data["messages"].append({
+    "id": "msg_clear_new",
+    "from": "karo",
+    "timestamp": "2026-07-17T00:01:00+09:00",
+    "type": "clear_command",
+    "content": "new redo",
+    "read": False,
+})
+with open(path, "w", encoding="utf-8") as handle:
+    yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+PY
+        CURRENT_STATE=ready
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = yaml.safe_load(handle)["messages"]
+by_id = {message["id"]: message for message in messages}
+assert "msg_clear_old" in by_id and "msg_clear_new" in by_id, by_id
+assert by_id["msg_clear_old"]["delivery"]["delivery_blocked_reason"] == "busy"
+assert by_id["msg_clear_new"]["read"] is True
+assert not by_id["msg_clear_new"].get("delivery", {}).get("delivery_blocked_reason")
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    [ "$(grep -c "send-keys -t test:0.0 /clear" "$MOCK_LOG")" -eq 1 ]
+}
+
+@test "T-CLEAR-DROP-005: clear send failure is dropped without auto-recovery" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/clear_send_failure_alert.log"
+    run bash -c '
+        MOCK_SENDKEYS_RC=1
+        source "'"$TEST_HARNESS"'"
+        CLI_TYPE="claude"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_send_failed
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        get_delivery_cli_state() { printf "ready\\n"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = yaml.safe_load(handle)["messages"]
+message = next(item for item in messages if item["id"] == "msg_clear_send_failed")
+delivery = message["delivery"]
+assert delivery["cli_state_at_notify"] == "ready", delivery
+assert delivery["delivery_blocked_reason"] == "send_failed", delivery
+assert not any(
+    item.get("from") == "inbox_watcher"
+    and item.get("type") == "task_assigned"
+    for item in messages
+), messages
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    grep -q "send_failed" "$CLEAR_DROP_ALERT_LOG"
+}
+
+@test "T-CLEAR-DROP-006: legacy clear receives a stable id before explicit drop" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/legacy_clear_drop_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized legacy fixture"
+    read: false
+YAML
+        get_delivery_cli_state() { printf "busy\\n"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+assert message["id"].startswith("msg_legacy_"), message
+assert message["read"] is True, message
+delivery = message["delivery"]
+assert delivery["delivery_blocked_reason"] == "busy", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-007: extracting clear does not consume it before a delivery decision" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_extract_only
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        first=$(get_unread_info)
+        second=$(get_unread_info)
+        FIRST="$first" SECOND="$second" "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import json, os, sys, yaml
+first = json.loads(os.environ["FIRST"])
+second = json.loads(os.environ["SECOND"])
+assert [item["id"] for item in first["specials"]] == ["msg_clear_extract_only"], first
+assert [item["id"] for item in second["specials"]] == ["msg_clear_extract_only"], second
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+assert message["read"] is False, message
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-008: interrupted clear claim becomes a terminal drop without resend" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/interrupted_clear_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_interrupted
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        clear_drop_state claim msg_clear_interrupted ready none || exit 71
+        CLEAR_ALERT_NOW=1061
+        get_delivery_cli_state() { printf "ready\\n"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert message["read"] is True, message
+assert delivery["clear_delivery_pending"] is False, delivery
+assert delivery["delivery_blocked_reason"] == "delivery_interrupted", delivery
+assert delivery["clear_drop_alert_pending"] is False, delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-009: alert retry is backed off then succeeds once" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/retry_clear_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_retry
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        ALERT_CALLS=0
+        write_clear_drop_alert() {
+            ALERT_CALLS=$((ALERT_CALLS + 1))
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            [ "$ALERT_CALLS" -ge 2 ]
+        }
+        clear_drop_state record msg_clear_retry busy busy
+        flush_clear_drop_alerts
+        [ "$ALERT_CALLS" -eq 1 ]
+        flush_clear_drop_alerts
+        [ "$ALERT_CALLS" -eq 1 ]
+        CLEAR_ALERT_NOW=2000
+        flush_clear_drop_alerts
+        [ "$ALERT_CALLS" -eq 2 ]
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_drop_alert_attempts"] == 2, delivery
+assert delivery["clear_drop_alert_pending"] is False, delivery
+assert delivery["clear_drop_alert_status"] == "sent", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 2 ]
+}
+
+@test "T-CLEAR-DROP-010: permanently failing alert reaches a bounded terminal state" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_invalid_source
+    from: "../../invalid"
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        ALERT_CALLS=0
+        write_clear_drop_alert() { ALERT_CALLS=$((ALERT_CALLS + 1)); return 1; }
+        clear_drop_state record msg_clear_invalid_source unknown unknown
+        for CLEAR_ALERT_NOW in 1000 2000 3000 4000 5000 6000; do
+            flush_clear_drop_alerts
+        done
+        [ "$ALERT_CALLS" -eq 3 ]
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_drop_alert_attempts"] == 3, delivery
+assert delivery["clear_drop_alert_pending"] is False, delivery
+assert delivery["clear_drop_alert_status"] == "exhausted", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-011: ready to busy race drops clear at the final send entry" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/ready_busy_race_alert.log"
+    export STATE_CALL_FILE="$TEST_TMPDIR/state_call_count"
+    printf "0\n" > "$STATE_CALL_FILE"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_ready_busy_race
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        get_delivery_cli_state() {
+            local count
+            count=$(cat "'"$STATE_CALL_FILE"'")
+            count=$((count + 1))
+            printf "%s\\n" "$count" > "'"$STATE_CALL_FILE"'"
+            if [ "$count" -eq 1 ]; then printf "ready\\n"; else printf "busy\\n"; fi
+        }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["delivery_blocked_reason"] == "busy", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-012: duplicate external ids do not mutate another command" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/duplicate_id_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_duplicate
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: model_switch
+    content: "/model safe-model"
+    read: false
+  - id: msg_duplicate
+    from: karo
+    timestamp: "2026-07-17T00:00:01+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        get_delivery_cli_state() { printf "busy\\n"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = yaml.safe_load(handle)["messages"]
+model, clear = messages
+assert model["id"] != clear["id"], messages
+model_delivery = model.get("delivery", {})
+assert not any(key.startswith("clear_drop_") for key in model_delivery), model
+assert model_delivery.get("delivery_blocked_reason") is None, model
+assert clear["delivery"]["delivery_blocked_reason"] == "busy", clear
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-013: production alert writer deduplicates the same drop reference" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        ALERT_ROOT="'"$TEST_TMPDIR"'/alert_project"
+        mkdir -p "$ALERT_ROOT/scripts" "$ALERT_ROOT/.venv/bin" "$ALERT_ROOT/queue/inbox"
+        ln -s "'"$PROJECT_ROOT"'/scripts/inbox_write.sh" "$ALERT_ROOT/scripts/inbox_write.sh"
+        cat > "$ALERT_ROOT/.venv/bin/python3" <<'"'"'PYTHON_WRAPPER'"'"'
+#!/usr/bin/env bash
+exec "'"$VENV_PYTHON"'" "$@"
+PYTHON_WRAPPER
+        chmod +x "$ALERT_ROOT/.venv/bin/python3"
+        SCRIPT_DIR="$ALERT_ROOT"
+        cat > "$ALERT_ROOT/queue/inbox/karo.yaml" <<YAML
+messages: []
+YAML
+        pids=""
+        for _ in 1 2 3 4 5 6 7 8; do
+            production_write_clear_drop_alert karo busy msg_clear_dedup &
+            pids="$pids $!"
+        done
+        for pid in $pids; do
+            wait "$pid"
+        done
+        "'"$VENV_PYTHON"'" - "$ALERT_ROOT/queue/inbox/karo.yaml" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = yaml.safe_load(handle)["messages"]
+alerts = [item for item in messages if item.get("type") == "watchdog_alert"]
+assert len(alerts) == 1, alerts
+assert "ref=" in alerts[0]["content"], alerts
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-014: a competing watcher observes an existing claim without overwriting it" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_claim_race
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        first=$(clear_drop_state claim msg_clear_claim_race ready none)
+        second=$(clear_drop_state claim msg_clear_claim_race ready none)
+        [ "$first" = "claimed" ] || exit 71
+        [ "$second" = "already_claimed" ] || exit 72
+        clear_drop_state delivered msg_clear_claim_race
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_delivery_pending"] is False, delivery
+assert delivery["delivery_blocked_reason"] is None, delivery
+assert not delivery.get("clear_drop_alert_pending"), delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-015: alert reservation is single-flight and recovers an expired lease" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/lease_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_lease
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        clear_drop_state record msg_clear_lease busy busy
+        [ "$(clear_drop_state reserve msg_clear_lease)" = "1" ]
+        flush_clear_drop_alerts
+        [ ! -e "'"$CLEAR_DROP_ALERT_LOG"'" ]
+        CLEAR_ALERT_NOW=1031
+        flush_clear_drop_alerts
+        [ "$(wc -l < "'"$CLEAR_DROP_ALERT_LOG"'")" -eq 1 ]
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_drop_alert_attempts"] == 1, delivery
+assert delivery["clear_drop_alert_status"] == "sent", delivery
+assert delivery["clear_drop_alert_pending"] is False, delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-016: concurrent alert reservations consume only one attempt" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_parallel_reserve
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        clear_drop_state record msg_clear_parallel_reserve busy busy
+        success_dir="'"$TEST_TMPDIR"'/reserve_success"
+        mkdir -p "$success_dir"
+        pids=""
+        for index in 1 2 3 4 5 6 7 8; do
+            (clear_drop_state reserve msg_clear_parallel_reserve > "$success_dir/$index") &
+            pids="$pids $!"
+        done
+        for pid in $pids; do wait "$pid" || true; done
+        [ "$(grep -l "^1$" "$success_dir"/* | wc -l)" -eq 1 ]
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_drop_alert_attempts"] == 1, delivery
+assert delivery["clear_drop_alert_status"] == "sending", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-017: failed drop persistence durably quarantines clear before later readiness" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/quarantine_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_quarantine
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        FAIL_RECORD=1
+        CURRENT_STATE=busy
+        clear_drop_state() {
+            if [ "${1:-}" = "record" ] && [ "$FAIL_RECORD" = "1" ]; then
+                return 1
+            fi
+            production_clear_drop_state "$@"
+        }
+        get_delivery_cli_state() { printf "%s\\n" "$CURRENT_STATE"; }
+        agent_is_busy() { return 1; }
+        write_clear_drop_alert() {
+            grep -qF "$3" "'"$CLEAR_DROP_ALERT_LOG"'" 2>/dev/null || printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        process_unread event
+        is_clear_command_quarantined msg_clear_quarantine
+        FAIL_RECORD=0
+        CURRENT_STATE=ready
+        process_unread event
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert message["read"] is True, message
+assert delivery["delivery_blocked_reason"] == "state_persist_failed", delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+    ! grep -q "send-keys.*/clear\|send-keys.*/new" "$MOCK_LOG"
+}
+
+@test "T-CLEAR-DROP-018: active delivery claim is recovered only after its lease expires" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_delivery_lease
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        [ "$(clear_drop_state claim msg_clear_delivery_lease ready none)" = "claimed" ] || exit 71
+        clear_drop_state recover
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_delivery_pending"] is True, delivery
+assert delivery["delivery_blocked_reason"] is None, delivery
+PY
+        [ "$?" -eq 0 ] || exit 72
+        CLEAR_ALERT_NOW=1061
+        clear_drop_state recover
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_delivery_pending"] is False, delivery
+assert delivery["delivery_blocked_reason"] == "delivery_interrupted", delivery
+assert delivery["clear_drop_alert_pending"] is True, delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-019: stale watcher drop cannot overwrite an active delivery claim" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/stale_watcher_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_claim_record_race
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: false
+YAML
+        CLEAR_ALERT_NOW=1000
+        clear_alert_now_epoch() { printf "%s\\n" "$CLEAR_ALERT_NOW"; }
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        [ "$(clear_drop_state claim msg_clear_claim_record_race ready none)" = "claimed" ] || exit 71
+        drop_clear_command msg_clear_claim_record_race karo busy busy
+        [ ! -e "'"$CLEAR_DROP_ALERT_LOG"'" ] || exit 72
+        clear_drop_state delivered msg_clear_claim_record_race || exit 73
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_delivery_pending"] is False, delivery
+assert delivery["delivery_blocked_reason"] is None, delivery
+assert not delivery.get("clear_drop_alert_pending"), delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+}
+
+@test "T-CLEAR-DROP-020: read flag without clear terminal metadata still records explicit drop" {
+    export CLEAR_DROP_ALERT_LOG="$TEST_TMPDIR/read_without_terminal_alert.log"
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_read_without_terminal
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      notification_count: 0
+YAML
+        write_clear_drop_alert() {
+            printf "%s\\n" "$*" >> "'"$CLEAR_DROP_ALERT_LOG"'"
+            return 0
+        }
+        drop_clear_command msg_clear_read_without_terminal karo busy busy
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["cli_state_at_notify"] == "busy", delivery
+assert delivery["delivery_blocked_reason"] == "busy", delivery
+assert delivery["clear_drop_alert_pending"] is False, delivery
+PY
+    '
+    [ "$status" -eq 0 ]
+    [ "$(wc -l < "$CLEAR_DROP_ALERT_LOG")" -eq 1 ]
+}
+
+@test "T-CLEAR-DROP-021: read flag without terminal metadata remains claimable when ready" {
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        cat > "$INBOX" <<YAML
+messages:
+  - id: msg_clear_read_claimable
+    from: karo
+    timestamp: "2026-07-17T00:00:00+09:00"
+    type: clear_command
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      notification_count: 0
+YAML
+        [ "$(clear_drop_state claim msg_clear_read_claimable ready none)" = "claimed" ] || exit 71
+        clear_drop_state delivered msg_clear_read_claimable || exit 72
+        "'"$VENV_PYTHON"'" - "$INBOX" <<'"'"'PY'"'"'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["clear_delivery_pending"] is False, delivery
+assert delivery["delivery_blocked_reason"] is None, delivery
+assert delivery.get("clear_delivered_at"), delivery
+PY
+    '
+    [ "$status" -eq 0 ]
 }

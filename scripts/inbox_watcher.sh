@@ -503,6 +503,393 @@ normalize_special_command() {
     esac
 }
 
+clear_alert_now_epoch() {
+    date +%s
+}
+
+clear_drop_state() {
+    local action="${1:-list}"
+    local message_id="${2:-}"
+    local cli_state="${3:-unknown}"
+    local reason="${4:-unknown}"
+    local now_epoch
+    now_epoch=$(clear_alert_now_epoch)
+
+    (
+        if ! acquire_inbox_lock; then
+            return 1
+        fi
+        trap release_inbox_lock EXIT
+        CLEAR_DROP_ACTION="$action" \
+        CLEAR_DROP_MESSAGE_ID="$message_id" \
+        CLEAR_DROP_CLI_STATE="$cli_state" \
+        CLEAR_DROP_REASON="$reason" \
+        CLEAR_DROP_NOW_EPOCH="$now_epoch" \
+        INBOX_PATH="$INBOX" \
+        "$SCRIPT_DIR/.venv/bin/python3" - <<'PY'
+import datetime
+import os
+import sys
+import yaml
+
+path = os.environ["INBOX_PATH"]
+action = os.environ["CLEAR_DROP_ACTION"]
+message_id = os.environ.get("CLEAR_DROP_MESSAGE_ID", "")
+cli_state = os.environ.get("CLEAR_DROP_CLI_STATE", "unknown")
+reason = os.environ.get("CLEAR_DROP_REASON", "unknown")
+try:
+    now_epoch = int(os.environ.get("CLEAR_DROP_NOW_EPOCH", "0"))
+except (TypeError, ValueError):
+    now_epoch = 0
+max_attempts = 3
+backoff_base = 30
+lease_seconds = 30
+delivery_lease_seconds = 60
+with open(path, encoding="utf-8") as handle:
+    data = yaml.safe_load(handle) or {}
+messages = data.get("messages") or []
+
+def timestamp():
+    return datetime.datetime.fromtimestamp(
+        now_epoch, datetime.timezone.utc
+    ).isoformat()
+
+def save():
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    with open(tmp_path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(
+            data,
+            handle,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+    os.replace(tmp_path, path)
+
+if action == "list":
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "clear_command":
+            continue
+        delivery = message.get("delivery") or {}
+        attempts = int(delivery.get("clear_drop_alert_attempts") or 0)
+        if not delivery.get("clear_drop_alert_pending"):
+            continue
+        status = str(delivery.get("clear_drop_alert_status") or "pending")
+        lease_until = int(delivery.get("clear_drop_alert_lease_until") or 0)
+        if status == "sending" and lease_until > now_epoch:
+            continue
+        if status != "sending" and attempts >= max_attempts:
+            delivery["clear_drop_alert_pending"] = False
+            delivery["clear_drop_alert_status"] = "exhausted"
+            delivery.setdefault("clear_drop_alert_exhausted_at", timestamp())
+            message["delivery"] = delivery
+            changed = True
+            continue
+        next_at = int(delivery.get("clear_drop_alert_next_at") or 0)
+        if next_at <= now_epoch:
+            values = (
+                str(message.get("id") or ""),
+                str(message.get("from") or ""),
+                str(delivery.get("delivery_blocked_reason") or "unknown"),
+            )
+            print("\t".join(value.replace("\t", " ").replace("\n", " ") for value in values))
+    if changed:
+        save()
+    raise SystemExit(0)
+
+if action == "recover":
+    changed = False
+    for message in messages:
+        if not isinstance(message, dict) or message.get("type") != "clear_command":
+            continue
+        delivery = message.get("delivery") or {}
+        if not delivery.get("clear_delivery_pending"):
+            continue
+        delivery_lease_until = int(delivery.get("clear_delivery_lease_until") or 0)
+        if delivery_lease_until > now_epoch:
+            continue
+        message["read"] = True
+        delivery["clear_delivery_pending"] = False
+        delivery.pop("clear_delivery_lease_until", None)
+        delivery["delivery_blocked_reason"] = "delivery_interrupted"
+        delivery["clear_drop_alert_pending"] = True
+        delivery["clear_drop_alert_attempts"] = 0
+        delivery["clear_drop_alert_status"] = "pending"
+        delivery["clear_drop_alert_next_at"] = now_epoch
+        delivery.pop("clear_drop_alert_lease_until", None)
+        delivery["clear_delivery_recovered_at"] = timestamp()
+        message["delivery"] = delivery
+        changed = True
+    if changed:
+        save()
+    raise SystemExit(0)
+
+matches = [
+    item
+    for item in messages
+    if isinstance(item, dict)
+    and item.get("type") == "clear_command"
+    and str(item.get("id") or "") == message_id
+]
+if len(matches) != 1 and action == "claim":
+    print("not_found")
+    raise SystemExit(0)
+if len(matches) != 1:
+    raise SystemExit(1)
+message = matches[0]
+
+delivery = message.setdefault("delivery", {})
+if action in ("record", "record_claimed"):
+    if action == "record" and message.get("read"):
+        delivery_lease_until = int(delivery.get("clear_delivery_lease_until") or 0)
+        if delivery.get("clear_delivery_pending") and delivery_lease_until > now_epoch:
+            print("already_claimed")
+            raise SystemExit(0)
+        blocked_reason = delivery.get("delivery_blocked_reason")
+        alert_status = str(delivery.get("clear_drop_alert_status") or "")
+        terminal_metadata = (
+            bool(delivery.get("clear_delivered_at"))
+            or blocked_reason not in (None, "", "none")
+            or alert_status in ("pending", "retry_wait", "sending", "sent", "exhausted")
+        )
+        if terminal_metadata:
+            print("terminal")
+            raise SystemExit(0)
+    if action == "record_claimed" and not delivery.get("clear_delivery_pending"):
+        print("terminal")
+        raise SystemExit(0)
+    message["read"] = True
+    delivery["clear_delivery_pending"] = False
+    delivery.pop("clear_delivery_lease_until", None)
+    delivery["cli_state_at_notify"] = cli_state
+    delivery["delivery_blocked_reason"] = reason
+    delivery["clear_drop_alert_pending"] = True
+    delivery["clear_drop_alert_attempts"] = 0
+    delivery["clear_drop_alert_status"] = "pending"
+    delivery["clear_drop_alert_next_at"] = now_epoch
+    delivery.pop("clear_drop_alert_lease_until", None)
+    save()
+    print("recorded")
+    raise SystemExit(0)
+elif action == "claim":
+    if message.get("read"):
+        if delivery.get("clear_delivery_pending"):
+            print("already_claimed")
+            raise SystemExit(0)
+        blocked_reason = delivery.get("delivery_blocked_reason")
+        alert_status = str(delivery.get("clear_drop_alert_status") or "")
+        terminal_metadata = (
+            bool(delivery.get("clear_delivered_at"))
+            or blocked_reason not in (None, "", "none")
+            or alert_status in ("pending", "retry_wait", "sending", "sent", "exhausted")
+        )
+        if terminal_metadata:
+            print("terminal")
+            raise SystemExit(0)
+    message["read"] = True
+    delivery["cli_state_at_notify"] = cli_state
+    delivery["delivery_blocked_reason"] = None
+    delivery["clear_delivery_pending"] = True
+    delivery["clear_delivery_lease_until"] = now_epoch + delivery_lease_seconds
+    delivery["clear_delivery_claimed_at"] = timestamp()
+    delivery["clear_drop_alert_pending"] = False
+    save()
+    print("claimed")
+    raise SystemExit(0)
+elif action == "delivered":
+    if not delivery.get("clear_delivery_pending"):
+        raise SystemExit(1)
+    message["read"] = True
+    delivery["clear_delivery_pending"] = False
+    delivery.pop("clear_delivery_lease_until", None)
+    delivery["delivery_blocked_reason"] = None
+    delivery["clear_delivered_at"] = timestamp()
+elif action == "reserve":
+    attempts = int(delivery.get("clear_drop_alert_attempts") or 0)
+    next_at = int(delivery.get("clear_drop_alert_next_at") or 0)
+    status = str(delivery.get("clear_drop_alert_status") or "pending")
+    lease_until = int(delivery.get("clear_drop_alert_lease_until") or 0)
+    if not delivery.get("clear_drop_alert_pending"):
+        raise SystemExit(1)
+    if status == "sending":
+        if lease_until > now_epoch or attempts < 1:
+            raise SystemExit(1)
+    else:
+        if attempts >= max_attempts or next_at > now_epoch:
+            raise SystemExit(1)
+        attempts += 1
+    delivery["clear_drop_alert_attempts"] = attempts
+    delivery["clear_drop_alert_status"] = "sending"
+    delivery["clear_drop_alert_last_attempt_at"] = timestamp()
+    delivery["clear_drop_alert_lease_until"] = now_epoch + lease_seconds
+    print(attempts)
+elif action == "retry":
+    attempts = int(delivery.get("clear_drop_alert_attempts") or 0)
+    if not delivery.get("clear_drop_alert_pending") or attempts < 1:
+        raise SystemExit(1)
+    if attempts >= max_attempts:
+        delivery["clear_drop_alert_pending"] = False
+        delivery["clear_drop_alert_status"] = "exhausted"
+        delivery["clear_drop_alert_exhausted_at"] = timestamp()
+    else:
+        delay = min(300, backoff_base * (2 ** (attempts - 1)))
+        delivery["clear_drop_alert_status"] = "retry_wait"
+        delivery["clear_drop_alert_next_at"] = now_epoch + delay
+    delivery.pop("clear_drop_alert_lease_until", None)
+elif action == "sent":
+    delivery["clear_drop_alert_pending"] = False
+    delivery["clear_drop_alert_status"] = "sent"
+    delivery["clear_drop_alerted_at"] = timestamp()
+    delivery.pop("clear_drop_alert_lease_until", None)
+else:
+    raise SystemExit(1)
+
+save()
+PY
+    ) 200>"$LOCKFILE"
+}
+
+write_clear_drop_alert() {
+    local target="${1:-}"
+    local reason="${2:-unknown}"
+    local message_id="${3:-}"
+    local safe_agent="${AGENT_ID:-unknown}"
+
+    if ! [[ "$target" =~ ^[a-zA-Z0-9_.-]+$ ]] || [ "$target" = "$safe_agent" ]; then
+        return 1
+    fi
+    if ! [[ "$safe_agent" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+        safe_agent="unknown"
+    fi
+    case "$reason" in
+        busy|permission_prompt|login_prompt|shell_prompt|absent|unknown|protected_pane|send_failed|delivery_interrupted|state_persist_failed) ;;
+        *) reason="unknown" ;;
+    esac
+
+    local alert_ref
+    alert_ref=$("$SCRIPT_DIR/.venv/bin/python3" - "$safe_agent" "$message_id" <<'PY'
+import hashlib
+import sys
+print(hashlib.sha256(f"{sys.argv[1]}:{sys.argv[2]}".encode()).hexdigest()[:12])
+PY
+    ) || return 1
+    local target_inbox="${SCRIPT_DIR}/queue/inbox/${target}.yaml"
+    [ -f "$target_inbox" ] || return 1
+
+    local alert="clear_command dropped: agent=${safe_agent} reason=${reason} ref=${alert_ref}; issue a new clear_command if still required."
+    INBOX_WRITE_DEDUP_REF="$alert_ref" \
+        bash "$SCRIPT_DIR/scripts/inbox_write.sh" "$target" "$alert" watchdog_alert handoff_watchdog
+}
+
+flush_clear_drop_alerts() {
+    local pending=""
+    pending=$(clear_drop_state list 2>/dev/null) || return 0
+    [ -n "$pending" ] || return 0
+
+    local message_id source_agent reason attempt
+    while IFS=$'\t' read -r message_id source_agent reason; do
+        [ -n "$message_id" ] || continue
+        case "$reason" in
+            busy|permission_prompt|login_prompt|shell_prompt|absent|unknown|protected_pane|send_failed|delivery_interrupted|state_persist_failed) ;;
+            *) reason="unknown" ;;
+        esac
+        attempt=$(clear_drop_state reserve "$message_id" 2>/dev/null) || continue
+        if write_clear_drop_alert "$source_agent" "$reason" "$message_id"; then
+            clear_drop_state sent "$message_id" >/dev/null 2>&1 || true
+            echo "[$(date)] [CLEAR-DROP-ALERT] agent=${AGENT_ID:-unknown} reason=$reason source=$source_agent" >&2
+        else
+            clear_drop_state retry "$message_id" >/dev/null 2>&1 || true
+            if [ "${attempt:-0}" -ge 3 ] 2>/dev/null; then
+                echo "[$(date)] [CLEAR-DROP-ALERT-EXHAUSTED] agent=${AGENT_ID:-unknown} reason=$reason attempts=${attempt:-0}" >&2
+            else
+                echo "[$(date)] [CLEAR-DROP-ALERT-PENDING] agent=${AGENT_ID:-unknown} reason=$reason attempt=${attempt:-0}" >&2
+            fi
+        fi
+    done <<< "$pending"
+}
+
+clear_drop_quarantine_ref() {
+    local message_id="${1:-}"
+    [ -n "$message_id" ] || return 1
+    "$SCRIPT_DIR/.venv/bin/python3" - "${AGENT_ID:-unknown}" "$message_id" <<'PY'
+import hashlib
+import sys
+
+print(hashlib.sha256(f"{sys.argv[1]}:{sys.argv[2]}".encode()).hexdigest())
+PY
+}
+
+quarantine_clear_command() {
+    local message_id="${1:-}"
+    local quarantine_ref quarantine_dir
+    quarantine_ref=$(clear_drop_quarantine_ref "$message_id") || return 1
+    quarantine_dir="${CLEAR_DROP_QUARANTINE_DIR:-${SCRIPT_DIR}/status/clear_drop_quarantine}"
+    CLEAR_DROP_QUARANTINE_DIR="$quarantine_dir" \
+    CLEAR_DROP_QUARANTINE_REF="$quarantine_ref" \
+        "$SCRIPT_DIR/.venv/bin/python3" - <<'PY'
+import os
+import tempfile
+
+directory = os.environ["CLEAR_DROP_QUARANTINE_DIR"]
+reference = os.environ["CLEAR_DROP_QUARANTINE_REF"]
+os.makedirs(directory, exist_ok=True)
+fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".clear_drop_", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("schema_version: 1\nreason: state_persist_failed\n")
+    os.replace(tmp_path, os.path.join(directory, f"{reference}.yaml"))
+except BaseException:
+    try:
+        os.unlink(tmp_path)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
+
+is_clear_command_quarantined() {
+    local message_id="${1:-}"
+    local quarantine_ref quarantine_dir
+    quarantine_ref=$(clear_drop_quarantine_ref "$message_id") || return 1
+    quarantine_dir="${CLEAR_DROP_QUARANTINE_DIR:-${SCRIPT_DIR}/status/clear_drop_quarantine}"
+    [ -f "${quarantine_dir}/${quarantine_ref}.yaml" ]
+}
+
+drop_clear_command() {
+    local message_id="${1:-}"
+    local source_agent="${2:-}"
+    local cli_state="${3:-unknown}"
+    local reason="${4:-unknown}"
+    local claimed_by_caller="${5:-0}"
+    local record_action="record"
+    local record_result="error"
+
+    [ "$claimed_by_caller" = "1" ] && record_action="record_claimed"
+    record_result=$(clear_drop_state "$record_action" "$message_id" "$cli_state" "$reason" 2>/dev/null) || record_result="error"
+    case "$record_result" in
+        recorded)
+            echo "[$(date)] [CLEAR-DROP] agent=${AGENT_ID:-unknown} cli_state=$cli_state reason=$reason" >&2
+            flush_clear_drop_alerts
+            return 0
+            ;;
+        already_claimed|terminal)
+            echo "[$(date)] [CLEAR-DROP-SKIP] agent=${AGENT_ID:-unknown} result=$record_result" >&2
+            return 0
+            ;;
+    esac
+
+    if quarantine_clear_command "$message_id"; then
+        echo "[$(date)] [CLEAR-DROP-QUARANTINED] agent=${AGENT_ID:-unknown} reason=state_persist_failed" >&2
+        write_clear_drop_alert "$source_agent" state_persist_failed "$message_id" || true
+        return 0
+    fi
+
+    echo "[$(date)] [CLEAR-DROP-QUARANTINE-FAILED] agent=${AGENT_ID:-unknown} reason=state_persist_failed" >&2
+    write_clear_drop_alert "$source_agent" state_persist_failed "$message_id" || true
+    return 1
+}
+
 enqueue_recovery_task_assigned() {
     (
         # acquire_inbox_lock also takes flock when available.
@@ -632,6 +1019,7 @@ get_unread_info() {
         INBOX_PATH="$INBOX" "$SCRIPT_DIR/.venv/bin/python3" - << 'PY'
 import json
 import os
+import uuid
 import yaml
 
 inbox = os.environ.get("INBOX_PATH", "")
@@ -645,20 +1033,41 @@ try:
     specials = [m for m in unread if m.get("type") in special_types]
 
     if specials:
-        for m in messages:
-            if not m.get("read", False) and m.get("type") in special_types:
+        id_counts = {}
+        for message in messages:
+            message_id = str(message.get("id") or "")
+            if message_id:
+                id_counts[message_id] = id_counts.get(message_id, 0) + 1
+        duplicate_ids = {
+            message_id for message_id, count in id_counts.items() if count > 1
+        }
+        known_ids = set(id_counts)
+        changed = False
+        for m in specials:
+            message_id = str(m.get("id") or "")
+            if not message_id or message_id in duplicate_ids:
+                while True:
+                    replacement = f"msg_legacy_{uuid.uuid4().hex}"
+                    if replacement not in known_ids:
+                        break
+                m["id"] = replacement
+                known_ids.add(replacement)
+                changed = True
+            if m.get("type") != "clear_command" and not m.get("read", False):
                 m["read"] = True
+                changed = True
 
-        tmp_path = f"{inbox}.tmp.{os.getpid()}"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(
-                data,
-                f,
-                default_flow_style=False,
-                allow_unicode=True,
-                sort_keys=False,
-            )
-        os.replace(tmp_path, inbox)
+        if changed:
+            tmp_path = f"{inbox}.tmp.{os.getpid()}"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(
+                    data,
+                    f,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    sort_keys=False,
+                )
+            os.replace(tmp_path, inbox)
 
     normal_count = len(unread) - len(specials)
     normal_msgs = [m for m in unread if m.get("type") not in special_types]
@@ -666,7 +1075,15 @@ try:
     payload = {
         "count": normal_count,
         "has_task_assigned": has_task_assigned,
-        "specials": [{"type": m.get("type", ""), "content": m.get("content", "")} for m in specials],
+        "specials": [
+            {
+                "id": m.get("id", ""),
+                "from": m.get("from", ""),
+                "type": m.get("type", ""),
+                "content": m.get("content", ""),
+            }
+            for m in specials
+        ],
     }
     print(json.dumps(payload))
 except Exception:
@@ -681,10 +1098,23 @@ PY
 #                  copilot→Ctrl-C+再起動・/modelスキップ, opencode→/clear→/new・/modelスキップ,
 #                  antigravity→/clearそのまま・/modelスキップ
 # 実行時にtmux paneの @agent_cli を再確認し、ドリフト時はpane値を優先する。
+send_required_cli_key() {
+    if ! timeout 5 tmux send-keys -t "$PANE_TARGET" "$@" 2>/dev/null; then
+        DELIVERY_BLOCKED_REASON="send_failed"
+        echo "[$(date)] WARNING: required clear_command key delivery failed for ${AGENT_ID:-unknown}" >&2
+        return 1
+    fi
+}
+
 send_cli_command() {
     local cmd="$1"
 
     if ! delivery_liveness_gate cli_command; then
+        return 1
+    fi
+    if [[ "$cmd" == "/clear" && "$CLI_STATE_AT_NOTIFY" != "ready" ]]; then
+        DELIVERY_BLOCKED_REASON="$CLI_STATE_AT_NOTIFY"
+        echo "[$(date)] [CLEAR-DROP-FINAL-GATE] agent=${AGENT_ID:-unknown} cli_state=$CLI_STATE_AT_NOTIFY" >&2
         return 1
     fi
 
@@ -706,6 +1136,7 @@ send_cli_command() {
     # Safety: never inject CLI commands into the shogun pane.
     # Shogun is controlled by the Lord; keystroke injection can clobber human input.
     if [ "$AGENT_ID" = "shogun" ]; then
+        DELIVERY_BLOCKED_REASON="protected_pane"
         echo "[$(date)] [SKIP] shogun: suppressing CLI command injection ($cmd)" >&2
         return 1
     fi
@@ -720,8 +1151,9 @@ send_cli_command() {
         pane_snapshot=$(timeout 2 tmux capture-pane -t "$PANE_TARGET" -p 2>/dev/null || true)
     fi
     if [[ "$cmd" == "/clear" ]] && ! [[ "$effective_cli" == "opencode" && -z "${pane_snapshot//[[:space:]]/}" ]] && agent_is_busy; then
-        echo "[$(date)] [SKIP] Agent is busy — /clear deferred to next cycle (agent=$AGENT_ID)" >&2
-        return 0
+        DELIVERY_BLOCKED_REASON="busy"
+        echo "[$(date)] [SKIP] Agent is busy — /clear cannot be delivered (agent=$AGENT_ID)" >&2
+        return 1
     fi
 
     # CLI別コマンド変換
@@ -742,9 +1174,9 @@ send_cli_command() {
                 sleep 0.3
                 timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
                 sleep 0.3
-                timeout 5 tmux send-keys -t "$PANE_TARGET" "/new" 2>/dev/null || true
+                send_required_cli_key "/new" || return 1
                 sleep 0.3
-                timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+                send_required_cli_key Enter || return 1
                 sleep 3
                 # Send startup prompt immediately (don't defer to context-reset cycle)
                 send_startup_prompt || true
@@ -766,9 +1198,9 @@ send_cli_command() {
                 echo "[$(date)] [SEND-KEYS] OpenCode /new for clear_command: starting new conversation for $AGENT_ID" >&2
                 timeout 5 tmux send-keys -t "$PANE_TARGET" C-u 2>/dev/null || true
                 sleep 0.3
-                timeout 5 tmux send-keys -t "$PANE_TARGET" "/new" 2>/dev/null || true
+                send_required_cli_key "/new" || return 1
                 sleep 0.3
-                timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+                send_required_cli_key Enter || return 1
                 sleep 3
                 NEW_CONTEXT_SENT=1
                 return 0
@@ -782,11 +1214,11 @@ send_cli_command() {
             # Copilot: /clearはCtrl-C+再起動, /model非対応→スキップ
             if [[ "$cmd" == "/clear" ]]; then
                 echo "[$(date)] [SEND-KEYS] Copilot /clear: sending Ctrl-C + restart for $AGENT_ID" >&2
-                timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
+                send_required_cli_key C-c || return 1
                 sleep 2
-                timeout 5 tmux send-keys -t "$PANE_TARGET" "copilot --yolo" 2>/dev/null || true
+                send_required_cli_key "copilot --yolo" || return 1
                 sleep 0.3
-                timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+                send_required_cli_key Enter || return 1
                 sleep 3
                 return 0
             fi
@@ -803,9 +1235,9 @@ send_cli_command() {
                     return 0
                 fi
                 echo "[$(date)] [SEND-KEYS] Cursor /clear→/new-chat: starting new conversation for $AGENT_ID" >&2
-                timeout 5 tmux send-keys -t "$PANE_TARGET" "/new-chat" 2>/dev/null || true
+                send_required_cli_key "/new-chat" || return 1
                 sleep 0.3
-                timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+                send_required_cli_key Enter || return 1
                 sleep 3
                 NEW_CONTEXT_SENT=1
                 return 0
@@ -827,14 +1259,22 @@ send_cli_command() {
         timeout 5 tmux send-keys -t "$PANE_TARGET" C-c 2>/dev/null || true
         sleep 0.5
     fi
-    timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
+    if [[ "$cmd" == "/clear" ]]; then
+        send_required_cli_key "$actual_cmd" || return 1
+    else
+        timeout 5 tmux send-keys -t "$PANE_TARGET" "$actual_cmd" 2>/dev/null || true
+    fi
     # /clear needs longer gap before Enter — CLI prompt may not be ready at 0.3s
     if [[ "$actual_cmd" == "/clear" || "$actual_cmd" == "/new" ]]; then
         sleep 1.0
     else
         sleep 0.3
     fi
-    timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+    if [[ "$cmd" == "/clear" ]]; then
+        send_required_cli_key Enter || return 1
+    else
+        timeout 5 tmux send-keys -t "$PANE_TARGET" Enter 2>/dev/null || true
+    fi
 
     # /clear needs extra wait time before follow-up
     if [[ "$actual_cmd" == "/clear" ]]; then
@@ -1280,6 +1720,14 @@ send_wakeup_with_escape() {
 process_unread() {
     local trigger="${1:-event}"
 
+    # A clear command claimed before a prior watcher interruption is terminal:
+    # record an explicit drop and alert, but never replay the command.
+    clear_drop_state recover >/dev/null 2>&1 || true
+
+    # Retry only the bounded source alert for an already-dropped clear command.
+    # The clear command itself remains read and is never scheduled for delivery again.
+    flush_clear_drop_alerts
+
     # summary-first: unread_count fast-path (Phase 2/3 optimization)
     # unread_count fast-path lets us skip expensive full reads when idle.
     local fast_info
@@ -1318,30 +1766,64 @@ process_unread() {
 import sys, json
 data = json.load(sys.stdin)
 for s in data.get('specials', []):
+    i = (s.get('id', '') or '').replace('\t', ' ').replace('\n', ' ').strip()
+    f = (s.get('from', '') or '').replace('\t', ' ').replace('\n', ' ').strip()
     t = s.get('type', '')
     c = (s.get('content', '') or '').replace('\t', ' ').replace('\n', ' ').strip()
-    print(f'{t}\t{c}')
+    print(f'{i}\t{f}\t{t}\t{c}')
 " 2>/dev/null)
 
     local clear_seen=0
     local clear_sent=0  # tracks if /clear was actually sent (not just seen)
     if [ -n "$specials" ]; then
-        local msg_type msg_content cmd
-        while IFS=$'\t' read -r msg_type msg_content; do
+        local msg_id msg_from msg_type msg_content cmd drop_reason claim_result
+        while IFS=$'\t' read -r msg_id msg_from msg_type msg_content; do
             [ -n "$msg_type" ] || continue
             if [ "$msg_type" = "clear_command" ]; then
                 clear_seen=1
-                # Busy guard: skip /clear if agent is currently processing.
-                # Sending /clear during active work destroys in-progress context.
-                if agent_is_busy && [[ "$AGENT_ID" != "shogun" ]]; then
-                    echo "[$(date)] [SKIP] Agent $AGENT_ID is busy — /clear (clear_command) deferred to next cycle" >&2
+                if is_clear_command_quarantined "$msg_id"; then
+                    drop_clear_command "$msg_id" "$msg_from" unknown state_persist_failed || true
                     continue
                 fi
+                if ! delivery_liveness_gate cli_command; then
+                    drop_clear_command "$msg_id" "$msg_from" "$CLI_STATE_AT_NOTIFY" "${DELIVERY_BLOCKED_REASON:-unknown}" || true
+                    continue
+                fi
+                if [ "$CLI_STATE_AT_NOTIFY" != "ready" ]; then
+                    drop_clear_command "$msg_id" "$msg_from" "$CLI_STATE_AT_NOTIFY" "$CLI_STATE_AT_NOTIFY" || true
+                    continue
+                fi
+                # Existing busy/idle semantics remain authoritative after readiness.
+                if agent_is_busy; then
+                    drop_clear_command "$msg_id" "$msg_from" "$CLI_STATE_AT_NOTIFY" busy || true
+                    continue
+                fi
+                claim_result=$(clear_drop_state claim "$msg_id" ready none 2>/dev/null) || claim_result="error"
+                case "$claim_result" in
+                    claimed) ;;
+                    already_claimed|terminal|not_found)
+                        echo "[$(date)] [CLEAR-CLAIM-SKIP] agent=${AGENT_ID:-unknown} result=$claim_result" >&2
+                        continue
+                        ;;
+                    *)
+                        drop_clear_command "$msg_id" "$msg_from" "$CLI_STATE_AT_NOTIFY" state_persist_failed || true
+                        continue
+                        ;;
+                esac
             fi
             cmd=$(normalize_special_command "$msg_type" "$msg_content")
             if [ -n "$cmd" ]; then
                 if send_cli_command "$cmd"; then
-                    [ "$msg_type" = "clear_command" ] && clear_sent=1
+                    if [ "$msg_type" = "clear_command" ]; then
+                        if ! clear_drop_state delivered "$msg_id" >/dev/null 2>&1; then
+                            echo "[$(date)] [CLEAR-DELIVERY-COMMIT-PENDING] agent=${AGENT_ID:-unknown}" >&2
+                        fi
+                        clear_sent=1
+                    fi
+                elif [ "$msg_type" = "clear_command" ]; then
+                    drop_reason="${DELIVERY_BLOCKED_REASON:-send_failed}"
+                    [ -n "$drop_reason" ] || drop_reason="send_failed"
+                    drop_clear_command "$msg_id" "$msg_from" "${CLI_STATE_AT_NOTIFY:-unknown}" "$drop_reason" 1 || true
                 fi
             fi
         done <<< "$specials"

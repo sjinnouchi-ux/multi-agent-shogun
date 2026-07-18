@@ -319,6 +319,31 @@ dump_watcher_log() {
     fi
     assert_success
 
+    # Wait until all three command records reach a terminal read state before
+    # checking whether the two later commands were dropped or idempotently skipped.
+    run bash -c '
+        for _ in $(seq 1 30); do
+            python3 - "'"$E2E_QUEUE"'/queue/inbox/ashigaru1.yaml" <<'"'"'PY'"'"' && exit 0
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    messages = (yaml.safe_load(handle) or {}).get("messages", []) or []
+clears = [message for message in messages if message.get("type") == "clear_command"]
+def terminal(message):
+    delivery = message.get("delivery") or {}
+    reason = delivery.get("delivery_blocked_reason")
+    return bool(delivery.get("clear_delivered_at")) or reason not in (None, "", "none")
+raise SystemExit(
+    0
+    if len(clears) == 3 and all(message.get("read") and terminal(message) for message in clears)
+    else 1
+)
+PY
+            sleep 1
+        done
+        exit 1
+    '
+    assert_success
+
     # 6. Count /new sends — must be exactly 1 despite 3 clear_commands
     local new_count
     new_count=$(grep -c "Codex /clear→/new" "$log_file" 2>/dev/null || true)
@@ -328,14 +353,18 @@ dump_watcher_log() {
     fi
     [ "$new_count" -eq 1 ]
 
-    # 7. Verify extra clear_commands were suppressed (dedup or busy deferral)
-    local skip_count
-    skip_count=$(grep -c -E "SKIP.*(Codex /new already sent|is busy.*deferred)" "$log_file" 2>/dev/null || true)
-    if [ "$skip_count" -lt 1 ]; then
-        echo "Expected at least 1 dedup/deferral skip log, got $skip_count" >&2
+    # 7. P1-1: at least one overlapping command must take the explicit busy-drop
+    # or idempotent-skip path. The mock CLI may acknowledge the final queued
+    # record when it handles the startup prompt, so the terminal-read check above
+    # is the authoritative no-deferral assertion for all three records.
+    local drop_count skip_count
+    drop_count=$(grep -c -E "CLEAR-DROP.*cli_state=busy reason=busy" "$log_file" 2>/dev/null || true)
+    skip_count=$(grep -c -E "SKIP.*Codex /new already sent" "$log_file" 2>/dev/null || true)
+    if [ "$((drop_count + skip_count))" -lt 1 ]; then
+        echo "Expected an explicit busy-drop/idempotent-skip outcome, got drop=$drop_count skip=$skip_count" >&2
         dump_watcher_log "$log_file"
     fi
-    [ "$skip_count" -ge 1 ]
+    [ "$((drop_count + skip_count))" -ge 1 ]
 
     # Cleanup
     stop_inbox_watcher "$watcher_pid"
