@@ -52,7 +52,7 @@ exit 1
 MOCK
     chmod +x "$MOCK_PGREP"
 
-    export MOCK_CAPTURE_PANE=""
+    export MOCK_CAPTURE_PANE="❯"
     export MOCK_PANE_CLI=""
 
     cat > "$WATCHER_HARNESS" << HARNESS

@@ -19,6 +19,10 @@ teardown() {
 
 run_watchdog() {
     local now="$1"
+    local cli_state="${2:-ready}"
+    local blocked_reason="${3:-none}"
+    local can_notify="${4:-1}"
+    local record_notification="${5:-1}"
     run "$PYTHON" "$WATCHDOG" \
         --inbox "$INBOX" \
         --agent ashigaru1 \
@@ -30,7 +34,10 @@ run_watchdog() {
         --stall-after 300 \
         --task-retry-after 300 \
         --task-stall-after 600 \
-        --can-notify 1
+        --can-notify "$can_notify" \
+        --cli-state-at-notify "$cli_state" \
+        --delivery-blocked-reason "$blocked_reason" \
+        --record-notification "$record_notification"
 }
 
 json_field() {
@@ -162,6 +169,74 @@ YAML
     [ "$(json_field "$output" state)" = "healthy" ]
 }
 
+@test "completed task preserves historical delivery liveness fields" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_task
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+      cli_state_at_notify: ready
+      delivery_blocked_reason:
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  task_id: subtask_completed
+  status: assigned
+YAML
+    cat > "$REPORT" <<'YAML'
+task_id: subtask_completed
+status: done
+YAML
+
+    run_watchdog 2000 permission_prompt permission_prompt 0 0
+    [ "$status" -eq 0 ]
+    run "$PYTHON" - "$INBOX" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["cli_state_at_notify"] == "ready", delivery
+assert delivery["delivery_blocked_reason"] is None, delivery
+PY
+    [ "$status" -eq 0 ]
+}
+
+@test "not-yet-due task retry preserves historical delivery liveness fields" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_task
+    from: karo
+    timestamp: "1970-01-01T00:31:40+00:00"
+    type: task_assigned
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:31:40+00:00"
+      cli_state_at_notify: ready
+      delivery_blocked_reason:
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  task_id: subtask_not_due
+  status: assigned
+YAML
+
+    run_watchdog 2000 permission_prompt permission_prompt 0 0
+    [ "$status" -eq 0 ]
+    run "$PYTHON" - "$INBOX" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["cli_state_at_notify"] == "ready", delivery
+assert delivery["delivery_blocked_reason"] is None, delivery
+PY
+    [ "$status" -eq 0 ]
+}
+
 @test "unchanged reconciliation does not rewrite the watched inbox" {
     cat > "$INBOX" <<'YAML'
 messages:
@@ -179,6 +254,8 @@ messages:
       acknowledged_at:
       stalled_at:
       escalation_sent_at:
+      cli_state_at_notify: ready
+      delivery_blocked_reason:
 YAML
 
     before=$("$PYTHON" -c "import os,sys; print(os.stat(sys.argv[1]).st_mtime_ns)" "$INBOX")
@@ -225,4 +302,120 @@ YAML
 @test "watcher falls back to the legacy notification path when helper is absent" {
     grep -q "handoff_watchdog_active()" "$PROJECT_ROOT/scripts/inbox_watcher.sh"
     grep -q "if handoff_watchdog_active; then" "$PROJECT_ROOT/scripts/inbox_watcher.sh"
+}
+
+@test "blocked liveness is recorded without consuming a notification attempt" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_blocked
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    content: "sanitized fixture"
+    read: false
+YAML
+
+    run_watchdog 1000 permission_prompt permission_prompt 0
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+
+    run "$PYTHON" - "$INBOX" "$STATUS_FILE" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    message = yaml.safe_load(handle)["messages"][0]
+delivery = message["delivery"]
+assert delivery["notification_count"] == 0
+assert delivery["cli_state_at_notify"] == "permission_prompt"
+assert delivery["delivery_blocked_reason"] == "permission_prompt"
+with open(sys.argv[2], encoding="utf-8") as handle:
+    status = yaml.safe_load(handle)
+assert status["cli_state_at_notify"] == "permission_prompt"
+assert status["delivery_blocked_reason"] == "permission_prompt"
+PY
+    [ "$status" -eq 0 ]
+
+    run_watchdog 1010 ready none 1
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "notify" ]
+    run "$PYTHON" - "$INBOX" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert delivery["notification_count"] == 1
+assert delivery["cli_state_at_notify"] == "ready"
+assert delivery["delivery_blocked_reason"] is None
+PY
+    [ "$status" -eq 0 ]
+}
+
+@test "busy delivery state is observable while existing can-notify gate defers" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_busy
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: info
+    content: "sanitized fixture"
+    read: false
+YAML
+
+    run_watchdog 1000 busy busy 0
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "none" ]
+    grep -q "cli_state_at_notify: busy" "$INBOX"
+    grep -q "delivery_blocked_reason: busy" "$INBOX"
+    grep -q "notification_count: 0" "$INBOX"
+}
+
+@test "notification planning does not consume count before a confirmed send" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_plan
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: info
+    content: "sanitized fixture"
+    read: false
+YAML
+
+    run_watchdog 1000 ready none 1 0
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "notify" ]
+    grep -q "notification_count: 0" "$INBOX"
+
+    run_watchdog 1001 ready none 1 1
+    [ "$status" -eq 0 ]
+    [ "$(json_field "$output" action)" = "notify" ]
+    grep -q "notification_count: 1" "$INBOX"
+}
+
+@test "blocked task retry records state and reason on the acknowledged task message" {
+    cat > "$INBOX" <<'YAML'
+messages:
+  - id: msg_task_blocked
+    from: karo
+    timestamp: "1970-01-01T00:16:40+00:00"
+    type: task_assigned
+    content: "sanitized fixture"
+    read: true
+    delivery:
+      acknowledged_at: "1970-01-01T00:16:40+00:00"
+YAML
+    cat > "$TASK" <<'YAML'
+task:
+  task_id: subtask_blocked
+  status: assigned
+YAML
+
+    run_watchdog 2000 permission_prompt permission_prompt 0 1
+    [ "$status" -eq 0 ]
+    run "$PYTHON" - "$INBOX" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    delivery = yaml.safe_load(handle)["messages"][0]["delivery"]
+assert not delivery.get("execution_retry_at"), delivery
+assert delivery["cli_state_at_notify"] == "permission_prompt", delivery
+assert delivery["delivery_blocked_reason"] == "permission_prompt", delivery
+PY
+    [ "$status" -eq 0 ]
 }
