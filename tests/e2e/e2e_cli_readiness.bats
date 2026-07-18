@@ -9,6 +9,8 @@ E2E_HELPERS_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/helpers" && pwd)"
 source "$E2E_HELPERS_DIR/setup.bash"
 source "$E2E_HELPERS_DIR/tmux_helpers.bash"
 
+GEOMETRY_SOCKET=""
+
 setup_file() {
     command -v tmux &>/dev/null || skip "tmux not available"
     setup_e2e_session 3
@@ -23,6 +25,13 @@ setup() {
     for i in 0 1 2; do
         tmux set-option -pu -t "$(pane_target "$i")" @pane_state_override 2>/dev/null || true
     done
+}
+
+teardown() {
+    if [[ -n "${GEOMETRY_SOCKET:-}" ]]; then
+        tmux -L "$GEOMETRY_SOCKET" kill-server 2>/dev/null || true
+        GEOMETRY_SOCKET=""
+    fi
 }
 
 run_batch_readiness() {
@@ -72,4 +81,41 @@ run_batch_readiness() {
     assert_success
     assert_output --partial "cli_readiness role=ashigaru1 state=ready ready=true"
     assert_output --partial "cli_readiness overall=ready"
+}
+
+@test "E2E readiness: detached multiagent geometry keeps ten tiled panes usable" {
+    local width height pane_count=0 pane_width pane_height
+    width=$(sed -n 's/^MULTIAGENT_DETACHED_WIDTH=\([0-9][0-9]*\)$/\1/p' \
+        "$PROJECT_ROOT/shutsujin_departure.sh")
+    height=$(sed -n 's/^MULTIAGENT_DETACHED_HEIGHT=\([0-9][0-9]*\)$/\1/p' \
+        "$PROJECT_ROOT/shutsujin_departure.sh")
+    [ "$width" -eq 300 ]
+    [ "$height" -eq 120 ]
+
+    GEOMETRY_SOCKET="shogun-geometry-${BATS_TEST_NUMBER}-${BASHPID}"
+    tmux -L "$GEOMETRY_SOCKET" -f /dev/null new-session -d \
+        -x "$width" -y "$height" -s geometry -n agents
+    tmux -L "$GEOMETRY_SOCKET" split-window -h -t geometry:agents
+    tmux -L "$GEOMETRY_SOCKET" split-window -h -t geometry:agents
+    tmux -L "$GEOMETRY_SOCKET" select-pane -t geometry:agents.0
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" select-pane -t geometry:agents.3
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" select-pane -t geometry:agents.6
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v -t geometry:agents.8
+    tmux -L "$GEOMETRY_SOCKET" select-layout -t geometry:agents tiled
+
+    while read -r pane_width pane_height; do
+        ((pane_count += 1))
+        [ "$pane_width" -ge 80 ]
+        [ "$pane_height" -ge 24 ]
+    done < <(
+        tmux -L "$GEOMETRY_SOCKET" list-panes -t geometry:agents \
+            -F '#{pane_width} #{pane_height}'
+    )
+    [ "$pane_count" -eq 10 ]
 }
