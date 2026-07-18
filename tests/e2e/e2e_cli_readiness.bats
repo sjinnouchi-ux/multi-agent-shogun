@@ -28,6 +28,7 @@ setup() {
 }
 
 teardown() {
+    local attempt pane_id
     if [[ -n "${GEOMETRY_SOCKET:-}" ]]; then
         while read -r pane_id; do
             tmux -L "$GEOMETRY_SOCKET" send-keys -t "$pane_id" exit Enter \
@@ -36,7 +37,17 @@ teardown() {
             tmux -L "$GEOMETRY_SOCKET" list-panes -a -F '#{pane_id}' \
                 2>/dev/null || true
         )
-        GEOMETRY_SOCKET=""
+
+        for attempt in {1..20}; do
+            if ! tmux -L "$GEOMETRY_SOCKET" has-session 2>/dev/null; then
+                GEOMETRY_SOCKET=""
+                return 0
+            fi
+            sleep 0.05
+        done
+
+        echo "isolated geometry tmux cleanup did not complete" >&2
+        return 1
     fi
 }
 

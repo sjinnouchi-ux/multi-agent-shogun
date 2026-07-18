@@ -303,12 +303,27 @@ approval, automatic restart, and P2 prohibitions remain unchanged.
 @test "departure gives detached multiagent panes explicit readiness geometry" {
     grep -q '^MULTIAGENT_DETACHED_WIDTH=300$' "$SCRIPT"
     grep -q '^MULTIAGENT_DETACHED_HEIGHT=120$' "$SCRIPT"
-    grep -q -- '-x "$MULTIAGENT_DETACHED_WIDTH"' "$SCRIPT"
-    grep -q -- '-y "$MULTIAGENT_DETACHED_HEIGHT"' "$SCRIPT"
-
-    run grep -n 'tmux new-session -d \\' "$SCRIPT"
+    run awk '
+        /^MULTIAGENT_DETACHED_WIDTH=300$/ { geometry = 1 }
+        geometry && /^if ! tmux new-session -d \\/ {
+            capture = 1
+            session_line = NR
+        }
+        capture {
+            block = block $0 ORS
+            if ($0 !~ /\\$/) {
+                print session_line
+                print block
+                exit
+            }
+        }
+    ' "$SCRIPT"
     [ "$status" -eq 0 ]
-    session_line="${output%%:*}"
+    session_line="${output%%$'\n'*}"
+    command_block="${output#*$'\n'}"
+    [[ "$command_block" == *'-x "$MULTIAGENT_DETACHED_WIDTH"'* ]]
+    [[ "$command_block" == *'-y "$MULTIAGENT_DETACHED_HEIGHT"'* ]]
+    [[ "$command_block" == *'-s multiagent -n "agents"'* ]]
 
     run grep -n 'tmux split-window -h -t "multiagent:agents"' "$SCRIPT"
     [ "$status" -eq 0 ]
@@ -325,9 +340,26 @@ approval, automatic restart, and P2 prohibitions remain unchanged.
 GEOMETRY_SOCKET=""
 
 teardown() {
+    local attempt pane_id
     if [[ -n "${GEOMETRY_SOCKET:-}" ]]; then
-        tmux -L "$GEOMETRY_SOCKET" kill-server 2>/dev/null || true
-        GEOMETRY_SOCKET=""
+        while read -r pane_id; do
+            tmux -L "$GEOMETRY_SOCKET" send-keys -t "$pane_id" exit Enter \
+                2>/dev/null || true
+        done < <(
+            tmux -L "$GEOMETRY_SOCKET" list-panes -a -F '#{pane_id}' \
+                2>/dev/null || true
+        )
+
+        for attempt in {1..20}; do
+            if ! tmux -L "$GEOMETRY_SOCKET" has-session 2>/dev/null; then
+                GEOMETRY_SOCKET=""
+                return 0
+            fi
+            sleep 0.05
+        done
+
+        echo "isolated geometry tmux cleanup did not complete" >&2
+        return 1
     fi
 }
 
