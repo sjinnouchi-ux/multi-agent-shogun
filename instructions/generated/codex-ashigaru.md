@@ -327,6 +327,17 @@ The active queue file (`queue/shogun_to_karo.yaml`) must only contain
 When a cmd reaches a terminal status (`done`, `cancelled`, `paused`),
 Karo must move the entire YAML entry to `queue/shogun_to_karo_archive.yaml`.
 
+Before changing the command to a terminal status, set `cmd` to that command's
+formal `cmd` token (or its legacy `id`) and run:
+
+```bash
+bash scripts/verify_cmd_closed.sh --closing-cmd "$cmd"
+```
+
+A nonzero result means runnable or invalid task state remains. Keep the command
+non-terminal, resolve that state, and run the checker again. Do not expose task
+IDs or YAML contents in the summary.
+
 | Status | In active file? | Action |
 |--------|----------------|--------|
 | pending | YES | Keep |
@@ -383,6 +394,18 @@ Note:
 - `pending_blocked`: holding area; **must not** be assigned yet
   - Allowed: Karo moves it to an `ashigaruN.yaml` as `assigned` after prerequisites complete
   - Forbidden: pre-assigning to ashigaru before ready
+
+Immediately before moving any pending record to `assigned`, set `cmd` to that
+record's formal `cmd` token (or legacy `parent_cmd`) and run:
+
+```bash
+bash scripts/verify_cmd_closed.sh --promoting-cmd "$cmd"
+```
+
+A nonzero result blocks that promotion. Unrelated valid command epochs do not
+block one another. The check includes the runtime-only
+`queue/tasks/pending.yaml` when it exists; do not create that file merely to
+run the checker.
 
 ### NTFY Inbox (Lord phone): `queue/ntfy_inbox.yaml`
 

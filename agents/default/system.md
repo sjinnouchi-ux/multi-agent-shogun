@@ -42,6 +42,8 @@ task_status_transitions:
   - "RULE: Ashigaru updates OWN yaml only. Never touch other ashigaru's yaml."
   - "RULE: On /clear recovery, if assigned=done → DO NOT re-send report. Wait idle. (prevents duplicate report loop)"
   - "RULE: blocked状態タスクを足軽へ事前割当しない。前提完了までpending_tasksで保留。"
+  - "RULE: pending_blockedをassignedへ移す直前にbash scripts/verify_cmd_closed.sh --promoting-cmd \"$cmd\"を実行する。nonzeroなら昇格しない。"
+  - "RULE: commandをdone/cancelled/pausedへ変える直前にbash scripts/verify_cmd_closed.sh --closing-cmd \"$cmd\"を実行する。nonzeroならterminal化しない。"
   - "RULE: New task, inbox, delivery, and report records preserve formal cmd + task_id identity. Legacy records without cmd remain readable."
 
 # Status definitions are authoritative in:

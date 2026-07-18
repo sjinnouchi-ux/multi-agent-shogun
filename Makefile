@@ -1,4 +1,4 @@
-.PHONY: test test-no-skip build lint check help install-deps clean skill-registry-check skill-registry-lock
+.PHONY: test test-no-skip build lint check help install-deps clean skill-registry-check skill-registry-lock verify-cmd-closed
 
 GENERATED_OUTPUTS := instructions/generated/ .opencode/agents/ \
 	instructions/shogun.md instructions/karo.md instructions/ashigaru.md \
@@ -16,6 +16,7 @@ help:
 	@echo "  make build         - Run build_instructions.sh"
 	@echo "  make lint          - Run shellcheck on lib/ and scripts/"
 	@echo "  make check         - Run build + diff check (CI equivalent)"
+	@echo "  make verify-cmd-closed - Fail if a terminal command still has runnable work"
 	@echo "  make skill-registry-check - Validate the registry and tracked lock"
 	@echo "  make skill-registry-lock  - Regenerate the deterministic registry lock"
 	@echo "  make install-deps  - Install test dependencies (bats, helpers)"
@@ -98,6 +99,10 @@ skill-registry-check:
 # Maintainer-only regeneration after reviewed registry or skill changes.
 skill-registry-lock:
 	@bash scripts/skill_registry.sh lock
+
+# Audit task closure before terminalizing a command or promoting pending work.
+verify-cmd-closed:
+	@bash scripts/verify_cmd_closed.sh
 
 # Run shellcheck linter
 lint:
