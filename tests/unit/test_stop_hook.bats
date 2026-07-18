@@ -16,9 +16,15 @@
 #   T-HOOK-008: inbox未読あり → block JSON出力
 #   T-HOOK-009: inbox未読なし + 完了メッセージ → exit 0 + 通知あり
 #   T-HOOK-010: inbox未読あり + 完了メッセージ → block + 通知あり
+#   T-HOOK-011: Hook settings are valid JSON with project-root shell commands
+#   T-HOOK-012: Hook commands resolve with CLAUDE_PROJECT_DIR set and unset
+#   T-HOOK-013: Hook lint rejects bare relative paths and args
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
 HOOK_SCRIPT="$SCRIPT_DIR/scripts/stop_hook_inbox.sh"
+SESSION_HOOK_SCRIPT="$SCRIPT_DIR/scripts/session_start_hook.sh"
+SETTINGS_FILE="$SCRIPT_DIR/.claude/settings.json"
+HOOK_LINT="$SCRIPT_DIR/scripts/lint_hook_settings.py"
 
 setup() {
     TEST_TMP="$(mktemp -d)"
@@ -146,4 +152,98 @@ YAML
     echo "$output" | grep -q '"block"'
     [ -f "$TEST_TMP/inbox_write_calls.log" ]
     grep -q "report_completed" "$TEST_TMP/inbox_write_calls.log"
+}
+
+@test "T-HOOK-011: Hook settings use exact project-root shell commands without args" {
+    run python3 - "$SETTINGS_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    settings = json.load(handle)
+
+expected = {
+    "SessionStart": 'bash "${CLAUDE_PROJECT_DIR:-.}/scripts/session_start_hook.sh"',
+    "Stop": 'bash "${CLAUDE_PROJECT_DIR:-.}/scripts/stop_hook_inbox.sh"',
+}
+for event, command in expected.items():
+    entries = settings["hooks"][event]
+    hooks = [hook for entry in entries for hook in entry["hooks"]]
+    assert len(hooks) == 1, (event, hooks)
+    assert hooks[0]["command"] == command, (event, hooks[0])
+    assert "args" not in hooks[0], (event, hooks[0])
+PY
+    [ "$status" -eq 0 ]
+}
+
+@test "T-HOOK-012: Hook commands resolve with CLAUDE_PROJECT_DIR set and unset" {
+    local stop_command session_command
+    stop_command=$(python3 - "$SETTINGS_FILE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["hooks"]["Stop"][0]["hooks"][0]["command"])
+PY
+)
+    session_command=$(python3 - "$SETTINGS_FILE" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["hooks"]["SessionStart"][0]["hooks"][0]["command"])
+PY
+)
+
+    run bash -c 'cd "$1" && printf "%s\n" "{\"stop_hook_active\":false}" | env -u CLAUDE_PROJECT_DIR __STOP_HOOK_AGENT_ID="" bash -c "$2"' _ "$SCRIPT_DIR" "$stop_command"
+    [ "$status" -eq 0 ]
+
+    run bash -c 'cd "$1" && env -u CLAUDE_PROJECT_DIR -u TMUX_PANE bash -c "$2"' _ "$SCRIPT_DIR" "$session_command"
+    [ "$status" -eq 0 ]
+
+    run bash -c 'cd / && printf "%s\n" "{\"stop_hook_active\":false}" | CLAUDE_PROJECT_DIR="$1" __STOP_HOOK_AGENT_ID="" bash -c "$2"' _ "$SCRIPT_DIR" "$stop_command"
+    [ "$status" -eq 0 ]
+
+    run bash -c 'cd / && CLAUDE_PROJECT_DIR="$1" env -u TMUX_PANE bash -c "$2"' _ "$SCRIPT_DIR" "$session_command"
+    [ "$status" -eq 0 ]
+}
+
+@test "T-HOOK-013: Hook lint accepts canonical settings and rejects relative paths and args" {
+    run python3 "$HOOK_LINT" "$SETTINGS_FILE"
+    [ "$status" -eq 0 ]
+
+    python3 - "$SETTINGS_FILE" "$TEST_TMP" <<'PY'
+import copy
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    settings = json.load(handle)
+
+unsafe_commands = {
+    "bare-relative.json": "bash scripts/stop_hook_inbox.sh",
+    "quoted-relative.json": 'bash "scripts/stop_hook_inbox.sh"',
+    "dot-relative.json": "bash ./scripts/stop_hook_inbox.sh",
+    "sh-relative.json": "sh scripts/stop_hook_inbox.sh",
+}
+for filename, command in unsafe_commands.items():
+    unsafe = copy.deepcopy(settings)
+    unsafe["hooks"]["Stop"][0]["hooks"][0]["command"] = command
+    with open(f"{sys.argv[2]}/{filename}", "w", encoding="utf-8") as handle:
+        json.dump(unsafe, handle)
+
+with_args = copy.deepcopy(settings)
+with_args["hooks"]["Stop"][0]["hooks"][0]["args"] = ["--unsafe"]
+with open(f"{sys.argv[2]}/args.json", "w", encoding="utf-8") as handle:
+    json.dump(with_args, handle)
+PY
+
+    local fixture
+    for fixture in bare-relative quoted-relative dot-relative sh-relative; do
+        run python3 "$HOOK_LINT" "$TEST_TMP/${fixture}.json"
+        [ "$status" -ne 0 ]
+        [[ "$output" == *"bare_relative_path"* ]]
+    done
+
+    run python3 "$HOOK_LINT" "$TEST_TMP/args.json"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"args_forbidden"* ]]
 }

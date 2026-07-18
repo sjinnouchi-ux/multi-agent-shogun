@@ -20,6 +20,7 @@
 #   T-ESC-003: escalation — unread 2-4min → Escape+nudge
 #   T-ESC-004: escalation — unread > 4min → /clear sent
 #   T-ESC-005: escalation — /clear cooldown → falls back to Escape+nudge
+#   T-ESC-006: escalation — oometsuke Phase 3 suppresses /clear and uses Escape+nudge
 #   T-BUSY-001: agent_is_busy — detects "Working" in pane
 #   T-BUSY-002: agent_is_busy — idle pane returns 1
 #   T-BUSY-003: send_wakeup — skips when agent is busy
@@ -409,6 +410,38 @@ MOCK
     grep -q "send-keys.*Escape" "$MOCK_LOG"
     grep -q "send-keys.*inbox4" "$MOCK_LOG"
     ! grep -q "send-keys.*/clear" "$MOCK_LOG"
+}
+
+@test "T-ESC-006: oometsuke Phase 3 suppresses /clear and uses Escape+nudge" {
+    export MOCK_PANE_CLI="kimi"
+    cat > "$TEST_INBOX_DIR/oometsuke.yaml" <<'YAML'
+messages:
+  - id: msg_oometsuke_phase3
+    from: karo
+    type: task_assigned
+    content: "sanitized test assignment"
+    read: false
+YAML
+    touch "$TEST_TMPDIR/shogun_idle_oometsuke"
+
+    run bash -c '
+        source "'"$TEST_HARNESS"'"
+        AGENT_ID="oometsuke"
+        INBOX="'"$TEST_INBOX_DIR"'/oometsuke.yaml"
+        LOCKFILE="${INBOX}.lock"
+        PANE_TARGET="multiagent:agents.9"
+        HANDOFF_WATCHDOG_ENABLED=0
+        NEW_CONTEXT_SENT=1
+        FIRST_UNREAD_SEEN=$(($(date +%s) - 300))
+        LAST_CLEAR_TS=0
+        process_unread event
+    '
+
+    [ "$status" -eq 0 ]
+    run grep -q "send-keys.*/clear" "$MOCK_LOG"
+    [ "$status" -ne 0 ]
+    grep -q "send-keys.*Escape Escape" "$MOCK_LOG"
+    grep -q "send-keys.*inbox1" "$MOCK_LOG"
 }
 
 # --- T-BUSY-001: agent_is_busy detects "Working" ---

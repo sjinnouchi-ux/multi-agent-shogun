@@ -115,6 +115,8 @@ lint:
 	@if [ -d scripts ]; then \
 		find scripts -name '*.sh' -type f -exec shellcheck {} \; ; \
 	fi
+	@echo "Checking Claude Hook settings..."
+	@python3 scripts/lint_hook_settings.py .claude/settings.json
 	@echo "✓ Shellcheck passed"
 
 # Build + diff check (CI equivalent)
