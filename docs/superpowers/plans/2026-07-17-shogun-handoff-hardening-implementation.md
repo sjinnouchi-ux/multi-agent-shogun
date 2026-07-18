@@ -263,6 +263,204 @@ rg -n 'get_pane_cli_state' --glob '!lib/agent_status.sh' --glob '!tests/unit/tes
 - [ ] **Step 6: Keep the PR draft while the six deployment-only Bloom SKIPs remain unresolved.** Do not merge.
 - [ ] **Step 7: Final audit.** Report branches, PR URLs, dependency graph, changed files, known-issues changes, unresolved items, P2 not done, no deployment, and whether any local uncommitted/unpushed or task-only changes remain.
 
+## 2026-07-18 Production Readiness Geometry Hotfix Addendum
+
+This addendum implements the approved design in
+`docs/superpowers/specs/2026-07-18-readiness-detached-tmux-geometry-design.md`.
+It is based on GitHub `main` commit
+`7994e57e392ce41a4b3e24a76dc88b65d0cc844f`. The Lord separately approved
+production deployment, restart, rollback if required, and merge for this
+hotfix. That approval overrides the original plan's deployment prohibition
+only for the steps below. The WebUI, production data reset, permission
+approval, automatic restart, and P2 prohibitions remain unchanged.
+
+### Task 9: Detached multiagent startup geometry
+
+**Branch:** `fix/readiness-detached-tmux-geometry`
+
+**Files:**
+- Modify: `shutsujin_departure.sh`
+- Modify: `tests/unit/test_shutsujin_readiness.bats`
+- Modify: `tests/e2e/e2e_cli_readiness.bats`
+- Modify: `docs/superpowers/plans/2026-07-17-shogun-handoff-hardening-implementation.md`
+- Already created: `docs/superpowers/specs/2026-07-18-readiness-detached-tmux-geometry-design.md`
+
+**Interfaces:**
+- Produces fixed shell constants `MULTIAGENT_DETACHED_WIDTH=300` and
+  `MULTIAGENT_DETACHED_HEIGHT=120`.
+- Passes those constants to `tmux new-session -d -x ... -y ...` only when
+  creating the detached `multiagent` session.
+- Preserves the existing split order, `window-size latest`,
+  `aggressive-resize on`, seven-state classifier, readiness deadline, watcher
+  gate, busy/idle behavior, queue/report data, and WebUI boundary.
+- Baseline focused tests: unit 5 PASS, 0 FAIL, 0 SKIP; e2e 2 PASS, 0 FAIL,
+  0 SKIP.
+
+- [ ] **Step 1: Write the failing unit and isolated e2e tests.** Add the
+  following unit contract to `tests/unit/test_shutsujin_readiness.bats`:
+
+```bash
+@test "departure gives detached multiagent panes explicit readiness geometry" {
+    grep -q '^MULTIAGENT_DETACHED_WIDTH=300$' "$SCRIPT"
+    grep -q '^MULTIAGENT_DETACHED_HEIGHT=120$' "$SCRIPT"
+    grep -q -- '-x "$MULTIAGENT_DETACHED_WIDTH"' "$SCRIPT"
+    grep -q -- '-y "$MULTIAGENT_DETACHED_HEIGHT"' "$SCRIPT"
+
+    run grep -n 'tmux new-session -d \\' "$SCRIPT"
+    [ "$status" -eq 0 ]
+    session_line="${output%%:*}"
+
+    run grep -n 'tmux split-window -h -t "multiagent:agents"' "$SCRIPT"
+    [ "$status" -eq 0 ]
+    split_line="${output%%:*}"
+    [ "$session_line" -lt "$split_line" ]
+}
+```
+
+  Add this isolated fixture and e2e case to
+  `tests/e2e/e2e_cli_readiness.bats`; never use the production tmux socket or
+  session names:
+
+```bash
+GEOMETRY_SOCKET=""
+
+teardown() {
+    if [[ -n "${GEOMETRY_SOCKET:-}" ]]; then
+        tmux -L "$GEOMETRY_SOCKET" kill-server 2>/dev/null || true
+        GEOMETRY_SOCKET=""
+    fi
+}
+
+@test "E2E readiness: detached multiagent geometry keeps ten tiled panes usable" {
+    local width height pane_count=0 pane_width pane_height
+    width=$(sed -n 's/^MULTIAGENT_DETACHED_WIDTH=\([0-9][0-9]*\)$/\1/p' \
+        "$PROJECT_ROOT/shutsujin_departure.sh")
+    height=$(sed -n 's/^MULTIAGENT_DETACHED_HEIGHT=\([0-9][0-9]*\)$/\1/p' \
+        "$PROJECT_ROOT/shutsujin_departure.sh")
+    [ "$width" -eq 300 ]
+    [ "$height" -eq 120 ]
+
+    GEOMETRY_SOCKET="shogun-geometry-${BATS_TEST_NUMBER}-${BASHPID}"
+    tmux -L "$GEOMETRY_SOCKET" -f /dev/null new-session -d \
+        -x "$width" -y "$height" -s geometry -n agents
+    tmux -L "$GEOMETRY_SOCKET" split-window -h -t geometry:agents
+    tmux -L "$GEOMETRY_SOCKET" split-window -h -t geometry:agents
+    tmux -L "$GEOMETRY_SOCKET" select-pane -t geometry:agents.0
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" select-pane -t geometry:agents.3
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" select-pane -t geometry:agents.6
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v
+    tmux -L "$GEOMETRY_SOCKET" split-window -v -t geometry:agents.8
+    tmux -L "$GEOMETRY_SOCKET" select-layout -t geometry:agents tiled
+
+    while read -r pane_width pane_height; do
+        ((pane_count += 1))
+        [ "$pane_width" -ge 80 ]
+        [ "$pane_height" -ge 24 ]
+    done < <(
+        tmux -L "$GEOMETRY_SOCKET" list-panes -t geometry:agents \
+            -F '#{pane_width} #{pane_height}'
+    )
+    [ "$pane_count" -eq 10 ]
+}
+```
+
+- [ ] **Step 2: Run RED and verify the expected failure.**
+
+```bash
+IDLE_FLAG_DIR="$TASK_IDLE" bats tests/unit/test_shutsujin_readiness.bats \
+  --filter 'explicit readiness geometry'
+IDLE_FLAG_DIR="$TASK_IDLE" bats tests/e2e/e2e_cli_readiness.bats \
+  --filter 'detached multiagent geometry'
+```
+
+  Both commands must fail because the two constants and the `-x`/`-y`
+  arguments do not exist. A collection error, missing helper, CRLF error, or
+  live-session dependency is not an acceptable RED result.
+
+- [ ] **Step 3: Implement the minimum production change.** Immediately before
+  the existing `multiagent` `new-session` call, add:
+
+```bash
+MULTIAGENT_DETACHED_WIDTH=300
+MULTIAGENT_DETACHED_HEIGHT=120
+```
+
+  Replace only that session-creation command with:
+
+```bash
+if ! tmux new-session -d \
+    -x "$MULTIAGENT_DETACHED_WIDTH" \
+    -y "$MULTIAGENT_DETACHED_HEIGHT" \
+    -s multiagent -n "agents" 2>/dev/null; then
+```
+
+  Do not change the working `shogun` creation path, classifier patterns,
+  timeout, CLI commands, split order, or watcher logic.
+
+- [ ] **Step 4: Run focused GREEN verification.**
+
+```bash
+IDLE_FLAG_DIR="$TASK_IDLE" bats tests/unit/test_shutsujin_readiness.bats --timing
+IDLE_FLAG_DIR="$TASK_IDLE" bats tests/e2e/e2e_cli_readiness.bats --timing
+```
+
+  Expected: unit 6 PASS, 0 FAIL, 0 SKIP; e2e 3 PASS, 0 FAIL, 0 SKIP. Confirm
+  every isolated geometry socket is removed after the e2e process exits.
+
+- [ ] **Step 5: Run local regression and generation gates.**
+
+```bash
+IDLE_FLAG_DIR="$TASK_IDLE" make test
+IDLE_FLAG_DIR="$TASK_IDLE" make test-int
+make lint
+make build
+make check
+git diff --check
+git status --short
+```
+
+  Record exact pass, fail, and skip totals. Any skip is a failed acceptance
+  gate. Verify generated files remain unchanged and the diff contains no WebUI,
+  runtime data, `.env`, token, auth JSON, pane content, queue/report body, or
+  log content.
+
+- [ ] **Step 6: Commit, independently review, publish, and merge.** Commit the
+  test-first implementation, request a cold review of the exact
+  `7994e57e...HEAD` diff, fix every blocking issue, and rerun all affected
+  gates. Push `fix/readiness-detached-tmux-geometry`, open a draft PR with the
+  complete command/count evidence and rollback instructions, then mark it
+  ready and merge only after all GitHub checks pass. The Lord's merge approval
+  is already recorded; do not bypass branch protection or failing checks.
+
+- [ ] **Step 7: Create a live rollback ref and deploy without data reset.** In
+  `/home/jinnouchi/multi-agent-shogun`, confirm branch `main`, zero tracked
+  changes, the expected pre-hotfix SHA, and no untracked-name collision. Create
+  `rollback/pre-readiness-geometry-20260718-7994e57e` at the deployed
+  `7994e57e...` SHA. Fast-forward only from canonical `personal/main`. Never
+  use the upstream `origin/main` remote and never pass `--clean`.
+
+- [ ] **Step 8: Run deployment-host acceptance and official startup.** Create
+  an isolated temporary `IDLE_FLAG_DIR`, run `make test-no-skip`, `make lint`,
+  `make build`, and `make check`, then remove only that validated temporary
+  directory. Run `bash shutsujin_departure.sh` without arguments. Require exit
+  zero and a sanitized summary in which all eleven roles are `ready` before
+  accepting watcher startup. Never approve a prompt or automatically retry a
+  failed CLI.
+
+- [ ] **Step 9: Run trusted post-start verification and close the hotfix.**
+  Immediately re-fetch the GitHub `main` diagnostic registry, validate exactly
+  one active schema-version-1 deployment, invoke only the fixed approved
+  diagnostic command, and independently validate the complete sanitized JSON
+  contract. Require the merged SHA, both expected sessions, eleven alive panes,
+  and one healthy watcher per role. Report any remaining sanitized warning or
+  error without a raw-data fallback. Roll back to the pre-hotfix ref if startup
+  readiness or the trusted diagnostic fails.
+
 ## Rollback Conditions
 
 Rollback the current PR rather than expanding scope when any of these occurs:
