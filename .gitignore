@@ -60,6 +60,7 @@
 !lib/ntfy_lifecycle.sh
 !lib/agent_status.sh
 !lib/agent_registry.sh
+!lib/cli_readiness.sh
 
 # Multi-CLI: Codex auto-load file
 !AGENTS.md
