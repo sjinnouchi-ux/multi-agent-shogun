@@ -552,7 +552,7 @@ MARKDOWN
             --type codex --model gpt-5.3-codex-spark
 
     [ "$status" -ne 0 ]
-    RETAINED_SETTINGS_BACKUP=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore settings.*backup retained at \(.*\)$/\1/p' | tail -1)
+    RETAINED_SETTINGS_BACKUP=$(sed -n 's/.*Failed to restore settings.*backup retained at \(.*\)$/\1/p' "$TEST_TMP/switch.log" | tail -1)
     retained_platform_tmp_path_is_safe "$RETAINED_SETTINGS_BACKUP"
     [ -f "$RETAINED_SETTINGS_BACKUP" ]
 }
@@ -578,7 +578,7 @@ MARKDOWN
             --type opencode --model openai/gpt-5.4-mini --variant high
 
     [ "$status" -ne 0 ]
-    RETAINED_RUNTIME_BACKUP_DIR=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(.*\)$/\1/p' | tail -1)
+    RETAINED_RUNTIME_BACKUP_DIR=$(sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(.*\)$/\1/p' "$TEST_TMP/switch.log" | tail -1)
     retained_platform_tmp_path_is_safe "$RETAINED_RUNTIME_BACKUP_DIR"
     [ -f "$RETAINED_RUNTIME_BACKUP_DIR/runtime" ]
 }
