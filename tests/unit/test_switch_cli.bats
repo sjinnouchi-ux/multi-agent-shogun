@@ -396,6 +396,9 @@ MOCK
 }
 
 setup_cp_restore_failure_mock() {
+    MOCK_REAL_CP="$(command -v cp)"
+    export MOCK_REAL_CP
+
     cat > "$TEST_TMP/bin/cp" <<'MOCK'
 #!/usr/bin/env bash
 args=("$@")
@@ -403,7 +406,7 @@ dest="${args[${#args[@]}-1]}"
 if [[ -n "${MOCK_CP_FAIL_DEST:-}" && "$dest" == "$MOCK_CP_FAIL_DEST" ]]; then
     exit 1
 fi
-exec /usr/bin/cp "$@"
+exec "$MOCK_REAL_CP" "$@"
 MOCK
     chmod +x "$TEST_TMP/bin/cp"
 }
