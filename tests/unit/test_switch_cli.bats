@@ -9,6 +9,10 @@ setup() {
     PROJECT_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/../.." && pwd)"
     RETAINED_SETTINGS_BACKUP=""
     RETAINED_RUNTIME_BACKUP_DIR=""
+    local tmp_probe
+    tmp_probe="$(mktemp)"
+    PLATFORM_TMP_DIR="$(dirname "$tmp_probe")"
+    rm -f -- "$tmp_probe"
 
     # テスト用settings.yaml
     cat > "${TEST_TMP}/settings.yaml" << 'YAML'
@@ -46,6 +50,13 @@ YAML
 }
 
 teardown() {
+    if [[ -n "$RETAINED_SETTINGS_BACKUP" && "$RETAINED_SETTINGS_BACKUP" == "$PLATFORM_TMP_DIR"/tmp.* ]]; then
+        rm -f -- "$RETAINED_SETTINGS_BACKUP"
+    fi
+    if [[ -n "$RETAINED_RUNTIME_BACKUP_DIR" && "$RETAINED_RUNTIME_BACKUP_DIR" == "$PLATFORM_TMP_DIR"/tmp.* ]]; then
+        rm -f -- "$RETAINED_RUNTIME_BACKUP_DIR/runtime"
+        rmdir -- "$RETAINED_RUNTIME_BACKUP_DIR" 2>/dev/null || true
+    fi
     rm -rf "$TEST_TMP"
 }
 
@@ -518,12 +529,9 @@ MARKDOWN
 @test "switch_cli retains settings backup when rollback copy fails" {
     setup_switch_cli_tmux_mock
     setup_cp_restore_failure_mock
-    local retained_root="$TEST_TMP/retained"
-    mkdir -p "$retained_root"
 
     run env \
         PATH="$TEST_TMP/bin:$PATH" \
-        TMPDIR="$retained_root" \
         CLI_ADAPTER_SETTINGS="$TEST_TMP/settings.yaml" \
         SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
         SHOGUN_TEST_MODE=1 \
@@ -537,7 +545,7 @@ MARKDOWN
 
     [ "$status" -ne 0 ]
     RETAINED_SETTINGS_BACKUP=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore settings.*backup retained at \(.*\)$/\1/p' | tail -1)
-    [[ "$RETAINED_SETTINGS_BACKUP" == "$retained_root/"* ]]
+    [[ "$RETAINED_SETTINGS_BACKUP" == "$PLATFORM_TMP_DIR"/tmp.* ]]
     [ -f "$RETAINED_SETTINGS_BACKUP" ]
 }
 
@@ -546,13 +554,10 @@ MARKDOWN
     setup_cp_restore_failure_mock
     setup_isolated_switch_project
     local runtime_file="$ISOLATED_SWITCH_ROOT/.opencode/agents/ashigaru1-runtime.md"
-    local retained_root="$TEST_TMP/retained"
-    mkdir -p "$retained_root"
     printf '%s\n' 'original sanitized runtime' > "$runtime_file"
 
     run env \
         PATH="$TEST_TMP/bin:$PATH" \
-        TMPDIR="$retained_root" \
         CLI_ADAPTER_SETTINGS="$ISOLATED_SWITCH_ROOT/config/settings.yaml" \
         SWITCH_CLI_LOG_FILE="$TEST_TMP/switch.log" \
         SHOGUN_TEST_MODE=1 \
@@ -566,7 +571,7 @@ MARKDOWN
 
     [ "$status" -ne 0 ]
     RETAINED_RUNTIME_BACKUP_DIR=$(printf '%s\n' "$output" | sed -n 's/.*Failed to restore OpenCode runtime metadata.*backup retained at \(.*\)$/\1/p' | tail -1)
-    [[ "$RETAINED_RUNTIME_BACKUP_DIR" == "$retained_root/"* ]]
+    [[ "$RETAINED_RUNTIME_BACKUP_DIR" == "$PLATFORM_TMP_DIR"/tmp.* ]]
     [ -f "$RETAINED_RUNTIME_BACKUP_DIR/runtime" ]
 }
 
