@@ -1,7 +1,7 @@
 # Codex Diagnostics Fixed Inbox Symlink Design
 
 **Date:** 2026-07-19
-**Status:** Approved for implementation on 2026-07-19
+**Status:** Implemented; deployment pending
 **Scope:** `scripts/codex_diagnostics.py`, its tests and diagnostics documentation
 **Out of scope:** WebUI, watcher delivery semantics, queue migration, auto restart, P2
 
