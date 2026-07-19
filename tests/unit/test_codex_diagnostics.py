@@ -828,6 +828,20 @@ class InboxRootTests(unittest.TestCase):
         with self.assertRaises(m.SourceRejected):
             self.open_binding()
 
+    def test_world_writable_final_fixed_target_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        os.chmod(self.anchor / "fixed" / "inbox", 0o707)
+        with self.assertRaises(m.SourceRejected):
+            self.open_binding()
+
+    def test_unexpected_fixed_target_owner_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        with mock.patch.object(m.os, "geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaises(m.SourceRejected):
+                self.open_binding()
+
     def test_non_directory_fixed_target_component_is_rejected(self) -> None:
         m = self.module
         (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
@@ -848,6 +862,25 @@ class InboxRootTests(unittest.TestCase):
         with mock.patch.object(m.os, "supports_dir_fd", set()):
             with self.assertRaises(m.SourceRejected):
                 self.open_binding()
+
+    def test_missing_open_dir_fd_support_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        asymmetric_support = set(m.os.supports_dir_fd) - {m.os.open}
+        self.assertIn(m.os.stat, asymmetric_support)
+        self.assertIn(m.os.readlink, asymmetric_support)
+        with mock.patch.object(m.os, "supports_dir_fd", asymmetric_support):
+            with self.assertRaises(m.SourceRejected):
+                self.open_binding()
+
+    def test_rejected_open_does_not_leak_file_descriptors(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to("/tmp/not-allowed")
+        before = len(os.listdir("/proc/self/fd"))
+        for _ in range(20):
+            with self.assertRaises(m.SourceRejected):
+                self.open_binding()
+        self.assertEqual(len(os.listdir("/proc/self/fd")), before)
 
     def test_repository_symlink_swap_is_rejected_at_verification(self) -> None:
         m = self.module
@@ -990,6 +1023,39 @@ class InboxRootTests(unittest.TestCase):
             if issue.code == "source_rejected" and issue.component == "source"
         }
         self.assertEqual(rejected_agents, set(m.AGENT_IDS))
+
+    def test_final_binding_rejection_closes_all_binding_descriptors(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        self.write_agent_inboxes()
+        opened = []
+
+        def opener(root_fd):
+            binding = m.open_inbox_root(
+                root_fd,
+                traversal_root_fd=self.anchor_fd,
+                target_parts=("fixed", "inbox"),
+            )
+            opened.append(binding)
+            return binding
+
+        with mock.patch.object(
+            m, "verify_inbox_root", side_effect=m.SourceRejected
+        ):
+            m.collect_runtime_sources(
+                self.repo_fd,
+                frozenset(m.AGENT_IDS),
+                inbox_opener=opener,
+            )
+        self.assertEqual(len(opened), 1)
+        self.assertEqual(
+            (
+                opened[0].inbox_fd,
+                opened[0].queue_fd,
+                opened[0].traversal_root_fd,
+            ),
+            (-1, -1, -1),
+        )
 
     def test_missing_fixed_root_marks_all_required_inboxes_missing(self) -> None:
         m = self.module

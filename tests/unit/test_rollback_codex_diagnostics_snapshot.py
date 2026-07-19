@@ -2164,7 +2164,7 @@ class AtomicRollbackTests(unittest.TestCase):
         )
         begin = b"<!-- BEGIN CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
         end = b"<!-- END CODEX_SHOGUN_READONLY_DIAGNOSTICS_V1 -->"
-        boundary = BOUNDARY_OPERATION.read_bytes()
+        boundary = BOUNDARY_OPERATION.read_bytes().replace(b"\r\n", b"\n")
         start = boundary.index(begin)
         finish = boundary.index(end, start) + len(end)
         expected_block_sha256 = hashlib.sha256(

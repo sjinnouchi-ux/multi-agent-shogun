@@ -577,7 +577,8 @@ def _open_directory_beneath(
 
 def _require_inbox_inspection_support() -> None:
     if (
-        os.stat not in os.supports_dir_fd
+        os.open not in os.supports_dir_fd
+        or os.stat not in os.supports_dir_fd
         or os.stat not in os.supports_follow_symlinks
         or os.readlink not in os.supports_dir_fd
     ):
