@@ -229,7 +229,20 @@ YAML
         sleep 0.05
     done
 
-    [ "$state" = "ready" ]
+    if [[ "$state" != "ready" ]]; then
+        local capture marker_full=false marker_tail=false pane_command
+        capture=$("$real_tmux" -L "$STATUSLINE_SOCKET" capture-pane -p \
+            -t statusline:agents.0)
+        printf '%s\n' "$capture" | \
+            grep -qE 'Context [0-9]+% left' && marker_full=true
+        printf '%s\n' "$capture" | tail -5 | \
+            grep -qE 'Context [0-9]+% left' && marker_tail=true
+        pane_command=$("$real_tmux" -L "$STATUSLINE_SOCKET" display-message \
+            -t statusline:agents.0 -p '#{pane_current_command}')
+        printf 'status-line readiness state=%s marker_full=%s marker_tail=%s command=%s\n' \
+            "$state" "$marker_full" "$marker_tail" "$pane_command" >&2
+        return 1
+    fi
 }
 
 @test "E2E readiness: detached multiagent geometry keeps ten tiled panes usable" {

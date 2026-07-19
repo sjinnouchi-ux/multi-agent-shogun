@@ -173,6 +173,16 @@ get_pane_state_label() {
     esac
 }
 
+# _pane_cli_has_codex_context_remaining_marker <capture_tail>
+# Codex 0.144.1 renders `context-remaining` as `Context 100% left`.
+# Keep the earlier mock/legacy ordering for compatibility.
+_pane_cli_has_codex_context_remaining_marker() {
+    local capture_tail="$1"
+
+    printf '%s\n' "$capture_tail" | grep -qiE \
+        '(context[[:space:]]+[0-9]+%[[:space:]]+left|[0-9]+%[[:space:]]+context[[:space:]]+left)'
+}
+
 # _pane_cli_has_positive_marker <cli_type> <capture_tail>
 # Returns success only when the visible tail contains a marker belonging to the
 # expected CLI. Process names are deliberately not considered here: Claude Code
@@ -186,7 +196,10 @@ _pane_cli_has_positive_marker() {
             printf '%s\n' "$capture_tail" | grep -qE '(Claude Code|bypass permissions|esc([[:space:]]+to)?[[:space:]]+interrupt\)?[[:space:]]*$|^[[:space:]]*(❯|›)[[:space:]]*$)'
             ;;
         codex)
-            printf '%s\n' "$capture_tail" | grep -qiE '(Codex CLI|OpenAI Codex|\? for shortcuts|context left|esc([[:space:]]+to)?[[:space:]]+interrupt\)?[[:space:]]*$)'
+            if _pane_cli_has_codex_context_remaining_marker "$capture_tail"; then
+                return 0
+            fi
+            printf '%s\n' "$capture_tail" | grep -qiE '(Codex CLI|OpenAI Codex|\? for shortcuts|esc([[:space:]]+to)?[[:space:]]+interrupt\)?[[:space:]]*$)'
             ;;
         opencode)
             if opencode_has_busy_animation "$capture_tail"; then
@@ -240,11 +253,18 @@ _pane_cli_has_idle_marker() {
             printf '%s\n' "$last_line" | grep -qE '^[[:space:]]*(❯|›)[[:space:]]*$'
             ;;
         codex)
-            if printf '%s\n' "$last_line" | grep -qiE '(\? for shortcuts|context left)'; then
+            if printf '%s\n' "$last_line" | grep -qiE '\? for shortcuts' || \
+                _pane_cli_has_codex_context_remaining_marker "$last_line"; then
                 return 0
             fi
-            printf '%s\n' "$last_line" | grep -qE '^[[:space:]]*\$[[:space:]]*$' &&
-                printf '%s\n' "$previous_line" | grep -qiE '(\? for shortcuts|context left)'
+            if ! printf '%s\n' "$last_line" | grep -qE '^[[:space:]]*\$[[:space:]]*$'; then
+                return 1
+            fi
+            if printf '%s\n' "$previous_line" | grep -qiE '\? for shortcuts' || \
+                _pane_cli_has_codex_context_remaining_marker "$previous_line"; then
+                return 0
+            fi
+            return 1
             ;;
         opencode)
             printf '%s\n' "$last_line" | grep -qiE '(Ask anything|ctrl\+p commands)'
