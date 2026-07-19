@@ -5897,7 +5897,7 @@ custom_block = marked_block(custom)
 canonical_block = marked_block(canonical)
 assert startup_block == custom_block == canonical_block
 assert hashlib.sha256(canonical_block).hexdigest() == (
-    "7f74246da336c45ba1e2fc40cccb11b404b0fcf68b50d555bc86709afef537d7"
+    "f5167a7af5b9a0a002441595ed2e34d8d291825a431bd7e250e8c5598b57089d"
 )
 command = b"wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /home/jinnouchi/.local/libexec/shogun-codex-diagnostics summary"
 assert startup_block.count(command) == 1
@@ -6293,7 +6293,7 @@ $CandidateBlockSha256 = -join (
     $CandidateBlockHashBytes | ForEach-Object { $_.ToString('x2') }
 )
 if ($CandidateBlockSha256 -ne
-    '7f74246da336c45ba1e2fc40cccb11b404b0fcf68b50d555bc86709afef537d7') {
+    'f5167a7af5b9a0a002441595ed2e34d8d291825a431bd7e250e8c5598b57089d') {
     throw 'candidate policy block differs from canonical reviewed bytes'
 }
 if ($Finish + 1 -lt $Candidate.Length -and
