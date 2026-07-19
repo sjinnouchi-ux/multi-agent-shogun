@@ -31,23 +31,44 @@ documents that:
 - CLI configuration overrides take precedence over project, profile, user,
   system, and built-in configuration.
 
-The evidence supports a narrow root-cause inference: a user or host Codex
-status-line choice can replace the normal shortcut/footer text, leaving none of
-the existing Codex positive markers in the classifier's final five visible
-lines. The global Codex configuration was not inspected and does not need to be
-inspected to apply the fix.
+The initial evidence supported a narrow root-cause inference: a user or host
+Codex status-line choice could replace the normal shortcut/footer text, leaving
+none of the existing Codex positive markers in the classifier's final five
+visible lines. The global Codex configuration was not inspected and did not
+need to be inspected to apply the one-run override.
+
+## Post-merge runtime correction
+
+PR #23 added the one-run override and merged at
+`bdeb84bb8c4ccf9f359df488115bdbee9a948041`. All local and GitHub tests passed,
+but the approved official startup still classified all eight Codex roles as
+`unknown` and blocked watcher startup. The live source was restored to the
+retained rollback revision without a second startup.
+
+Official Codex `0.144.1` source and an isolated real-CLI probe established that
+the override is valid and the marker is rendered in the final five lines as
+`Context 100% left`. The remaining defect is the classifier grammar: it looks
+for the contiguous words `context left`, while the fake E2E emitted the
+non-production order `100% context left`. The fake therefore passed while the
+real marker did not match.
+
+The follow-up fix keeps the adapter override and all classifier boundaries. It
+adds the actual `Context <percent>% left` ordering to the Codex positive and
+idle marker checks, retains the previous ordering for compatibility, and makes
+the E2E fake reproduce the real CLI text.
 
 ## Goal
 
-Make every Codex process launched by Shogun render the already-supported
-`context left` readiness marker within the final five visible lines, independent
-of the user's global Codex status-line choice, while preserving the fail-closed
-readiness classifier and all existing runtime semantics.
+Make every Codex process launched by Shogun render and recognize the
+`Context <percent>% left` readiness marker within the final five visible lines,
+independent of the user's global Codex status-line choice, while preserving the
+fail-closed readiness classifier and all existing runtime semantics.
 
 ## Non-goals
 
-- Do not modify `get_pane_cli_state`, its seven states, its marker precedence,
-  or its five-line activity capture.
+- Do not modify `get_pane_cli_state`'s seven states, marker precedence, or
+  five-line activity capture. The follow-up changes only the shared Codex
+  context-remaining marker grammar used by its positive and idle checks.
 - Do not use process names as readiness evidence.
 - Do not modify the user's global or project Codex configuration.
 - Do not change `agent_is_busy_check`, `agent_is_busy`, idle flags, watcher
@@ -69,8 +90,9 @@ adapter:
 ```
 
 This uses Codex's highest-precedence, one-run configuration surface and leaves
-user configuration unchanged. It produces a marker the existing classifier
-already recognizes, so no second readiness policy is introduced.
+user configuration unchanged. It produces the real Codex status-line marker,
+`Context <percent>% left`, which the shared Codex marker helper recognizes
+without introducing a second readiness policy.
 
 ### 2. Widen the classifier capture range (rejected)
 
@@ -121,7 +143,7 @@ The runtime flow is:
 settings.yaml
   -> build_cli_command
   -> Codex one-run status-line override
-  -> visible "context left" footer
+  -> visible "Context <percent>% left" footer
   -> existing get_pane_cli_state
   -> existing aggregate readiness gate
   -> watcher startup only when every role is ready
@@ -152,7 +174,7 @@ Implementation remains test-first.
    `tui.status_line=["context-remaining"]`, and the existing model, runtime
    flags, and single startup-prompt argv are preserved.
 3. Add a focused case to `tests/e2e/e2e_cli_readiness.bats`. The test creates an
-   isolated temporary fake `codex` executable that emits `100% context left`
+   isolated temporary fake `codex` executable that emits `Context 100% left`
    only after receiving the exact override. It launches the command returned by
    `build_cli_command` in an isolated tmux pane, asks the real
    `get_pane_cli_state` for the Codex state, and requires `ready`. Before the
@@ -169,7 +191,9 @@ Implementation remains test-first.
 ## Files in scope
 
 - `lib/cli_adapter.sh`
+- `lib/agent_status.sh` (follow-up marker-format correction only)
 - `tests/unit/test_cli_adapter.bats`
+- `tests/unit/test_agent_cli_state.bats` (follow-up regression only)
 - `tests/e2e/e2e_cli_readiness.bats`
 - `docs/superpowers/specs/2026-07-19-codex-statusline-readiness-design.md`
 - `docs/superpowers/plans/2026-07-17-shogun-handoff-hardening-implementation.md`
@@ -180,10 +204,14 @@ No generated instruction output is expected to change.
 
 ## PR, review, and rollout
 
-The hotfix is a single independent PR from branch
+The initial hotfix is a single independent PR from branch
 `fix/codex-statusline-readiness`, based on
 `bc907ac20dc41b125a9eb2ca3de94066ba3e37bc`. It depends only on already-merged
 PR #22 and does not alter the original PR dependency graph.
+
+The marker-format correction is a second independent follow-up PR from branch
+`fix/codex-readiness-marker-format`, based on merged main
+`bdeb84bb8c4ccf9f359df488115bdbee9a948041`.
 
 After the red-green implementation and all local gates pass, obtain an
 independent code review, confirm that the diff contains no secrets or runtime
@@ -210,8 +238,9 @@ failure triggers the rollback behavior above, with no automatic retry.
   `-c 'tui.status_line=["context-remaining"]'` override.
 - Non-Codex commands and the Codex model, runtime flags, and startup prompt are
   unchanged.
-- The existing classifier returns `ready` from the visible `context left`
-  marker without using a process-name fallback or wider capture.
+- The existing classifier returns `ready` from the visible
+  `Context <percent>% left` marker without using a process-name fallback or
+  wider capture.
 - Focused tests, unit regression, integration/e2e regression, lint, build, and
   check report zero failures and zero skips before the PR leaves draft.
 - Independent review reports no blocking issue before merge.

@@ -1089,3 +1089,64 @@ Rollback rather than broadening the hotfix if any of the following occurs:
   worktree status was clean.
 - Independent fresh review, PR publication, merge, production deployment,
   official startup, and production diagnostics have not yet been performed.
+
+## 2026-07-19 Task 12 Codex marker-format correction evidence
+
+- Follow-up baseline: GitHub `main`
+  `bdeb84bb8c4ccf9f359df488115bdbee9a948041`, after PR #23 merged. Work was
+  isolated on `fix/codex-readiness-marker-format` in a new worktree; the live
+  rollback checkout was not modified.
+- The approved PR #23 deployment-host gates passed, but the single official
+  startup classified `shogun`, `gunshi`, and `oometsuke` as `ready` while
+  `karo` and `ashigaru1` through `ashigaru7` remained `unknown`. Watcher startup
+  stayed fail-closed. Live source was restored to
+  `7994e57e392ce41a4b3e24a76dc88b65d0cc844f`; no second launcher or runtime
+  retry was performed.
+- Isolated Codex CLI `0.144.1` and official source confirmed that the adapter
+  override is valid and renders `Context 100% left`. The merged classifier
+  searched for contiguous `context left`, while the fake E2E emitted the
+  reversed non-production order `100% context left`.
+- Safe commit chain: plan
+  `ce9d233634aa8145a0fb09f5872570bc4eaf7390`, initial RED tests
+  `a5cb75b34c4be5136dddb2764905c6212dee5499`, initial GREEN
+  `fa21e3bf3a62d41bd1eb22cae7d5d8120fcab144`, evidence update
+  `5b069655a4536c49cc91a3757d0acba92629a100`, review-fix RED tests
+  `f55dfd2353256753fde56a46560e6c1c8221d098`, and boundary-safe GREEN
+  `fc6e66e391dde7d2a3827aa93c2105bf77f53be4`.
+- Proven RED with production code unchanged: `tests/unit/test_agent_cli_state.bats`
+  reported 15 pass, 2 expected assertion failures, 0 skip. After initializing
+  the worktree's declared test submodules, the focused status-line E2E reported
+  0 pass, 1 expected readiness assertion failure, 0 skip. A prior missing
+  submodule run was an infrastructure error and was not counted as functional
+  RED.
+- Minimal GREEN: the shared Codex marker helper accepts the real
+  `Context <integer>% left` order and retains the previous
+  `<integer>% context left` order. The positive/idle marker callers share that
+  helper; states, precedence, capture ranges, process-name policy, and existing
+  busy/idle semantics were not changed.
+- The first independent review identified that the initial expression also
+  accepted `notcontext <integer>% left` and
+  `Context <integer>% leftover`. Two review-fix RED tests reproduced the
+  fail-open classification. The minimal correction added token boundaries
+  before `context` and after `left`, preserving the real and compatibility
+  forms while returning a visible Bash prompt to `shell_prompt`.
+- Focused verification: agent CLI state unit 19 pass, 0 fail, 0 skip; readiness
+  E2E 4 pass, 0 fail, 0 skip. An isolated real Codex launch reported the marker
+  in the final five lines and `state=ready` while the process appeared as
+  `node`, confirming that process-name readiness was not introduced.
+- Final full local gates after the review fix: `make test` 882 pass, 0 fail,
+  0 skip in 434.3 seconds; `make test-int` 1 pass, 0 fail, 0 skip; and
+  deployment-host `make test-no-skip` 883 pass, 0 fail, 0 skip in 438.5
+  seconds. `make lint`, `make build`, and `make check` each exited zero. Lint
+  emitted only the known diagnostics in unchanged files. Build/check produced
+  zero generated-file drift.
+- The exact base-to-head change set contains no generated files, secrets,
+  credentials, production pane/queue/report/log data, or whitespace errors.
+  Isolated Codex/tmux resources and guarded test temporary directories were
+  closed or removed; tracked and unignored worktree status was clean before
+  this evidence update.
+- The independent re-review of final HEAD reported Critical 0, Important 0,
+  Minor 0, and ready to publish. Publication, GitHub checks, and merge remain
+  pending. This Task 12 PR does not perform deployment. The live source remains
+  on the rollback revision, P2 remains out of scope, and any later official
+  startup requires fresh explicit approval.

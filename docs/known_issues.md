@@ -1,6 +1,6 @@
 # Shogun運用の残留リスクと次フェーズ必須TODO
 
-更新日: 2026-07-17
+更新日: 2026-07-19
 
 本書はntfy listener standby基盤とP0/P1-1任務引き継ぎhardeningの実装・回帰確認時点で
 未解消のリスクを引き継ぐ。秘密値、Inbox本文、認証情報は記載しない。
@@ -65,8 +65,12 @@
   運用側で送信元経路を復旧する必要がある。
 - `status/clear_drop_quarantine/` のmarkerはfail-closed証跡として自動削除しない。本文・送信元・
   message IDは保存せずhashだけだが、運用時は件数増加を永続化障害の兆候として確認する。
-- 本番Shogunへの配置、切替、起動、停止、再起動は実施していない。P0の確認は隔離した
-  clone/worktree、一時 `IDLE_FLAG_DIR`、sanitized fixtureだけで行った。
+- PR #23のstatus-line hotfixはmainへmerge後、deployment hostの非稼働gateを通過したが、
+  公式startup 1回でCodex 8役職が `unknown` のままになりwatcher起動をfail-closedで停止した。
+  live sourceは `7994e57e392ce41a4b3e24a76dc88b65d0cc844f` へ戻し、2回目の起動・
+  自動restart・実タスク投入は行っていない。原因は実Codex表示
+  `Context <percent>% left` とclassifier/mockの語順不一致であり、follow-up hotfixは隔離
+  worktreeで回帰確認済みである。本番deployment完了・runtime受入完了には含めない。
 - P2のauto restartは対象外であり、未実装である。
 - systemd実挙動は未検証。standby作業ではunitを意図的にstartしていないため、
   journalの秘匿性とrestart挙動は `docs/listener_standby.md` の再開初回チェックリストに
