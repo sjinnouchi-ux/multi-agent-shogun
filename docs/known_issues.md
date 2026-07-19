@@ -70,7 +70,7 @@
   live sourceは `7994e57e392ce41a4b3e24a76dc88b65d0cc844f` へ戻し、2回目の起動・
   自動restart・実タスク投入は行っていない。原因は実Codex表示
   `Context <percent>% left` とclassifier/mockの語順不一致であり、follow-up hotfixは隔離
-  worktreeで回帰確認中である。本番deployment完了・runtime受入完了には含めない。
+  worktreeで回帰確認済みである。本番deployment完了・runtime受入完了には含めない。
 - P2のauto restartは対象外であり、未実装である。
 - systemd実挙動は未検証。standby作業ではunitを意図的にstartしていないため、
   journalの秘匿性とrestart挙動は `docs/listener_standby.md` の再開初回チェックリストに

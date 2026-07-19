@@ -1145,8 +1145,8 @@ Rollback rather than broadening the hotfix if any of the following occurs:
   Isolated Codex/tmux resources and guarded test temporary directories were
   closed or removed; tracked and unignored worktree status was clean before
   this evidence update.
-- The initial independent-review blocker is corrected; final independent
-  re-review, publication, GitHub checks, and merge are pending. This Task 12 PR
-  does not perform deployment. The live source remains on the rollback
-  revision, P2 remains out of scope, and any later official startup requires
-  fresh explicit approval.
+- The independent re-review of final HEAD reported Critical 0, Important 0,
+  Minor 0, and ready to publish. Publication, GitHub checks, and merge remain
+  pending. This Task 12 PR does not perform deployment. The live source remains
+  on the rollback revision, P2 remains out of scope, and any later official
+  startup requires fresh explicit approval.

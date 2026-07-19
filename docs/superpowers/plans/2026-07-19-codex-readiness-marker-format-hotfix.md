@@ -19,6 +19,7 @@ Files expected to change:
 - `lib/agent_status.sh`
 - `tests/unit/test_agent_cli_state.bats`
 - `tests/e2e/e2e_cli_readiness.bats`
+- `docs/known_issues.md`
 - `docs/superpowers/specs/2026-07-19-codex-statusline-readiness-design.md`
 - this plan and the existing handoff implementation log for final evidence
 
@@ -32,7 +33,8 @@ marker. Compatibility with the existing legacy/mock ordering is retained.
    `Context 100% left`; require `ready`.
 2. Change the status-line E2E fake to emit the real Codex string and capture
    the focused RED result before modifying production code.
-3. Update only the two Codex marker expressions in `lib/agent_status.sh`.
+3. Add one shared Codex marker helper and route the existing positive/idle
+   marker checks through it.
 4. Run the focused unit and E2E tests, then the complete regression gates.
 5. Obtain an independent review, scan the complete diff and commit history for
    secrets/runtime data, push the branch, and open a draft PR.
