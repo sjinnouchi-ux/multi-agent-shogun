@@ -203,6 +203,26 @@ Context 100% left"
     assert_single_state ready
 }
 
+@test "Codex context marker requires a token boundary before context" {
+    export EXPECTED_CLI=codex
+    export MOCK_CURRENT_COMMAND=bash
+    export MOCK_CAPTURE="notcontext 37% left
+developer@host:~/repo$ "
+
+    run_state
+    assert_single_state shell_prompt
+}
+
+@test "Codex context marker requires a token boundary after left" {
+    export EXPECTED_CLI=codex
+    export MOCK_CURRENT_COMMAND=bash
+    export MOCK_CAPTURE="Context 37% leftover
+developer@host:~/repo$ "
+
+    run_state
+    assert_single_state shell_prompt
+}
+
 @test "current busy marker outranks an older idle marker" {
     local cli capture
     while IFS='|' read -r cli capture; do
