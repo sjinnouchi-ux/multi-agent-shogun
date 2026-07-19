@@ -708,6 +708,113 @@ class SafePathAndLogTests(unittest.TestCase):
         self.assertNotIn("customer-name", rendered)
 
 
+class InboxRootTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.module = load_module()
+        self.repo_temp = tempfile.TemporaryDirectory()
+        self.target_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.repo_temp.cleanup)
+        self.addCleanup(self.target_temp.cleanup)
+        self.repo = Path(self.repo_temp.name)
+        self.anchor = Path(self.target_temp.name)
+        os.chmod(self.anchor, 0o700)
+        (self.repo / "queue").mkdir(mode=0o700)
+        (self.anchor / "fixed" / "inbox").mkdir(parents=True, mode=0o700)
+        os.chmod(self.anchor / "fixed", 0o700)
+        os.chmod(self.anchor / "fixed" / "inbox", 0o700)
+        self.repo_fd = os.open(self.repo, os.O_RDONLY | os.O_DIRECTORY)
+        self.anchor_fd = os.open(self.anchor, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, self.anchor_fd)
+        self.addCleanup(os.close, self.repo_fd)
+
+    def open_binding(self, *, target_parts=("fixed", "inbox")):
+        return self.module.open_inbox_root(
+            self.repo_fd,
+            traversal_root_fd=self.anchor_fd,
+            target_parts=target_parts,
+        )
+
+    def test_exact_canonical_link_opens_isolated_fixed_root(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        binding = self.open_binding()
+        try:
+            opened = os.fstat(binding.inbox_fd)
+            expected = os.stat(self.anchor / "fixed" / "inbox")
+            self.assertEqual(
+                (opened.st_dev, opened.st_ino),
+                (expected.st_dev, expected.st_ino),
+            )
+        finally:
+            m.close_inbox_root(binding)
+
+    def test_regular_repository_inbox_remains_supported(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").mkdir(mode=0o700)
+        binding = self.open_binding()
+        try:
+            opened = os.fstat(binding.inbox_fd)
+            expected = os.stat(self.repo / "queue" / "inbox")
+            self.assertEqual(
+                (opened.st_dev, opened.st_ino),
+                (expected.st_dev, expected.st_ino),
+            )
+        finally:
+            m.close_inbox_root(binding)
+
+    def test_wrong_relative_or_normalized_link_target_is_rejected(self) -> None:
+        m = self.module
+        for target in (
+            "/tmp/not-allowed",
+            "fixed/inbox",
+            m.INBOX_LINK_TARGET + "/",
+        ):
+            link = self.repo / "queue" / "inbox"
+            if link.is_symlink():
+                link.unlink()
+            link.symlink_to(target)
+            with self.subTest(target=target), self.assertRaises(m.SourceRejected):
+                self.open_binding()
+
+    def test_missing_fixed_target_is_missing(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        with self.assertRaises(m.SourceMissing):
+            self.open_binding(target_parts=("missing", "inbox"))
+
+    def test_symlinked_fixed_target_component_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        (self.anchor / "real" / "inbox").mkdir(parents=True, mode=0o700)
+        os.chmod(self.anchor / "real", 0o700)
+        (self.anchor / "fixed-link").symlink_to(
+            self.anchor / "real", target_is_directory=True
+        )
+        with self.assertRaises(m.SourceRejected):
+            self.open_binding(target_parts=("fixed-link", "inbox"))
+
+    def test_group_writable_fixed_target_component_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        os.chmod(self.anchor / "fixed", 0o770)
+        with self.assertRaises(m.SourceRejected):
+            self.open_binding()
+
+    def test_non_directory_fixed_target_component_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        (self.anchor / "blocked").write_text("sanitized", encoding="utf-8")
+        with self.assertRaises(m.SourceRejected):
+            self.open_binding(target_parts=("blocked", "inbox"))
+
+    def test_missing_nofollow_support_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        with mock.patch.object(m.os, "O_NOFOLLOW", None):
+            with self.assertRaises(m.SourceRejected):
+                self.open_binding()
+
+
 class TmuxAndProcessCollectorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.module = load_module()
