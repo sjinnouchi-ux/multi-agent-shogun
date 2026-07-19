@@ -1069,8 +1069,9 @@ Rollback rather than broadening the hotfix if any of the following occurs:
   0 skip and 4 pass, 0 fail, 0 skip.
 - Fresh Task 11 regression directory: canonical path, owner, directory type,
   and non-symlink state were validated; after all gates it was removed with
-  guarded non-recursive cleanup and confirmed absent. The isolated status-line
-  server count and temporary-directory count were both zero.
+  guarded recursive removal of the validated exact task-only directory without
+  force and confirmed absent. The isolated status-line server count and
+  temporary-directory count were both zero.
 - `bats tests/unit/test_cli_adapter.bats --timing`: exit 0; 106 pass, 0 fail,
   0 skip. `bats tests/e2e/e2e_cli_readiness.bats --timing`: exit 0; 4 pass,
   0 fail, 0 skip.
