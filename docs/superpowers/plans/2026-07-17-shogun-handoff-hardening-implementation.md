@@ -1051,3 +1051,40 @@ Rollback rather than broadening the hotfix if any of the following occurs:
   blocking finding, or GitHub checks are not green.
 - Official startup does not report all eleven roles ready, or the trusted
   diagnostic does not validate completely.
+
+### Task 11 local execution evidence (2026-07-19)
+
+- Rebuilt safe commit chain from base
+  `bc907ac20dc41b125a9eb2ca3de94066ba3e37bc`: design
+  `26775c800e2091dfc8d21fa77d91448c16487c5f`, plan
+  `5de6c076514362763a5461eb028d71a3bfb1f20e`, proven RED
+  `7acef8118e59d5ef69bc3cdaf95aac96e12cac36`, and GREEN
+  `a0bba6dc4f8bd5afb9a5b4ca7b069c2f00ebb75b`. The GREEN commit is the
+  evidence-base HEAD for the reruns below.
+- RED provenance: while `lib/cli_adapter.sh` was identical to the base, the
+  focused unit filter produced exactly 2 expected assertion failures and the
+  focused e2e filter produced exactly 1 expected `state=ready` assertion
+  failure; there were no parser/helper/tmux errors or skips. After restoring
+  only the reviewed adapter snapshot, focused GREEN was 106 pass, 0 fail,
+  0 skip and 4 pass, 0 fail, 0 skip.
+- Fresh Task 11 regression directory: canonical path, owner, directory type,
+  and non-symlink state were validated; after all gates it was removed with
+  guarded non-recursive cleanup and confirmed absent. The isolated status-line
+  server count and temporary-directory count were both zero.
+- `bats tests/unit/test_cli_adapter.bats --timing`: exit 0; 106 pass, 0 fail,
+  0 skip. `bats tests/e2e/e2e_cli_readiness.bats --timing`: exit 0; 4 pass,
+  0 fail, 0 skip.
+- `make test`: exit 0; Bats plans `1..33` and `1..845`; 878 pass, 0 fail,
+  0 skip. `make test-int`: exit 0; 1 pass, 0 fail, 0 skip.
+- `make lint`, `make build`, and `make check`: each exit 0; pass/fail/skip
+  totals not applicable. `make lint` continued to emit the pre-existing
+  ShellCheck diagnostics from files unchanged by this branch. Generated
+  instructions remained unchanged after both build/check gates.
+- Every new commit through the evidence-base HEAD and the exact final diff was
+  audited without printing matches. The audit found only the 5 approved files,
+  no D002/D006 command form, forbidden path, secret-material pattern, runtime
+  data, generated drift, or whitespace error. Before this evidence edit the
+  exact diff contained 912 insertions and 4 deletions, and tracked/unignored
+  worktree status was clean.
+- Independent fresh review, PR publication, merge, production deployment,
+  official startup, and production diagnostics have not yet been performed.
