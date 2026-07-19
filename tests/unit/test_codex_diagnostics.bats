@@ -38,6 +38,7 @@ assert_python_suite_passed() {
         python3 -m py_compile \
         "$SCRIPT" \
         "$PROJECT_ROOT/tests/unit/test_codex_diagnostics.py" \
+        "$PROJECT_ROOT/tests/integration/test_codex_diagnostics_sources.py" \
         "$PROJECT_ROOT/tests/contract/codex_diagnostics_consumer.py" \
         "$PROJECT_ROOT/tests/contract/test_codex_diagnostics_consumer.py" \
         "$PROJECT_ROOT/scripts/rollback_codex_diagnostics_snapshot.py" \

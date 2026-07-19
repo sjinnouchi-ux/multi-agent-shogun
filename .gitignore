@@ -256,6 +256,7 @@ tests/specs/osato_lms_*
 !tests/unit/test_codex_diagnostics.py
 !tests/unit/test_rollback_codex_diagnostics_snapshot.py
 !tests/integration/test_codex_diagnostics_tmux.py
+!tests/integration/test_codex_diagnostics_sources.py
 !tests/contract/
 !tests/contract/__init__.py
 !tests/contract/codex_diagnostics_consumer.py
