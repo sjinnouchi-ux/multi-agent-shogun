@@ -90,8 +90,9 @@ adapter:
 ```
 
 This uses Codex's highest-precedence, one-run configuration surface and leaves
-user configuration unchanged. It produces a marker the existing classifier
-already recognizes, so no second readiness policy is introduced.
+user configuration unchanged. It produces the real Codex status-line marker,
+`Context <percent>% left`, which the shared Codex marker helper recognizes
+without introducing a second readiness policy.
 
 ### 2. Widen the classifier capture range (rejected)
 
@@ -142,7 +143,7 @@ The runtime flow is:
 settings.yaml
   -> build_cli_command
   -> Codex one-run status-line override
-  -> visible "context left" footer
+  -> visible "Context <percent>% left" footer
   -> existing get_pane_cli_state
   -> existing aggregate readiness gate
   -> watcher startup only when every role is ready

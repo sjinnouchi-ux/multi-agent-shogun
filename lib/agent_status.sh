@@ -180,7 +180,7 @@ _pane_cli_has_codex_context_remaining_marker() {
     local capture_tail="$1"
 
     printf '%s\n' "$capture_tail" | grep -qiE \
-        '(context[[:space:]]+[0-9]+%[[:space:]]+left|[0-9]+%[[:space:]]+context[[:space:]]+left)'
+        '(^|[^[:alnum:]_])(context[[:space:]]+[0-9]+%[[:space:]]+left|[0-9]+%[[:space:]]+context[[:space:]]+left)([^[:alnum:]_]|$)'
 }
 
 # _pane_cli_has_positive_marker <cli_type> <capture_tail>
