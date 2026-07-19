@@ -23,6 +23,7 @@
 ## File Map
 
 - Modify `scripts/codex_diagnostics.py`: fixed inbox binding, secure traversal, source-root routing and post-collection revalidation.
+- Modify `.gitignore`: explicitly allow the isolated diagnostics-source integration file under the repository's deny-by-default policy.
 - Modify `tests/unit/test_codex_diagnostics.py`: resolver, rejection, race, routing, leaf-state and FD-cleanup regressions.
 - Create `tests/integration/test_codex_diagnostics_sources.py`: isolated launcher-shaped symlink fixture covering all eleven agents.
 - Modify `tests/integration/test_codex_diagnostics_tmux.bats`: run the new source integration suite without changing the isolated tmux test.

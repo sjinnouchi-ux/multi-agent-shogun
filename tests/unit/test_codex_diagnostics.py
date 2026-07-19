@@ -734,6 +734,32 @@ class InboxRootTests(unittest.TestCase):
             target_parts=target_parts,
         )
 
+    def write_agent_inboxes(self, *, missing=frozenset()) -> None:
+        for agent in self.module.AGENT_IDS:
+            if agent not in missing:
+                (self.anchor / "fixed" / "inbox" / f"{agent}.yaml").write_text(
+                    "messages:\n", encoding="utf-8"
+                )
+
+    def collect_sources(
+        self,
+        *,
+        observed=None,
+        target_parts=("fixed", "inbox"),
+    ):
+        m = self.module
+        agents = frozenset(m.AGENT_IDS) if observed is None else observed
+        opener = lambda root_fd: m.open_inbox_root(
+            root_fd,
+            traversal_root_fd=self.anchor_fd,
+            target_parts=target_parts,
+        )
+        return m.collect_runtime_sources(
+            self.repo_fd,
+            agents,
+            inbox_opener=opener,
+        )
+
     def test_exact_canonical_link_opens_isolated_fixed_root(self) -> None:
         m = self.module
         (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
@@ -879,6 +905,110 @@ class InboxRootTests(unittest.TestCase):
         for fd in owned:
             with self.subTest(fd=fd), self.assertRaises(OSError):
                 os.fstat(fd)
+
+    def test_canonical_link_collection_marks_all_agent_inboxes_present(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        self.write_agent_inboxes()
+        collection = self.collect_sources()
+        for agent in m.AGENT_IDS:
+            with self.subTest(agent=agent):
+                self.assertEqual(
+                    collection.agent_sources[agent]["inbox"]["state"],
+                    "present",
+                )
+        inbox_issues = [
+            issue
+            for issue in collection.errors + collection.warnings
+            if issue.code == "source_rejected" and issue.component == "source"
+        ]
+        self.assertEqual(inbox_issues, [])
+
+    def test_nonregular_inbox_leaf_rejects_only_that_agent(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        self.write_agent_inboxes(missing=frozenset({"ashigaru3"}))
+        os.mkfifo(self.anchor / "fixed" / "inbox" / "ashigaru3.yaml")
+        collection = self.collect_sources()
+        self.assertEqual(
+            collection.agent_sources["ashigaru3"]["inbox"]["state"],
+            "rejected",
+        )
+        for agent in set(m.AGENT_IDS) - {"ashigaru3"}:
+            self.assertEqual(
+                collection.agent_sources[agent]["inbox"]["state"],
+                "present",
+            )
+        rejected_agents = {
+            issue.agent
+            for issue in collection.errors
+            if issue.code == "source_rejected" and issue.component == "source"
+        }
+        self.assertEqual(rejected_agents, {"ashigaru3"})
+
+    def test_missing_inbox_leaf_marks_only_that_agent_missing(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        self.write_agent_inboxes(missing=frozenset({"ashigaru4"}))
+        collection = self.collect_sources()
+        self.assertEqual(
+            collection.agent_sources["ashigaru4"]["inbox"]["state"],
+            "missing",
+        )
+        for agent in set(m.AGENT_IDS) - {"ashigaru4"}:
+            self.assertEqual(
+                collection.agent_sources[agent]["inbox"]["state"],
+                "present",
+            )
+        missing_agents = {
+            issue.agent
+            for issue in collection.errors
+            if issue.code == "required_source_missing"
+            and issue.component == "source"
+        }
+        self.assertIn("ashigaru4", missing_agents)
+
+    def test_final_binding_rejection_discards_all_provisional_inbox_values(
+        self,
+    ) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        self.write_agent_inboxes()
+        with mock.patch.object(
+            m, "verify_inbox_root", side_effect=m.SourceRejected
+        ):
+            collection = self.collect_sources()
+        for agent in m.AGENT_IDS:
+            with self.subTest(agent=agent):
+                self.assertEqual(
+                    collection.agent_sources[agent]["inbox"]["state"],
+                    "rejected",
+                )
+        rejected_agents = {
+            issue.agent
+            for issue in collection.errors
+            if issue.code == "source_rejected" and issue.component == "source"
+        }
+        self.assertEqual(rejected_agents, set(m.AGENT_IDS))
+
+    def test_missing_fixed_root_marks_all_required_inboxes_missing(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        collection = self.collect_sources(target_parts=("missing", "inbox"))
+        for agent in m.AGENT_IDS:
+            with self.subTest(agent=agent):
+                self.assertEqual(
+                    collection.agent_sources[agent]["inbox"]["state"],
+                    "missing",
+                )
+        missing_agents = {
+            issue.agent
+            for issue in collection.errors
+            if issue.code == "required_source_missing"
+            and issue.component == "source"
+            and issue.agent in m.AGENT_IDS
+        }
+        self.assertEqual(missing_agents, set(m.AGENT_IDS))
 
 
 class TmuxAndProcessCollectorTests(unittest.TestCase):

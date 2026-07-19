@@ -463,6 +463,7 @@ class SourceSpec:
     key: str
     parts: tuple[str, ...]
     applicability: str
+    root: str = "runtime"
 
 
 @dataclass(frozen=True, slots=True)
@@ -851,23 +852,34 @@ def collect_source_metadata(
         fd, metadata = open_regular_beneath(root_fd, spec.parts, readable=False)
         os.close(fd)
         return _source_value(spec.applicability, "present", metadata), (), ()
-    except SourceMissing:
+    except (SourceMissing, SourceRejected, SourceIOError) as failure:
+        return _source_failure(spec, failure, agent=agent)
+
+
+def _source_failure(
+    spec: SourceSpec,
+    failure: SourceMissing | SourceRejected | SourceIOError,
+    *,
+    agent: str | None,
+) -> tuple[dict[str, object], tuple[Issue, ...], tuple[Issue, ...]]:
+    if spec.applicability == "not_applicable":
+        return _source_value("not_applicable", "not_applicable"), (), ()
+    if isinstance(failure, SourceMissing):
         value = _source_value(spec.applicability, "missing")
         if spec.applicability == "required":
             return value, (Issue("required_source_missing", "source", agent),), ()
         return value, (), ()
-    except SourceRejected:
+    if isinstance(failure, SourceRejected):
         value = _source_value(spec.applicability, "rejected")
         issue = Issue("source_rejected", "source", agent)
         if spec.applicability == "required":
             return value, (issue,), ()
         return value, (), (issue,)
-    except SourceIOError:
-        value = _source_value(spec.applicability, "error")
-        issue = Issue("command_failed", "source", agent)
-        if spec.applicability == "required":
-            return value, (issue,), ()
-        return value, (), (issue,)
+    value = _source_value(spec.applicability, "error")
+    issue = Issue("command_failed", "source", agent)
+    if spec.applicability == "required":
+        return value, (issue,), ()
+    return value, (), (issue,)
 
 
 def _agent_specs(agent: str, observed: bool) -> tuple[SourceSpec, ...]:
@@ -875,7 +887,7 @@ def _agent_specs(agent: str, observed: bool) -> tuple[SourceSpec, ...]:
     task_agent = agent not in ("shogun", "karo")
     report_path = ("queue", "reports", f"{agent}_report.yaml") if task_agent else ()
     return (
-        SourceSpec("inbox", ("queue", "inbox", f"{agent}.yaml"), required_or_optional),
+        SourceSpec("inbox", (f"{agent}.yaml",), required_or_optional, "inbox"),
         SourceSpec(
             "task",
             ("queue", "tasks", f"{agent}.yaml") if task_agent else (),
@@ -895,8 +907,69 @@ def _agent_specs(agent: str, observed: bool) -> tuple[SourceSpec, ...]:
     )
 
 
+def _collect_inbox_source_metadata(
+    root_fd: int,
+    observed_agents: frozenset[str],
+    inbox_opener: Callable[[int], InboxRootBinding],
+) -> tuple[
+    dict[str, dict[str, object]],
+    tuple[Issue, ...],
+    tuple[Issue, ...],
+]:
+    specs = {
+        agent: _agent_specs(agent, agent in observed_agents)[0]
+        for agent in AGENT_IDS
+    }
+
+    def failed(
+        failure: SourceMissing | SourceRejected | SourceIOError,
+    ) -> tuple[
+        dict[str, dict[str, object]],
+        tuple[Issue, ...],
+        tuple[Issue, ...],
+    ]:
+        values: dict[str, dict[str, object]] = {}
+        errors: list[Issue] = []
+        warnings: list[Issue] = []
+        for agent in AGENT_IDS:
+            value, found_errors, found_warnings = _source_failure(
+                specs[agent], failure, agent=agent
+            )
+            values[agent] = value
+            errors.extend(found_errors)
+            warnings.extend(found_warnings)
+        return values, tuple(errors), tuple(warnings)
+
+    try:
+        binding = inbox_opener(root_fd)
+    except (SourceMissing, SourceRejected, SourceIOError) as failure:
+        return failed(failure)
+
+    values: dict[str, dict[str, object]] = {}
+    errors: list[Issue] = []
+    warnings: list[Issue] = []
+    try:
+        for agent in AGENT_IDS:
+            value, found_errors, found_warnings = collect_source_metadata(
+                binding.inbox_fd, specs[agent], agent=agent
+            )
+            values[agent] = value
+            errors.extend(found_errors)
+            warnings.extend(found_warnings)
+        try:
+            verify_inbox_root(binding)
+        except (SourceMissing, SourceRejected, SourceIOError) as failure:
+            return failed(failure)
+        return values, tuple(errors), tuple(warnings)
+    finally:
+        close_inbox_root(binding)
+
+
 def collect_runtime_sources(
-    root_fd: int, observed_agents: frozenset[str]
+    root_fd: int,
+    observed_agents: frozenset[str],
+    *,
+    inbox_opener: Callable[[int], InboxRootBinding] = open_inbox_root,
 ) -> SourceCollection:
     errors: list[Issue] = []
     warnings: list[Issue] = []
@@ -912,10 +985,21 @@ def collect_runtime_sources(
         errors.extend(found_errors)
         warnings.extend(found_warnings)
 
+    inbox_values, inbox_errors, inbox_warnings = _collect_inbox_source_metadata(
+        root_fd, observed_agents, inbox_opener
+    )
+    errors.extend(inbox_errors)
+    warnings.extend(inbox_warnings)
+
     agent_sources: dict[str, dict[str, dict[str, object]]] = {}
     for agent in AGENT_IDS:
         values: dict[str, dict[str, object]] = {}
         for spec in _agent_specs(agent, agent in observed_agents):
+            if spec.root == "inbox":
+                values[spec.key] = inbox_values[agent]
+                continue
+            if spec.root != "runtime":
+                raise InternalFailure
             value, found_errors, found_warnings = collect_source_metadata(
                 root_fd, spec, agent=agent
             )

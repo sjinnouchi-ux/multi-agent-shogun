@@ -7,3 +7,10 @@
     [ "$status" -eq 0 ]
     [[ "$output" != *"skipped="* ]]
 }
+
+@test "codex diagnostics accepts the isolated canonical inbox geometry" {
+    run python3 -m unittest -v \
+        tests.integration.test_codex_diagnostics_sources
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"skipped="* ]]
+}
