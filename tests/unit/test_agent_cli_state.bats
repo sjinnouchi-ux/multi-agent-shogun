@@ -183,6 +183,26 @@ codex|Codex CLI (mock)\nThinking about old approach (esc to interrupt)\nold outp
 CASES
 }
 
+@test "real Codex context remaining format is a positive readiness marker" {
+    export EXPECTED_CLI=codex
+    export MOCK_CURRENT_COMMAND=node
+    export MOCK_CAPTURE="Context 100% left"
+
+    run_state
+    assert_single_state ready
+}
+
+@test "real Codex context remaining format outranks stale busy history" {
+    export EXPECTED_CLI=codex
+    export MOCK_CURRENT_COMMAND=node
+    export MOCK_CAPTURE="Thinking about old approach (esc to interrupt)
+old output
+Context 100% left"
+
+    run_state
+    assert_single_state ready
+}
+
 @test "current busy marker outranks an older idle marker" {
     local cli capture
     while IFS='|' read -r cli capture; do

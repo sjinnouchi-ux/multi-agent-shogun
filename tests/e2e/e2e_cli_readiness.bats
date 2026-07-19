@@ -177,7 +177,7 @@ while [[ "$#" -gt 0 ]]; do
 done
 
 if [[ "$status_config_count" -eq 1 ]]; then
-    printf '%s\n' '100% context left'
+    printf '%s\n' 'Context 100% left'
 else
     printf '%s\n' '[mock_state] readiness marker withheld'
 fi
