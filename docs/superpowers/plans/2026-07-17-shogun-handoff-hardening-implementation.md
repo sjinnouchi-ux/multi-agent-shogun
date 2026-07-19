@@ -523,3 +523,531 @@ git status --short
 ```
 
 `make test-no-skip` is intentionally absent from the local command set. It is run only in a separately approved deployment-host validation with all prerequisites and without weakening the no-live-data fixture boundary.
+
+## 2026-07-19 Codex Status-Line Readiness Hotfix Addendum
+
+This addendum implements the approved design in
+`docs/superpowers/specs/2026-07-19-codex-statusline-readiness-design.md`.
+It is based on GitHub `main` commit
+`bc907ac20dc41b125a9eb2ca3de94066ba3e37bc` and uses branch
+`fix/codex-statusline-readiness`. The live source is currently at the retained
+rollback revision `7994e57e392ce41a4b3e24a76dc88b65d0cc844f` after the
+geometry deployment failed closed for all eight Codex roles. The Lord approved
+the written design and had already approved merge, production deployment, and
+rollback for this handoff-hardening work. Those approvals apply only to the
+steps below. WebUI changes, production data inspection/reset, permission
+approval, automatic retry/restart, global Codex configuration edits, and P2
+remain prohibited.
+
+### Task 10: Pin the Shogun-launched Codex readiness status line
+
+**Files:**
+- Modify: `lib/cli_adapter.sh:16-20,268-275`
+- Modify: `tests/unit/test_cli_adapter.bats:412-417`
+- Modify: `tests/e2e/e2e_cli_readiness.bats:10-52, after the existing readiness cases`
+- Already created: `docs/superpowers/specs/2026-07-19-codex-statusline-readiness-design.md`
+
+**Interfaces:**
+- Consumes: `_cli_adapter_shell_quote <value>` and
+  `build_cli_command <agent_id>` from `lib/cli_adapter.sh`.
+- Produces: fixed shell variable
+  `CODEX_READINESS_STATUSLINE_CONFIG='tui.status_line=["context-remaining"]'`.
+- Produces: exactly one `-c` argv followed by that TOML expression in every
+  Codex command assembled by `build_cli_command`.
+- Preserves: the existing model flag, `--search`,
+  `--dangerously-bypass-approvals-and-sandbox`, `--no-alt-screen`, and exactly
+  one positional startup-prompt argv.
+- Does not modify: `get_pane_cli_state`, the final-five-line capture,
+  process-name behavior, non-Codex commands, busy/idle logic, watcher logic,
+  delivery state, user/global config, WebUI, or P2.
+
+- [ ] **Step 1: Write the failing unit command and argv contracts.** Replace
+  the current exact Codex command test and add the argv test immediately after
+  it in `tests/unit/test_cli_adapter.bats`:
+
+```bash
+@test "build_cli_command: codex + default model includes readiness status line" {
+    load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
+    expected_statusline_arg=$(_cli_adapter_shell_quote \
+        'tui.status_line=["context-remaining"]')
+    expected_prompt_arg=$(get_startup_prompt_arg "ashigaru5")
+    result=$(build_cli_command "ashigaru5")
+    [ "$result" = "codex --model sonnet -c $expected_statusline_arg --search --dangerously-bypass-approvals-and-sandbox --no-alt-screen $expected_prompt_arg" ]
+}
+
+@test "build_cli_command: Codex readiness override is exactly one shell argv" {
+    load_adapter_with "${TEST_TMP}/settings_mixed.yaml"
+    expected_prompt=$(get_startup_prompt "ashigaru5")
+    result=$(build_cli_command "ashigaru5")
+
+    eval "set -- $result"
+
+    [ "$#" -eq 9 ]
+    [ "$1" = "codex" ]
+    [ "$2" = "--model" ]
+    [ "$3" = "sonnet" ]
+    [ "$4" = "-c" ]
+    [ "$5" = 'tui.status_line=["context-remaining"]' ]
+    [ "$6" = "--search" ]
+    [ "$7" = "--dangerously-bypass-approvals-and-sandbox" ]
+    [ "$8" = "--no-alt-screen" ]
+    [ "${9}" = "$expected_prompt" ]
+}
+```
+
+- [ ] **Step 2: Write the failing isolated tmux readiness case.** Add
+  `STATUSLINE_SOCKET` and `STATUSLINE_TMP` beside `GEOMETRY_SOCKET`, add the
+  first cleanup block below to the start of the existing `teardown`, and add
+  the test below after the delayed-readiness case in
+  `tests/e2e/e2e_cli_readiness.bats`:
+
+```bash
+STATUSLINE_SOCKET=""
+STATUSLINE_TMP=""
+
+# Initial status-line cleanup in teardown(), before the existing GEOMETRY_SOCKET block.
+local attempt pane_id statusline_tmp_canonical statusline_tmp_owner
+local statusline_cleanup_failed=0 statusline_tmp_cleanup_failed=0
+if [[ -n "${STATUSLINE_SOCKET:-}" ]]; then
+    for attempt in {1..20}; do
+        while read -r pane_id; do
+            tmux -L "$STATUSLINE_SOCKET" send-keys -t "$pane_id" exit Enter \
+                2>/dev/null || true
+        done < <(
+            tmux -L "$STATUSLINE_SOCKET" list-panes -a -F '#{pane_id}' \
+                2>/dev/null || true
+        )
+
+        if ! tmux -L "$STATUSLINE_SOCKET" has-session 2>/dev/null; then
+            STATUSLINE_SOCKET=""
+            break
+        fi
+        sleep 0.05
+    done
+
+    [[ -z "$STATUSLINE_SOCKET" ]] || statusline_cleanup_failed=1
+fi
+if [[ -n "${STATUSLINE_TMP:-}" ]]; then
+    statusline_tmp_canonical=$(readlink -f -- "$STATUSLINE_TMP" 2>/dev/null) || \
+        statusline_tmp_cleanup_failed=1
+    statusline_tmp_owner=$(stat -c %u -- "$STATUSLINE_TMP" 2>/dev/null) || \
+        statusline_tmp_cleanup_failed=1
+    if [[ "$statusline_tmp_cleanup_failed" -eq 0 ]] && \
+        [[ "$statusline_tmp_canonical" == "$STATUSLINE_TMP" ]] && \
+        [[ "$(basename -- "$STATUSLINE_TMP")" =~ ^shogun-statusline\.[[:alnum:]]{6}$ ]] && \
+        [[ -d "$STATUSLINE_TMP" ]] && [[ ! -L "$STATUSLINE_TMP" ]] && \
+        [[ "$statusline_tmp_owner" == "$(id -u)" ]]; then
+        rm -r -- "$STATUSLINE_TMP" 2>/dev/null || statusline_tmp_cleanup_failed=1
+        [[ ! -e "$STATUSLINE_TMP" && ! -L "$STATUSLINE_TMP" ]] || \
+            statusline_tmp_cleanup_failed=1
+    else
+        statusline_tmp_cleanup_failed=1
+    fi
+    STATUSLINE_TMP=""
+fi
+if [[ "$statusline_tmp_cleanup_failed" -ne 0 ]]; then
+    echo "isolated status-line temp cleanup did not complete" >&2
+    return 1
+fi
+if [[ "$statusline_cleanup_failed" -ne 0 ]]; then
+    echo "isolated status-line tmux cleanup did not complete" >&2
+    return 1
+fi
+
+@test "E2E readiness: Shogun Codex command pins visible status line" {
+    local command launch state="unknown" attempt real_tmux
+
+    STATUSLINE_SOCKET="shogun-statusline-${BATS_TEST_NUMBER}-${BASHPID}"
+    STATUSLINE_TMP=$(mktemp -d /tmp/shogun-statusline.XXXXXX)
+    mkdir -p "$STATUSLINE_TMP/bin"
+    real_tmux=$(command -v tmux)
+
+    cat > "$STATUSLINE_TMP/bin/codex" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+status_config_count=0
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -c)
+            [[ "$#" -ge 2 ]] || exit 2
+            if [[ "$2" == 'tui.status_line=["context-remaining"]' ]]; then
+                status_config_count=$((status_config_count + 1))
+            fi
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "$status_config_count" -eq 1 ]]; then
+    printf '%s\n' '100% context left'
+else
+    printf '%s\n' '[mock_state] readiness marker withheld'
+fi
+
+while IFS= read -r line; do
+    [[ "$line" == "exit" ]] && exit 0
+done
+MOCK
+
+    cat > "$STATUSLINE_TMP/bin/tmux" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${SHOGUN_TEST_REAL_TMUX:?}" \
+    -L "${SHOGUN_TEST_TMUX_SOCKET:?}" "$@"
+MOCK
+    chmod +x "$STATUSLINE_TMP/bin/codex" "$STATUSLINE_TMP/bin/tmux"
+
+    cat > "$STATUSLINE_TMP/settings.yaml" <<'YAML'
+cli:
+  default: codex
+  agents:
+    ashigaru1:
+      type: codex
+      model: gpt-5.3-codex
+YAML
+
+    export CLI_ADAPTER_SETTINGS="$STATUSLINE_TMP/settings.yaml"
+    source "$PROJECT_ROOT/lib/cli_adapter.sh"
+    command=$(build_cli_command ashigaru1)
+
+    "$real_tmux" -L "$STATUSLINE_SOCKET" -f /dev/null new-session -d \
+        -x 120 -y 30 -s statusline -n agents
+    "$real_tmux" -L "$STATUSLINE_SOCKET" set-option -p \
+        -t statusline:agents.0 @agent_cli codex
+    launch="PATH=$STATUSLINE_TMP/bin:\$PATH $command"
+    "$real_tmux" -L "$STATUSLINE_SOCKET" send-keys \
+        -t statusline:agents.0 "$launch" Enter
+
+    for attempt in {1..40}; do
+        state=$(env -u TMUX \
+            PATH="$STATUSLINE_TMP/bin:$PATH" \
+            SHOGUN_TEST_REAL_TMUX="$real_tmux" \
+            SHOGUN_TEST_TMUX_SOCKET="$STATUSLINE_SOCKET" \
+            bash -c '
+                source "$1/lib/agent_status.sh"
+                get_pane_cli_state statusline:agents.0 codex
+            ' -- "$PROJECT_ROOT")
+        [[ "$state" == "ready" ]] && break
+        sleep 0.05
+    done
+
+    [ "$state" = "ready" ]
+}
+```
+
+  Every poll invokes the real `get_pane_cli_state`; the test does not implement
+  another readiness pattern. The temporary `tmux` wrapper routes the
+  classifier's `timeout 2 tmux ...` subprocesses to the unique isolated
+  socket. The fake Codex is a Bash process, so `ready` still depends on the
+  visible positive marker and not `pane_current_command`; it consumes an exact
+  `exit` input so teardown can close the isolated pane without force-killing
+  the tmux server.
+
+- [ ] **Step 3: Run RED and verify the intended failures.** Use a task-only
+  idle directory and the repository's installed Bats command:
+
+```bash
+TASK_IDLE=$(mktemp -d /tmp/shogun-statusline-idle.XXXXXX)
+export IDLE_FLAG_DIR="$TASK_IDLE"
+bats tests/unit/test_cli_adapter.bats \
+  --filter 'build_cli_command: codex \+ default model|build_cli_command: Codex readiness override'
+bats tests/e2e/e2e_cli_readiness.bats \
+  --filter 'Shogun Codex command pins visible status line'
+```
+
+  Expected unit result: two assertion failures because the command has no
+  `-c` pair. Expected e2e result: one assertion failure with final state
+  `unknown` because the fake withholds the marker. A parser error, missing
+  helper, missing tmux, SKIP, CRLF failure, or failure outside those assertions
+  is not an acceptable RED result. Keep `TASK_IDLE` for the GREEN run.
+
+- [ ] **Step 4: Commit the proven RED tests.** Do not include production code
+  in this commit:
+
+```bash
+git add tests/unit/test_cli_adapter.bats tests/e2e/e2e_cli_readiness.bats
+git diff --cached --check
+git commit -m "test: expose Codex statusline readiness gap"
+```
+
+- [ ] **Step 5: Implement the minimum adapter change.** Add the constant after
+  `CLI_ADAPTER_PROJECT_ROOT` in `lib/cli_adapter.sh`:
+
+```bash
+CODEX_READINESS_STATUSLINE_CONFIG='tui.status_line=["context-remaining"]'
+```
+
+  Replace only the `codex)` branch of `build_cli_command` with:
+
+```bash
+        codex)
+            local codex_readiness_statusline
+            codex_readiness_statusline=$(_cli_adapter_shell_quote \
+                "$CODEX_READINESS_STATUSLINE_CONFIG")
+            cmd="codex"
+            if [[ -n "$model" ]]; then
+                cmd="$cmd --model $model"
+            fi
+            cmd="$cmd -c $codex_readiness_statusline --search --dangerously-bypass-approvals-and-sandbox --no-alt-screen"
+            ;;
+```
+
+  Do not add an environment override, edit a Codex config file, touch another
+  CLI branch, or change classifier patterns/ranges.
+
+- [ ] **Step 6: Run focused GREEN verification and remove the validated temp
+  directory.**
+
+```bash
+bats tests/unit/test_cli_adapter.bats --timing
+bats tests/e2e/e2e_cli_readiness.bats --timing
+TASK_IDLE_CANONICAL=$(readlink -f -- "$TASK_IDLE" 2>/dev/null) || {
+    echo "isolated idle-dir cleanup did not complete" >&2; exit 1;
+}
+TASK_IDLE_OWNER=$(stat -c %u -- "$TASK_IDLE" 2>/dev/null) || {
+    echo "isolated idle-dir cleanup did not complete" >&2; exit 1;
+}
+if [[ "$TASK_IDLE_CANONICAL" != "$TASK_IDLE" ]] || \
+    [[ ! "$(basename -- "$TASK_IDLE")" =~ ^shogun-statusline-idle\.[[:alnum:]]{6}$ ]] || \
+    [[ ! -d "$TASK_IDLE" ]] || [[ -L "$TASK_IDLE" ]] || \
+    [[ "$TASK_IDLE_OWNER" != "$(id -u)" ]]; then
+    echo "isolated idle-dir cleanup did not complete" >&2; exit 1
+fi
+rm -r -- "$TASK_IDLE" 2>/dev/null || {
+    echo "isolated idle-dir cleanup did not complete" >&2; exit 1;
+}
+if [[ -e "$TASK_IDLE" || -L "$TASK_IDLE" ]]; then
+    echo "isolated idle-dir cleanup did not complete" >&2; exit 1
+fi
+unset IDLE_FLAG_DIR TASK_IDLE
+```
+
+  Expected: unit 106 PASS, 0 FAIL, 0 SKIP; e2e 4 PASS, 0 FAIL, 0 SKIP. Confirm
+  the isolated status-line tmux server and `/tmp/shogun-statusline.*` directory
+  are absent after the e2e process exits. The existing exact non-Codex command
+  tests must remain green.
+
+- [ ] **Step 7: Commit the minimal production change.**
+
+```bash
+git add lib/cli_adapter.sh
+git diff --cached --check
+git commit -m "fix: pin Codex readiness status line"
+```
+
+### Task 11: Regression, independent review, PR, deployment, and closure
+
+**Files:**
+- Modify after concrete evidence exists:
+  `docs/superpowers/plans/2026-07-17-shogun-handoff-hardening-implementation.md`
+- Inspect without editing: all files in
+  `git diff bc907ac20dc41b125a9eb2ca3de94066ba3e37bc...HEAD`
+- GitHub: draft PR from `fix/codex-statusline-readiness` to `main`
+- Deployment source only after merge: `/home/jinnouchi/multi-agent-shogun`
+
+**Interfaces:**
+- Consumes: Task 10's exact Codex argv contract and the existing aggregate
+  readiness gate.
+- Produces: reviewed and merged hotfix, exact test evidence, one official
+  startup attempt, and a fully validated sanitized diagnostic result.
+- Rollback source: retained branch
+  `rollback/pre-readiness-geometry-20260718-7994e57e` at
+  `7994e57e392ce41a4b3e24a76dc88b65d0cc844f`.
+
+- [ ] **Step 1: Run fresh local regression and generation gates.**
+
+```bash
+TASK_IDLE=$(mktemp -d /tmp/shogun-statusline-regression.XXXXXX)
+export IDLE_FLAG_DIR="$TASK_IDLE"
+bats tests/unit/test_cli_adapter.bats --timing
+bats tests/e2e/e2e_cli_readiness.bats --timing
+make test
+make test-int
+make lint
+make build
+make check
+git diff --check bc907ac20dc41b125a9eb2ca3de94066ba3e37bc...HEAD
+git status --short
+TASK_IDLE_CANONICAL=$(readlink -f -- "$TASK_IDLE" 2>/dev/null) || {
+    echo "isolated regression-dir cleanup did not complete" >&2; exit 1;
+}
+TASK_IDLE_OWNER=$(stat -c %u -- "$TASK_IDLE" 2>/dev/null) || {
+    echo "isolated regression-dir cleanup did not complete" >&2; exit 1;
+}
+if [[ "$TASK_IDLE_CANONICAL" != "$TASK_IDLE" ]] || \
+    [[ ! "$(basename -- "$TASK_IDLE")" =~ ^shogun-statusline-regression\.[[:alnum:]]{6}$ ]] || \
+    [[ ! -d "$TASK_IDLE" ]] || [[ -L "$TASK_IDLE" ]] || \
+    [[ "$TASK_IDLE_OWNER" != "$(id -u)" ]]; then
+    echo "isolated regression-dir cleanup did not complete" >&2; exit 1
+fi
+rm -r -- "$TASK_IDLE" 2>/dev/null || {
+    echo "isolated regression-dir cleanup did not complete" >&2; exit 1;
+}
+if [[ -e "$TASK_IDLE" || -L "$TASK_IDLE" ]]; then
+    echo "isolated regression-dir cleanup did not complete" >&2; exit 1
+fi
+unset IDLE_FLAG_DIR TASK_IDLE
+```
+
+  Record the exact pass, fail, and skip totals from every command. Every
+  command must exit zero and every test command must report zero skips. Confirm
+  `make build`/`make check` leaves generated instructions unchanged.
+
+- [ ] **Step 2: Audit the exact branch diff before review.**
+
+```bash
+BASE_SHA=bc907ac20dc41b125a9eb2ca3de94066ba3e37bc
+git diff --name-status "$BASE_SHA"...HEAD
+git diff --stat "$BASE_SHA"...HEAD
+git diff --check "$BASE_SHA"...HEAD
+if git diff --name-only "$BASE_SHA"...HEAD | \
+    grep -Eq '(^|/)(\.env($|\.)|queue/|reports?/|logs?/|webui/|WebUI/)'; then
+    echo "forbidden path present in branch diff" >&2
+    exit 1
+fi
+if git diff "$BASE_SHA"...HEAD | \
+    grep -Eq 'AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'; then
+    echo "potential secret material present in branch diff" >&2
+    exit 1
+fi
+```
+
+  The expected code/test diff is limited to `lib/cli_adapter.sh`, the two Bats
+  files, this plan, and the approved design spec. Do not print any matching
+  secret-like content.
+
+- [ ] **Step 3: Record the concrete local evidence.** Append only the observed
+  command summaries, exact pass/fail/skip totals, and current commit SHAs to
+  this addendum, then commit that evidence before review:
+
+```bash
+git add docs/superpowers/plans/2026-07-17-shogun-handoff-hardening-implementation.md
+git diff --cached --check
+git commit -m "docs: record Codex statusline verification"
+```
+
+  Do not add an evidence row until its command has actually completed. The
+  commit must not claim independent review, PR, merge, or deployment evidence
+  that does not yet exist.
+
+- [ ] **Step 4: Obtain an independent cold review.** Give the reviewer only
+  the approved design, repository instructions, and exact `BASE_SHA...HEAD`
+  diff, including the concrete evidence commit. Require explicit findings for:
+
+  - exact one-argv TOML quoting and exactly one `-c`;
+  - no non-Codex or global-config behavior change;
+  - RED provenance and fake-Codex e2e isolation/cleanup;
+  - no classifier, busy/idle, watcher, delivery, WebUI, or P2 change;
+  - no secret or live runtime data in the diff; and
+  - rollback and deployment fail-closed behavior.
+
+  Fix every blocking finding, rerun the affected focused tests plus Step 1, and
+  amend the evidence with a new commit, then request a fresh review of the
+  updated exact diff. Do not accept a review that relies on production panes,
+  queue/report bodies, or logs.
+
+- [ ] **Step 5: Publish a draft PR.** Push the independently reviewed branch:
+
+```bash
+git push -u origin fix/codex-statusline-readiness
+```
+
+  Create the draft PR against `main`. Its body must contain base SHA, purpose,
+  changed files, new tests, every executed command, exact counts, known
+  constraints, independent review outcome, dependency on merged PR #22,
+  rollback, and
+  `production deployment not yet performed`. Keep the PR draft if any FAIL or
+  SKIP exists.
+
+- [ ] **Step 6: Complete GitHub checks and merge.** Re-fetch GitHub `main`,
+  inspect all review threads and checks, and confirm the branch still applies
+  cleanly to current `main`. Resolve every blocking review/CI issue with fresh
+  verification and an updated independent review. Mark the PR ready only with
+  zero FAIL and zero SKIP, then merge through branch protection using the
+  already-recorded approval. Never push directly to `main` or bypass a check.
+  Record the PR number, URL, merge commit, and final GitHub `main` SHA.
+
+- [ ] **Step 7: Re-establish deployment provenance and run pre-start gates.**
+  Re-fetch GitHub-main `CODEX_DESKTOP_STARTUP.md`, `PROJECTS.md`, target
+  `AGENTS.md`, Primary Docs, default branch, and merged `main` SHA. On the WSL
+  deployment host, verify the live worktree has zero tracked changes, exactly
+  the known untracked-count baseline with no name collision, branch `main`,
+  source `7994e57e392ce41a4b3e24a76dc88b65d0cc844f`, and the retained rollback
+  ref. Fast-forward only from the canonical personal GitHub `main`; do not use
+  `--clean` and do not inspect runtime file contents.
+
+  Before any startup, create an isolated `/tmp/shogun-statusline-deploy.*`
+  `IDLE_FLAG_DIR`, then run:
+
+```bash
+make test-no-skip
+bats tests/e2e/e2e_cli_readiness.bats --timing
+make lint
+make build
+make check
+```
+
+  Require every command to exit zero and every test command to report zero
+  skips. Remove only the validated isolated idle directory. If any gate fails,
+  switch the clean live worktree to the retained rollback branch, do not launch
+  Shogun, and report the sanitized failure.
+
+- [ ] **Step 8: Run official startup exactly once and validate the result.**
+  Run `bash shutsujin_departure.sh` without `--clean` and without any test-mode
+  environment. Require exit zero and the sanitized aggregate summary to report
+  all eleven roles `ready` before accepting watcher startup. Never approve a
+  permission prompt and never retry or restart automatically.
+
+  Immediately before diagnostics, fetch GitHub `main` raw
+  `docs/superpowers/plans/2026-07-14-codex-readonly-diagnostics-work-log.md`,
+  validate its single schema-version-1 registry and exactly one active
+  deployment, and compare its source SHA-256 to the fixed diagnostic tool's
+  returned `source_sha256`. Invoke only:
+
+```text
+wsl.exe -d Ubuntu --cd /home/jinnouchi/multi-agent-shogun /home/jinnouchi/.local/libexec/shogun-codex-diagnostics summary
+```
+
+  Require exit zero, empty stderr, completion under ten seconds, ASCII-only
+  complete JSON, exact nested key order/cardinality/enums, all cross-field
+  invariants, and a recomputed `overall`. Require merged source, both sessions,
+  eleven alive panes, expected CLI roles, and healthy watchers. On provenance,
+  process, startup-readiness, or diagnostic-content failure, trust no diagnostic
+  fields, use no raw fallback, switch the clean source to the retained rollback
+  branch, issue no second launcher, and report the sanitized failure. Do not
+  stop or restart runtime processes without a new explicit instruction.
+
+- [ ] **Step 9: Close and clean up.** Update the PR and this addendum with the
+  concrete deployment and diagnostic evidence, then push the documentation
+  through a follow-up reviewed PR if `main` changed after the hotfix merge.
+  Confirm the feature branch and all documentation commits are pushed, the
+  local task clone has no uncommitted or unpushed changes, and no task-only
+  recovery/diagnostic helper containing operational state remains in the
+  Windows task workspace. Remove only exact, verified task-only paths via
+  `apply_patch`; do not remove the live repository, rollback ref, known
+  untracked runtime file, or any production data. Report P2 and WebUI as not
+  implemented and report whether production deployment succeeded or was
+  rolled back.
+
+### Codex status-line rollback conditions
+
+Rollback rather than broadening the hotfix if any of the following occurs:
+
+- Codex rejects `tui.status_line=["context-remaining"]` or does not render the
+  existing `context left` marker in the final five visible lines.
+- The override is absent, duplicated, split into multiple argv values, or
+  applied to a non-Codex CLI.
+- A classifier/range/process-name change appears necessary to make the test
+  pass.
+- Global/project Codex config, WebUI, permission, busy/idle, watcher, delivery,
+  ack/receipt, retry/restart, or P2 behavior changes.
+- An isolated test leaves a tmux server or temporary directory behind, or a
+  fixture includes production/runtime data.
+- Any required command reports a failure or skip, independent review has a
+  blocking finding, or GitHub checks are not green.
+- Official startup does not report all eleven roles ready, or the trusted
+  diagnostic does not validate completely.
