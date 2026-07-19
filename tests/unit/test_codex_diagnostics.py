@@ -745,6 +745,7 @@ class InboxRootTests(unittest.TestCase):
                 (opened.st_dev, opened.st_ino),
                 (expected.st_dev, expected.st_ino),
             )
+            m.verify_inbox_root(binding)
         finally:
             m.close_inbox_root(binding)
 
@@ -759,6 +760,7 @@ class InboxRootTests(unittest.TestCase):
                 (opened.st_dev, opened.st_ino),
                 (expected.st_dev, expected.st_ino),
             )
+            m.verify_inbox_root(binding)
         finally:
             m.close_inbox_root(binding)
 
@@ -813,6 +815,70 @@ class InboxRootTests(unittest.TestCase):
         with mock.patch.object(m.os, "O_NOFOLLOW", None):
             with self.assertRaises(m.SourceRejected):
                 self.open_binding()
+
+    def test_missing_dir_fd_inspection_support_is_rejected(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        with mock.patch.object(m.os, "supports_dir_fd", set()):
+            with self.assertRaises(m.SourceRejected):
+                self.open_binding()
+
+    def test_repository_symlink_swap_is_rejected_at_verification(self) -> None:
+        m = self.module
+        link = self.repo / "queue" / "inbox"
+        link.symlink_to(m.INBOX_LINK_TARGET)
+        binding = self.open_binding()
+        self.addCleanup(m.close_inbox_root, binding)
+        link.rename(self.repo / "queue" / "old-inbox-link")
+        link.symlink_to(m.INBOX_LINK_TARGET)
+        with self.assertRaises(m.SourceRejected):
+            m.verify_inbox_root(binding)
+
+    def test_fixed_target_directory_swap_is_rejected_at_verification(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        binding = self.open_binding()
+        self.addCleanup(m.close_inbox_root, binding)
+        original = self.anchor / "fixed" / "inbox"
+        moved = self.anchor / "fixed" / "old-inbox"
+        original.rename(moved)
+        original.mkdir(mode=0o700)
+        with self.assertRaises(m.SourceRejected):
+            m.verify_inbox_root(binding)
+
+    def test_repository_directory_swap_is_rejected_at_verification(self) -> None:
+        m = self.module
+        original = self.repo / "queue" / "inbox"
+        original.mkdir(mode=0o700)
+        binding = self.open_binding()
+        self.addCleanup(m.close_inbox_root, binding)
+        original.rename(self.repo / "queue" / "old-inbox")
+        original.mkdir(mode=0o700)
+        with self.assertRaises(m.SourceRejected):
+            m.verify_inbox_root(binding)
+
+    def test_close_releases_all_binding_fds_and_is_idempotent(self) -> None:
+        m = self.module
+        (self.repo / "queue" / "inbox").symlink_to(m.INBOX_LINK_TARGET)
+        binding = self.open_binding()
+        owned = (
+            binding.inbox_fd,
+            binding.queue_fd,
+            binding.traversal_root_fd,
+        )
+        m.close_inbox_root(binding)
+        m.close_inbox_root(binding)
+        self.assertEqual(
+            (
+                binding.inbox_fd,
+                binding.queue_fd,
+                binding.traversal_root_fd,
+            ),
+            (-1, -1, -1),
+        )
+        for fd in owned:
+            with self.subTest(fd=fd), self.assertRaises(OSError):
+                os.fstat(fd)
 
 
 class TmuxAndProcessCollectorTests(unittest.TestCase):

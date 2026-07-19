@@ -22,6 +22,10 @@ SCHEMA_VERSION = 1
 TOOL_VERSION = "1.0.0"
 DEPLOYMENT = "user_local_snapshot"
 SNAPSHOT_PATH = Path("/home/jinnouchi/.local/libexec/shogun-codex-diagnostics")
+INBOX_LINK_TARGET = "/home/jinnouchi/.local/share/multi-agent-shogun/inbox"
+INBOX_TARGET_PARTS = (
+    "home", "jinnouchi", ".local", "share", "multi-agent-shogun", "inbox",
+)
 MAX_SOURCE_BYTES = 1_048_576
 MAX_ISSUES = 64
 
@@ -442,6 +446,18 @@ class SourceIOError(Exception):
     pass
 
 
+@dataclass(slots=True)
+class InboxRootBinding:
+    inbox_fd: int
+    queue_fd: int
+    repository_kind: str
+    repository_key: tuple[int, int, int, int, int, int]
+    repository_target: str | None
+    traversal_root_fd: int
+    target_parts: tuple[str, ...]
+    target_identity: tuple[int, int] | None
+
+
 @dataclass(frozen=True, slots=True)
 class SourceSpec:
     key: str
@@ -455,6 +471,288 @@ class SourceCollection:
     agent_sources: dict[str, dict[str, dict[str, object]]]
     errors: tuple[Issue, ...]
     warnings: tuple[Issue, ...]
+
+
+def _source_identity(value: os.stat_result) -> tuple[int, int]:
+    return value.st_dev, value.st_ino
+
+
+def _inbox_repository_key(
+    value: os.stat_result,
+) -> tuple[int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        stat.S_IFMT(value.st_mode),
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _raise_source_path_error(exc: BaseException) -> None:
+    if isinstance(exc, FileNotFoundError):
+        raise SourceMissing from None
+    if isinstance(exc, OSError) and exc.errno in (
+        errno.ELOOP, errno.ENOTDIR, errno.EINVAL,
+    ):
+        raise SourceRejected from None
+    if isinstance(exc, (OSError, TypeError, NotImplementedError)):
+        raise SourceIOError from None
+    raise SourceIOError from None
+
+
+def _directory_open_flags() -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise SourceRejected
+    return os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | nofollow
+
+
+def _validate_trusted_directory(
+    metadata: os.stat_result, *, require_euid: bool,
+) -> None:
+    owner = metadata.st_uid
+    effective_user = os.geteuid()
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or owner not in (0, effective_user)
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+        or (require_euid and owner != effective_user)
+    ):
+        raise SourceRejected
+
+
+def _open_directory_beneath(
+    root_fd: int,
+    parts: tuple[str, ...],
+    *,
+    trusted: bool,
+    require_final_euid: bool,
+) -> int:
+    _validate_parts(parts)
+    flags = _directory_open_flags()
+    current = -1
+    try:
+        current = os.dup(root_fd)
+        initial = os.fstat(current)
+        if not stat.S_ISDIR(initial.st_mode):
+            raise SourceRejected
+        if trusted:
+            _validate_trusted_directory(initial, require_euid=False)
+        for index, part in enumerate(parts):
+            next_fd = os.open(part, flags, dir_fd=current)
+            try:
+                metadata = os.fstat(next_fd)
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise SourceRejected
+                if trusted:
+                    _validate_trusted_directory(
+                        metadata,
+                        require_euid=(
+                            require_final_euid and index == len(parts) - 1
+                        ),
+                    )
+            except BaseException:
+                os.close(next_fd)
+                raise
+            os.close(current)
+            current = next_fd
+        result = current
+        current = -1
+        return result
+    except (SourceMissing, SourceRejected, SourceIOError):
+        raise
+    except (OSError, TypeError, NotImplementedError) as exc:
+        _raise_source_path_error(exc)
+        raise AssertionError("unreachable")
+    finally:
+        if current >= 0:
+            try:
+                os.close(current)
+            except OSError:
+                pass
+
+
+def _require_inbox_inspection_support() -> None:
+    if (
+        os.stat not in os.supports_dir_fd
+        or os.stat not in os.supports_follow_symlinks
+        or os.readlink not in os.supports_dir_fd
+    ):
+        raise SourceRejected
+
+
+def open_inbox_root(
+    runtime_root_fd: int,
+    *,
+    expected_link: str = INBOX_LINK_TARGET,
+    traversal_root_fd: int | None = None,
+    target_parts: tuple[str, ...] = INBOX_TARGET_PARTS,
+) -> InboxRootBinding:
+    queue_fd = -1
+    inbox_fd = -1
+    traversal_fd = -1
+    try:
+        _require_inbox_inspection_support()
+        queue_fd = _open_directory_beneath(
+            runtime_root_fd,
+            ("queue",),
+            trusted=False,
+            require_final_euid=False,
+        )
+        entry = os.stat("inbox", dir_fd=queue_fd, follow_symlinks=False)
+        entry_key = _inbox_repository_key(entry)
+        if stat.S_ISDIR(entry.st_mode):
+            inbox_fd = _open_directory_beneath(
+                queue_fd,
+                ("inbox",),
+                trusted=False,
+                require_final_euid=False,
+            )
+            if _source_identity(os.fstat(inbox_fd)) != _source_identity(entry):
+                raise SourceRejected
+            result = InboxRootBinding(
+                inbox_fd,
+                queue_fd,
+                "directory",
+                entry_key,
+                None,
+                -1,
+                (),
+                None,
+            )
+            inbox_fd = -1
+            queue_fd = -1
+            return result
+        if not stat.S_ISLNK(entry.st_mode):
+            raise SourceRejected
+        target = os.readlink("inbox", dir_fd=queue_fd)
+        if target != expected_link:
+            raise SourceRejected
+        flags = _directory_open_flags()
+        if traversal_root_fd is None:
+            traversal_fd = os.open("/", flags)
+        else:
+            traversal_fd = os.dup(traversal_root_fd)
+        inbox_fd = _open_directory_beneath(
+            traversal_fd,
+            target_parts,
+            trusted=True,
+            require_final_euid=True,
+        )
+        target_identity = _source_identity(os.fstat(inbox_fd))
+        result = InboxRootBinding(
+            inbox_fd,
+            queue_fd,
+            "symlink",
+            entry_key,
+            target,
+            traversal_fd,
+            target_parts,
+            target_identity,
+        )
+        inbox_fd = -1
+        queue_fd = -1
+        traversal_fd = -1
+        return result
+    except (SourceMissing, SourceRejected, SourceIOError):
+        raise
+    except (OSError, TypeError, NotImplementedError) as exc:
+        _raise_source_path_error(exc)
+        raise AssertionError("unreachable")
+    finally:
+        for fd in (inbox_fd, queue_fd, traversal_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
+def verify_inbox_root(binding: InboxRootBinding) -> None:
+    _require_inbox_inspection_support()
+    try:
+        current = os.stat(
+            "inbox", dir_fd=binding.queue_fd, follow_symlinks=False
+        )
+    except FileNotFoundError:
+        raise SourceRejected from None
+    except (OSError, TypeError, NotImplementedError) as exc:
+        _raise_source_path_error(exc)
+        raise AssertionError("unreachable")
+
+    try:
+        opened = os.fstat(binding.inbox_fd)
+    except (OSError, TypeError, NotImplementedError):
+        raise SourceIOError from None
+    if not stat.S_ISDIR(opened.st_mode):
+        raise SourceRejected
+
+    if binding.repository_kind == "directory":
+        if (
+            not stat.S_ISDIR(current.st_mode)
+            or _source_identity(current) != _source_identity(opened)
+        ):
+            raise SourceRejected
+        return
+
+    if binding.repository_kind != "symlink" or not stat.S_ISLNK(current.st_mode):
+        raise SourceRejected
+    if _inbox_repository_key(current) != binding.repository_key:
+        raise SourceRejected
+    try:
+        target = os.readlink("inbox", dir_fd=binding.queue_fd)
+    except FileNotFoundError:
+        raise SourceRejected from None
+    except (OSError, TypeError, NotImplementedError) as exc:
+        _raise_source_path_error(exc)
+        raise AssertionError("unreachable")
+    if target != binding.repository_target:
+        raise SourceRejected
+    if (
+        binding.traversal_root_fd < 0
+        or not binding.target_parts
+        or binding.target_identity is None
+        or _source_identity(opened) != binding.target_identity
+    ):
+        raise SourceRejected
+
+    reopened = -1
+    try:
+        try:
+            reopened = _open_directory_beneath(
+                binding.traversal_root_fd,
+                binding.target_parts,
+                trusted=True,
+                require_final_euid=True,
+            )
+        except SourceMissing:
+            raise SourceRejected from None
+        if _source_identity(os.fstat(reopened)) != binding.target_identity:
+            raise SourceRejected
+    except (SourceRejected, SourceIOError):
+        raise
+    except (OSError, TypeError, NotImplementedError):
+        raise SourceIOError from None
+    finally:
+        if reopened >= 0:
+            try:
+                os.close(reopened)
+            except OSError:
+                pass
+
+
+def close_inbox_root(binding: InboxRootBinding) -> None:
+    for name in ("inbox_fd", "queue_fd", "traversal_root_fd"):
+        fd = getattr(binding, name)
+        if fd < 0:
+            continue
+        setattr(binding, name, -1)
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def open_runtime_root() -> int:
