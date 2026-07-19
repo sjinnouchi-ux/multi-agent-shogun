@@ -354,7 +354,7 @@ make check
 
 Remove only that validated temporary directory after the commands. Expected: all commands exit `0`, fail count `0`, skip count `0`; `make check` reports generated outputs synchronized.
 
-- [ ] **Step 3: Verify diff hygiene and immutable-contract boundaries**
+- [x] **Step 3: Verify diff hygiene and immutable-contract boundaries**
 
 ```bash
 git diff --check a3f21a6c62bc5b3c48f0b1501caff1ace5da5544...HEAD
@@ -370,7 +370,7 @@ Expected: no whitespace errors, no uncommitted files, only planned paths, and no
 
 Reviewer must check exact-link enforcement, no-follow traversal, ownership/mode validation, link and directory swap detection, FD closure, missing/rejected/error severity, unchanged JSON schema/consumer, isolated fixtures and deployment exclusions. Resolve findings with a new failing test before production changes.
 
-- [ ] **Step 5: Commit documentation evidence**
+- [x] **Step 5: Commit documentation evidence**
 
 ```bash
 git add docs/superpowers/specs/2026-07-19-codex-diagnostics-inbox-symlink-design.md \
@@ -458,8 +458,6 @@ addressed in this document and the linked design.
 
 ### Pending gates
 
-- Final diff/secret/runtime-data hygiene check after documentation evidence is
-  committed.
 - Push, draft PR, GitHub checks, merge, immutable snapshot installation,
   registry update and one approved production startup/acceptance sequence.
 
