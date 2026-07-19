@@ -10,6 +10,8 @@ source "$E2E_HELPERS_DIR/setup.bash"
 source "$E2E_HELPERS_DIR/tmux_helpers.bash"
 
 GEOMETRY_SOCKET=""
+STATUSLINE_SOCKET=""
+STATUSLINE_TMP=""
 
 setup_file() {
     command -v tmux &>/dev/null || skip "tmux not available"
@@ -28,7 +30,53 @@ setup() {
 }
 
 teardown() {
-    local attempt pane_id
+    local attempt pane_id statusline_tmp_canonical statusline_tmp_owner
+    local statusline_cleanup_failed=0 statusline_tmp_cleanup_failed=0
+    if [[ -n "${STATUSLINE_SOCKET:-}" ]]; then
+        for attempt in {1..20}; do
+            while read -r pane_id; do
+                tmux -L "$STATUSLINE_SOCKET" send-keys -t "$pane_id" exit Enter \
+                    2>/dev/null || true
+            done < <(
+                tmux -L "$STATUSLINE_SOCKET" list-panes -a -F '#{pane_id}' \
+                    2>/dev/null || true
+            )
+
+            if ! tmux -L "$STATUSLINE_SOCKET" has-session 2>/dev/null; then
+                STATUSLINE_SOCKET=""
+                break
+            fi
+            sleep 0.05
+        done
+
+        [[ -z "$STATUSLINE_SOCKET" ]] || statusline_cleanup_failed=1
+    fi
+    if [[ -n "${STATUSLINE_TMP:-}" ]]; then
+        statusline_tmp_canonical=$(readlink -f -- "$STATUSLINE_TMP" 2>/dev/null) || \
+            statusline_tmp_cleanup_failed=1
+        statusline_tmp_owner=$(stat -c %u -- "$STATUSLINE_TMP" 2>/dev/null) || \
+            statusline_tmp_cleanup_failed=1
+        if [[ "$statusline_tmp_cleanup_failed" -eq 0 ]] && \
+            [[ "$statusline_tmp_canonical" == "$STATUSLINE_TMP" ]] && \
+            [[ "$(basename -- "$STATUSLINE_TMP")" =~ ^shogun-statusline\.[[:alnum:]]{6}$ ]] && \
+            [[ -d "$STATUSLINE_TMP" ]] && [[ ! -L "$STATUSLINE_TMP" ]] && \
+            [[ "$statusline_tmp_owner" == "$(id -u)" ]]; then
+            rm -r -- "$STATUSLINE_TMP" 2>/dev/null || statusline_tmp_cleanup_failed=1
+            [[ ! -e "$STATUSLINE_TMP" && ! -L "$STATUSLINE_TMP" ]] || \
+                statusline_tmp_cleanup_failed=1
+        else
+            statusline_tmp_cleanup_failed=1
+        fi
+        STATUSLINE_TMP=""
+    fi
+    if [[ "$statusline_tmp_cleanup_failed" -ne 0 ]]; then
+        echo "isolated status-line temp cleanup did not complete" >&2
+        return 1
+    fi
+    if [[ "$statusline_cleanup_failed" -ne 0 ]]; then
+        echo "isolated status-line tmux cleanup did not complete" >&2
+        return 1
+    fi
     if [[ -n "${GEOMETRY_SOCKET:-}" ]]; then
         while read -r pane_id; do
             tmux -L "$GEOMETRY_SOCKET" send-keys -t "$pane_id" exit Enter \
@@ -98,6 +146,90 @@ run_batch_readiness() {
     assert_success
     assert_output --partial "cli_readiness role=ashigaru1 state=ready ready=true"
     assert_output --partial "cli_readiness overall=ready"
+}
+
+@test "E2E readiness: Shogun Codex command pins visible status line" {
+    local command launch state="unknown" attempt real_tmux
+
+    STATUSLINE_SOCKET="shogun-statusline-${BATS_TEST_NUMBER}-${BASHPID}"
+    STATUSLINE_TMP=$(mktemp -d /tmp/shogun-statusline.XXXXXX)
+    mkdir -p "$STATUSLINE_TMP/bin"
+    real_tmux=$(command -v tmux)
+
+    cat > "$STATUSLINE_TMP/bin/codex" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+
+status_config_count=0
+while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+        -c)
+            [[ "$#" -ge 2 ]] || exit 2
+            if [[ "$2" == 'tui.status_line=["context-remaining"]' ]]; then
+                status_config_count=$((status_config_count + 1))
+            fi
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+if [[ "$status_config_count" -eq 1 ]]; then
+    printf '%s\n' '100% context left'
+else
+    printf '%s\n' '[mock_state] readiness marker withheld'
+fi
+
+while IFS= read -r line; do
+    [[ "$line" == "exit" ]] && exit 0
+done
+MOCK
+
+    cat > "$STATUSLINE_TMP/bin/tmux" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+exec "${SHOGUN_TEST_REAL_TMUX:?}" \
+    -L "${SHOGUN_TEST_TMUX_SOCKET:?}" "$@"
+MOCK
+    chmod +x "$STATUSLINE_TMP/bin/codex" "$STATUSLINE_TMP/bin/tmux"
+
+    cat > "$STATUSLINE_TMP/settings.yaml" <<'YAML'
+cli:
+  default: codex
+  agents:
+    ashigaru1:
+      type: codex
+      model: gpt-5.3-codex
+YAML
+
+    export CLI_ADAPTER_SETTINGS="$STATUSLINE_TMP/settings.yaml"
+    source "$PROJECT_ROOT/lib/cli_adapter.sh"
+    command=$(build_cli_command ashigaru1)
+
+    "$real_tmux" -L "$STATUSLINE_SOCKET" -f /dev/null new-session -d \
+        -x 120 -y 30 -s statusline -n agents
+    "$real_tmux" -L "$STATUSLINE_SOCKET" set-option -p \
+        -t statusline:agents.0 @agent_cli codex
+    launch="PATH=$STATUSLINE_TMP/bin:\$PATH $command"
+    "$real_tmux" -L "$STATUSLINE_SOCKET" send-keys \
+        -t statusline:agents.0 "$launch" Enter
+
+    for attempt in {1..40}; do
+        state=$(env -u TMUX \
+            PATH="$STATUSLINE_TMP/bin:$PATH" \
+            SHOGUN_TEST_REAL_TMUX="$real_tmux" \
+            SHOGUN_TEST_TMUX_SOCKET="$STATUSLINE_SOCKET" \
+            bash -c '
+                source "$1/lib/agent_status.sh"
+                get_pane_cli_state statusline:agents.0 codex
+            ' -- "$PROJECT_ROOT")
+        [[ "$state" == "ready" ]] && break
+        sleep 0.05
+    done
+
+    [ "$state" = "ready" ]
 }
 
 @test "E2E readiness: detached multiagent geometry keeps ten tiled panes usable" {

@@ -16,6 +16,7 @@
 # プロジェクトルートを基準にsettings.yamlのパスを解決
 CLI_ADAPTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI_ADAPTER_PROJECT_ROOT="$(cd "${CLI_ADAPTER_DIR}/.." && pwd)"
+CODEX_READINESS_STATUSLINE_CONFIG='tui.status_line=["context-remaining"]'
 CLI_ADAPTER_SETTINGS="${CLI_ADAPTER_SETTINGS:-${CLI_ADAPTER_PROJECT_ROOT}/config/settings.yaml}"
 
 # 許可されたCLI種別
@@ -266,11 +267,14 @@ build_cli_command() {
             cmd="$cmd $permission_flag"
             ;;
         codex)
+            local codex_readiness_statusline
+            codex_readiness_statusline=$(_cli_adapter_shell_quote \
+                "$CODEX_READINESS_STATUSLINE_CONFIG")
             cmd="codex"
             if [[ -n "$model" ]]; then
                 cmd="$cmd --model $model"
             fi
-            cmd="$cmd --search --dangerously-bypass-approvals-and-sandbox --no-alt-screen"
+            cmd="$cmd -c $codex_readiness_statusline --search --dangerously-bypass-approvals-and-sandbox --no-alt-screen"
             ;;
         opencode)
             local normalized_model
