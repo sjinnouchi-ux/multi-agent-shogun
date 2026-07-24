@@ -35,7 +35,7 @@
   | ashigaru1-3 | codex | gpt-5.6-sol | high |
   | ashigaru4-7 | codex | gpt-5.6-terra | high |
 
-- Codex CLIは`--model`とone-shot `-c model_reasoning_effort='"<effort>"'`で固定する。user/global configを書き換えない。
+- Codex CLIは`--model`とone-shot `-c model_reasoning_effort='"$EFFORT"'`で固定する。user/global configを書き換えない。
 - FABLE 5はmodel IDではない。将軍の統括責務と大目付の独立監査責務はtask配送時のguardへ明記する。
 - launcherは引数なしで一度だけ実行し、`-c`/`--clean`を渡さない。既存queue/dashboardをcontrol自身が読まず、削除・上書きしない。
 - repository dirty、session存在、dependency不足、CLI不足、profile不一致ではstartしない。controlは`git clean`、stash、checkout、delete、package install、OAuth/login、permission承認を行わない。
@@ -359,6 +359,28 @@ class DeploymentRecord:
     source_commit: str
     source_sha256: str
     runtime_commit: str
+
+@dataclass(frozen=True, slots=True)
+class ControlContext:
+    runtime_root: Path
+    launcher: Path
+    snapshot: Path
+    tmux_argv: tuple[str, ...]
+    pgrep_argv: tuple[str, ...]
+
+PROFILE = {
+    "shogun": ProfileEntry("claude", "claude-opus-4-8", "high"),
+    "karo": ProfileEntry("codex", "gpt-5.6-terra", "high"),
+    "ashigaru1": ProfileEntry("codex", "gpt-5.6-sol", "high"),
+    "ashigaru2": ProfileEntry("codex", "gpt-5.6-sol", "high"),
+    "ashigaru3": ProfileEntry("codex", "gpt-5.6-sol", "high"),
+    "ashigaru4": ProfileEntry("codex", "gpt-5.6-terra", "high"),
+    "ashigaru5": ProfileEntry("codex", "gpt-5.6-terra", "high"),
+    "ashigaru6": ProfileEntry("codex", "gpt-5.6-terra", "high"),
+    "ashigaru7": ProfileEntry("codex", "gpt-5.6-terra", "high"),
+    "gunshi": ProfileEntry("codex", "gpt-5.6-sol", "max"),
+    "oometsuke": ProfileEntry("claude", "claude-opus-4-8", "high"),
+}
 ```
 
 `calculate_source_sha256()` must use `O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK`, require regular file, effective-user ownership, exact mode`0555`, bounded read, and identical device/inode/size/mtime/mode before and after.
@@ -537,11 +559,11 @@ After launcher exit 0, collect only fixed projections:
 
 ```text
 /usr/bin/tmux list-sessions -F #{session_name}
-/usr/bin/tmux list-panes -a -F <fixed enum projection of session_name,@agent_id,@agent_cli,pane_dead>
-/usr/bin/pgrep -fc <fixed watcher pattern for each of 11 agents>
+/usr/bin/tmux list-panes -a -F #{session_name}\t#{@agent_id}\t#{@agent_cli}\t#{pane_dead}
+/usr/bin/pgrep -fc (^|/)scripts/inbox_watcher\.sh[[:space:]]+AGENT_ID[[:space:]]
 ```
 
-Expected mapping is Claude for`shogun,oometsuke` and Codex for the other nine. Require sessions exactly`shogun,multiagent`, agents exactly 11, all panes alive, and exactly one watcher per agent. Do not inspect pane title/content, command line, PID, queue, report, or log.
+Replace `AGENT_ID` only from immutable `AGENT_IDS`; never accept it from argv or environment. Expected mapping is Claude for`shogun,oometsuke` and Codex for the other nine. Require sessions exactly`shogun,multiagent`, agents exactly 11, all panes alive, and exactly one watcher per agent. Do not inspect pane title/content, command line, PID, queue, report, or log.
 
 - [ ] **Step 4: Add an injected-context real tmux integration test**
 
@@ -589,7 +611,7 @@ git commit -m "feat: start fixed Shogun profile with bounded readiness"
 **Interfaces:**
 
 - Consumer produces `ConsumerDecision(action, reason, fallback_allowed, document)` where every rejected decision has`action="stop_without_fallback"` and`fallback_allowed=False`.
-- Lifecycle helper accepts only `install-initial --source <reviewed-blob>` or hash-gated rollback for the fixed control snapshot path; it is never persistently approved.
+- Lifecycle helper accepts only `install-initial --source SOURCE_BLOB_PATH` or hash-gated rollback for the fixed control snapshot path; it is never persistently approved.
 
 - [ ] **Step 1: Write RED hostile consumer tests**
 
@@ -604,6 +626,8 @@ The consumer validates the raw GitHub main work log before returning the fixed c
 Cover fixed destination, user ownership, regular source/destination, mode`0555`, size limit, `O_NOFOLLOW`, same-directory atomic rename, fsync, concurrent first install, already-matching idempotence, wrong existing hash refusal, symlink refusal, pre-commit failure restoration, post-commit indeterminate classification, and exact temporary cleanup.
 
 - [ ] **Step 4: Implement the fixed lifecycle helper**
+
+`SOURCE_BLOB_PATH` is a deployment-task-local regular file produced from the reviewed Git blob and verified against the active candidate SHA-256 before the helper is called. It is never part of a persistent command permission.
 
 Keep destination and temp prefix immutable:
 
