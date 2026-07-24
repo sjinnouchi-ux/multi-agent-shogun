@@ -478,8 +478,8 @@ Exact probes:
 
 ```text
 /home/jinnouchi/multi-agent-shogun/.venv/bin/python3 -I -c import yaml
-<resolved-claude> --version
-<resolved-codex> --version
+(resolve_cli_path("claude"), "--version")
+(resolve_cli_path("codex"), "--version")
 /usr/bin/tmux -V
 ```
 
@@ -683,8 +683,10 @@ Expected: all invoked tests pass, skip 0, no generated diff, no uncommitted file
 - [ ] Verify owner, mode`0555`, source/deployed hash match, exact argv rejection, stderr empty, ASCII schema. Do not start Shogun yet because no active registry exists.
 - [ ] Create a new registry-only branch. Replace the empty array with exactly one active record using these exact ordered keys:
 
+  Derive `SOURCE_COMMIT` from the merged source PR commit, `SOURCE_SHA256` from the verified reviewed blob, and `DEPLOYED_AT` from the successful host placement time in UTC seconds. Validate all three before rendering; do not accept operator-entered free text.
+
 ```json
-{"schema_version":1,"deployments":[{"status":"active","source_repo":"https://github.com/sjinnouchi-ux/multi-agent-shogun","source_commit":"<40-lowercase-source-merge-sha>","source_path":"scripts/codex_shogun_control.py","source_sha256":"<64-lowercase-sha256>","runtime_commit":"<40-lowercase-source-merge-sha>","deployed_at":"<UTC-RFC3339-seconds>","snapshot_path":"/home/jinnouchi/.local/libexec/shogun-codex-control","snapshot_mode":"0555","contract_schema_version":1,"profile":"finance-planning-v1"}]}
+{"schema_version":1,"deployments":[{"status":"active","source_repo":"https://github.com/sjinnouchi-ux/multi-agent-shogun","source_commit":"${SOURCE_COMMIT}","source_path":"scripts/codex_shogun_control.py","source_sha256":"${SOURCE_SHA256}","runtime_commit":"${SOURCE_COMMIT}","deployed_at":"${DEPLOYED_AT}","snapshot_path":"/home/jinnouchi/.local/libexec/shogun-codex-control","snapshot_mode":"0555","contract_schema_version":1,"profile":"finance-planning-v1"}]}
 ```
 
 - [ ] Run the consumer registry validator, commit only the work log, open a separate PR, obtain review and explicit user approval, merge, then re-fetch raw GitHub main and verify sole active record/hash.
@@ -768,7 +770,7 @@ After control exit 0 and complete schema validation, run the existing fixed read
 ## Self-Review Checklist
 
 - [ ] Every design spec section maps to at least one task above.
-- [ ] No`TODO`/`TBD`/`FIXME`/“implement later” placeholders remain.
+- [ ] 未解決のplaceholder表現や実装者判断へ丸投げするstepが残っていない。
 - [ ] `finance-planning-v1`, exact model IDs, effort values, paths, command tokens, registry keys, and JSON keys are consistent throughout.
 - [ ] No step authorizes direct queue/report/log/pane/credential reads.
 - [ ] No step combines source merge, deployment, policy enablement, start, and delivery into one approval.
