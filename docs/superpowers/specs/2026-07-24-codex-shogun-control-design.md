@@ -1,7 +1,7 @@
 # Codex-mediated Shogun Control Plane 設計
 
 - 日付: 2026-07-24
-- 状態: 設計案作成済み・利用者レビュー待ち（方式2承認済み）
+- 状態: 設計承認済み・実装plan作成済み・実装前
 - 対象リポジトリ: `sjinnouchi-ux/multi-agent-shogun`
 - 設計base: `52250dea0ba91316a87c1fa3c78703ce66c4259f`
 - 関連正本:
@@ -79,6 +79,7 @@ runtime repoの固定launcherを起動する。
 
 - `scripts/codex_shogun_control.py`
   - self hashとsnapshot trust検証
+  - 固定GitHub Raw URLからactive deployment recordを独立取得・検証
   - argv・cwd・user・repository preflight
   - 固定profileの選択
   - 固定launcherのbounded実行
@@ -92,12 +93,18 @@ runtime repoの固定launcherを起動する。
   - pure unit・fake runner・schema・漏洩防止
 - `tests/unit/test_cli_adapter.bats`
   - profile overlayと通常経路の回帰
+- `tests/integration/test_codex_shogun_control_start.py`
+  - injected context・unique tmux socket・mock CLI起動harness
 - `tests/integration/test_codex_shogun_control_start.bats`
-  - deployment host専用の隔離tmux/socket・mock CLI起動確認
+  - deployment host専用wrapper
 - `tests/contract/codex_shogun_control_consumer.py`
   - GitHub registry・process・JSONの独立fail-closed validator
 - `tests/contract/test_codex_shogun_control_consumer.py`
   - provenance、schema、timeout、stderr、suffix、hash mismatch test
+- `scripts/manage_codex_shogun_control_snapshot.py`
+  - fixed snapshot initial install・hash-gated atomic rollback
+- `tests/unit/test_manage_codex_shogun_control_snapshot.py`
+  - owner・mode・hash・concurrency・TOCTOU・rollback test
 - `docs/codex-shogun-control.md`
   - 利用、境界、deployment、rollback
 - `docs/superpowers/plans/2026-07-24-codex-shogun-control-work-log.md`
@@ -218,9 +225,11 @@ pane、credentialは含めない。issue code、component、roleは固定enumと
 
 ## 12. Consumer gate
 
-各実行直前にGitHub main rawのcontrol work logを取得し、marker pair各1件、
-schema version 1、exact keys、active deployment 1件、source commit、
-runtime commit、source SHA-256、snapshot path、modeを検証する。
+control snapshotとCodex consumerは各実行直前に、それぞれGitHub main rawの
+control work logを独立取得し、marker pair各1件、schema version 1、exact keys、
+active deployment 1件、source commit、runtime commit、source SHA-256、
+snapshot path、modeを検証する。snapshotはactive recordのruntime commitを
+runtime repo HEADと比較し、consumerはreturned source hashを再照合する。
 
 次のいずれかは`control_provenance_untrusted`としてcommandを実行しない。
 
