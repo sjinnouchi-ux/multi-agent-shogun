@@ -231,6 +231,12 @@ re-reads YAML with the new task identity.
 
 **Always Read before Write/Edit.** Claude Code rejects Write/Edit on unread files.
 
+### Text Encoding Guard
+
+- 日本語を含むMarkdown、YAML、textはUTF-8として扱う。文字化けした表示を根拠に編集せず、UTF-8を明示して正常表示を確認してから編集する。
+- Windows PowerShell 5.1経由では、既定の `Get-Content`、`Set-Content`、`Out-File`、`>` に依存しない。読取はUTF-8を明示し、BOMなしUTF-8が必要なファイルの新規保存・全置換にはこれらを使わず、既存の文字コードを保つ。
+- 編集後はUTF-8として再読し、`git diff` で日本語が正常であることを確認する。文字コードが不明なら推測変換せず報告する。
+
 ## Inbox Communication Rules
 
 ### Sending Messages
